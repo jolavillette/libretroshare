@@ -770,6 +770,27 @@ void p3turtle::setMaxTRForwardRate(int val)
 		_max_tr_up_rate = val ;
 		std::cerr << "p3turtle: Set max tr up rate to " << val << std::endl;
 	}
+
+// JOLA
+// This is a hack!
+// At the moment the number of TR forwarded per second must stay within MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT and MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT
+// In some cases this is not satisfying:
+// - for nodes with very good UP BW, who wish to be part of more tunnels and provide more BW to the RS community,
+// - for nodes with poor UP BW, who wish to entirely stop forwarding data in tunnels while still being able to upload their own files, download in tunnels, and do distant chat
+// For that purpose:
+// - if the user selects MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT in settings then the actual max TR forward per seconds is set to 300, which is equivalent to 15 to 20 kB/s
+// - if the user selects MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT in settings then the actual max TR forward per seconds is set to 0
+        if (_max_tr_up_rate == MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT)
+        {
+                RsDbg() << "TURTLE p3turtle::setMaxTRForwardRate setting max TR forward per second to 1000";
+                _max_tr_up_rate = 1000;
+        }
+        if (_max_tr_up_rate == MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT)
+        {
+                RsDbg() << "TURTLE p3turtle::setMaxTRForwardRate setting max TR forward per second to 0";
+                _max_tr_up_rate =    0;
+        }
+
 	IndicateConfigChanged() ;
 }
 
@@ -1766,6 +1787,10 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 #endif
 	}
 
+// JOLA
+// Enough with this shit, we will only drop TR with depth >= 6
+        forward_probability = 1.0f ;
+
 	if(item->depth < TURTLE_MAX_SEARCH_DEPTH || random_bypass)
 	{
 		std::set<RsPeerId> onlineIds ;
@@ -2295,6 +2320,9 @@ void p3turtle::getTrafficStatistics(TurtleTrafficStatisticsInfo& info) const
 			if(_traffic_info.tr_dn_Bps / (float)TUNNEL_REQUEST_PACKET_SIZE > _max_tr_up_rate)
 				forward_probability *= _max_tr_up_rate*TUNNEL_REQUEST_PACKET_SIZE / (float)_traffic_info.tr_dn_Bps ;
 		}
+
+// JOLA
+                forward_probability = 1.0f ;
 
 		info.forward_probabilities.push_back(forward_probability) ;
 	}
