@@ -2358,3 +2358,8 @@ uint64_t ftServer::getCumulativeUploadNum()
 {
 	return mFileDatabase->getCumulativeUploadNum();
 }
+
+void ftServer::clearUploadStats()
+{
+	return mFileDatabase->clearUploadStats();
+}
