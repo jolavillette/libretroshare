@@ -609,72 +609,109 @@ void DistributedChatService::handleRecvChatLobbyList(RsChatLobbyListItem *item)
     _should_reset_lobby_counts = false ;
 }
 
-void DistributedChatService::addTimeShiftStatistics(int D)
+void DistributedChatService::addTimeShiftStatistics(int D, const RsGxsId& gxsId)
 {
-	// Bursts of messages from friends using a wrong system clock can trigger a TIME_SHIFT_PROBLEM event 
-	// We eliminate that by taking into account at most 1 message per second
-	static rstime_t last_stat_time = 0;
-	rstime_t now = time(NULL);
-	if(now <= last_stat_time)
-		return;
-	last_stat_time = now;
+    // --- NEW FILTER: PER-PEER RATE LIMITER ---
+    // We store the last statistic time for EACH peer individually.
+    // This prevents a "laggy" peer from monopolizing the sample slots.
+    static std::map<RsGxsId, rstime_t> last_stat_time_per_peer;
+    rstime_t now = time(NULL);
 
-	static const int S = 50 ; // accuracy up to 2^50 second. Quite conservative!
-	static int total = 0 ;
-	static std::vector<int> log_delay_histogram(S,0) ;
+    // Preventive cleanup: prevent the map from growing indefinitely if we see thousands of peers over weeks.
+    // We clear it if it exceeds a reasonable size.
+    if (last_stat_time_per_peer.size() > 2000) {
+        last_stat_time_per_peer.clear();
+    }
 
-	int delay = (D<0)?(-D):D ;
+    // Resolve identity name for readable logs
+    std::string identityName = gxsId.toStdString();
+    RsIdentityDetails idDetails;
+    if (rsIdentity && rsIdentity->getIdDetails(gxsId, idDetails)) {
+        // format: Nickname (ShortID)
+        identityName = idDetails.mNickname + " (" + gxsId.toStdString().substr(0, 6) + ")";
+    }
 
-	if(delay < 0)
-		delay = -delay ;
+    // Check quota for THIS specific peer
+    // If this peer has already voted in the current second (or future), ignore it.
+    if (last_stat_time_per_peer.count(gxsId) && now <= last_stat_time_per_peer[gxsId]) {
+        // Debug Log: Filtered (Rejected)
+        // We log it to verify that spammers are indeed being blocked while others pass.
+        RsDbg() << "[TS-FILTER] Ignored sample from " << identityName 
+                << " (Delay: " << D << "s) - Filtered (Per-peer 1s rule)";
+        return;
+    }
+    
+    // Update the timestamp for this peer
+    last_stat_time_per_peer[gxsId] = now;
+    // --- END NEW FILTER ---
 
-	// compute log2.
-	int l = 0 ;
-	while(delay > 0) delay >>= 1, ++l ;
+    // --- EXISTING HISTOGRAM LOGIC ---
+    static const int S = 50; 
+    static int total = 0;
+    static std::vector<int> log_delay_histogram(S, 0);
+    
+    // Track contributors for the current window to debug who caused an alert
+    static std::map<RsGxsId, int> contributors;
 
-	int bin = std::min(S-1,l) ;
-	++log_delay_histogram[bin] ;
-	++total ;
+    int delay = (D < 0) ? (-D) : D;
+    int l = 0;
+    while (delay > 0) {
+        delay >>= 1;
+        ++l;
+    }
 
-#ifdef DEBUG_CHAT_LOBBIES
-	std::cerr << "New delay stat item. delay=" << D << ", log=" << bin << " total=" << total << ", histogram = " ;
+    int bin = std::min(S - 1, l);
+    ++log_delay_histogram[bin];
+    ++total;
+    contributors[gxsId]++;
 
-	for(int i=0;i<S;++i)
-		std::cerr << log_delay_histogram[i] << " " ;
-#endif
+    // Debug Log: Accepted
+    RsDbg() << "[TS-ACCEPT] Accepted sample from " << identityName 
+            << " (Delay: " << D << "s, LogBin: " << bin << ")";
 
-	if(total > 30)
-	{
-		float t = 0.0f ;
-		int i=0 ;
-		for(;i<S && t<0.5*total;++i)
-			t += log_delay_histogram[i] ;
-
-		if(i == 0) return ;									// cannot happen, since total>0 so i is incremented
-		if(log_delay_histogram[i-1] == 0) return ;	// cannot happen, either, but let's be cautious.
-
-		float expected = ( i * (log_delay_histogram[i-1] - t + total*0.5) + (i-1) * (t - total*0.5) ) / (float)log_delay_histogram[i-1] - 1;
-
-#ifdef DEBUG_CHAT_LOBBIES
-		std::cerr << ". Expected delay: " << expected << std::endl ;
-#endif
-
-		if(expected > 9)	// if more than 20 samples
-        {
-            auto ev = std::make_shared<RsSystemEvent>();
-            ev->mEventCode = RsSystemEventCode::TIME_SHIFT_PROBLEM;
-            ev->mTimeShift = (int)pow(2.0f,expected);
-            rsEvents->postEvent(ev);
+    // When the urn has 30 votes, we calculate the median
+    if (total > 30) {
+        float t = 0.0f;
+        int i = 0;
+        for (; i < S && t < 0.5 * total; ++i) {
+            t += log_delay_histogram[i];
         }
 
-		total = 0.0f ;
-		log_delay_histogram.clear() ;
-		log_delay_histogram.resize(S,0) ;
-	}
-#ifdef DEBUG_CHAT_LOBBIES
-	else
-		std::cerr << std::endl;
-#endif
+        if (i > 0 && log_delay_histogram[i - 1] != 0) {
+            // Median interpolation
+            float expected = ( i * (log_delay_histogram[i-1] - t + total*0.5) + (i-1) * (t - total*0.5) ) / (float)log_delay_histogram[i-1] - 1;
+
+            // Construct the contributors string for the log
+            std::string top_peers = "";
+            for (auto const& [id, count] : contributors) {
+                std::string peerName = id.toStdString().substr(0, 6);
+                RsIdentityDetails pDet;
+                if (rsIdentity && rsIdentity->getIdDetails(id, pDet)) {
+                    peerName = pDet.mNickname;
+                }
+                top_peers += peerName + "(" + std::to_string(count) + ") ";
+            }
+            
+            // Log the result of the election
+            RsDbg() << "[TS-STATS] Window reached. ExpectedLogDelay: " << expected 
+                    << " | Contributors: " << top_peers;
+
+            // Trigger alert if the shift is significant (> 2^9 seconds approx 512s)
+            if (expected > 9) { 
+                RsDbg() << "[TS-ALERT] Time shift problem detected! Significant drift in network clock synchronization.";
+                
+                auto ev = std::make_shared<RsSystemEvent>();
+                ev->mEventCode = RsSystemEventCode::TIME_SHIFT_PROBLEM;
+                ev->mTimeShift = (int)pow(2.0f, expected);
+                rsEvents->postEvent(ev);
+            }
+        }
+
+        // Reset for the next window
+        total = 0;
+        contributors.clear();
+        log_delay_histogram.assign(S, 0);
+    }
 }
 
 void DistributedChatService::handleRecvChatLobbyEventItem(RsChatLobbyEventItem *item)
@@ -737,7 +774,7 @@ void DistributedChatService::handleRecvChatLobbyEventItem(RsChatLobbyEventItem *
 			return ;
 		}
 	}
-	addTimeShiftStatistics((int)now - (int)item->sendTime) ;
+	addTimeShiftStatistics((int)now - (int)item->sendTime, item->signature.keyId);
 
 	if(now+100 > (rstime_t) item->sendTime + MAX_KEEP_MSG_RECORD)	// the message is older than the max cache keep minus 100 seconds ! It's too old, and is going to make an echo!
 	{
