@@ -33,14 +33,19 @@
 
 RsItem *RsGxsIdSerialiser::create_item(uint16_t service_id,uint8_t item_subtype) const
 {
-    if(service_id != RS_SERVICE_GXS_TYPE_GXSID)
+    RsDbg() << "ROGUE: RsGxsIdSerialiser::create_item() Start. Service=" << std::hex << service_id << " Expected=" << RS_SERVICE_GXS_TYPE_GXSID << " Subtype=" << (int)item_subtype << std::dec;
+
+    if(service_id != RS_SERVICE_GXS_TYPE_GXSID) {
+        RsDbg() << "ROGUE: Service ID Mismatch! Returning NULL.";
         return NULL ;
+    }
 
     switch(item_subtype)
     {
     case RS_PKT_SUBTYPE_GXSID_GROUP_ITEM     : return new RsGxsIdGroupItem ();
     case RS_PKT_SUBTYPE_GXSID_LOCAL_INFO_ITEM: return new RsGxsIdLocalInfoItem() ;
     default:
+        RsDbg() << "ROGUE: Unknown Subtype " << (int)item_subtype << "! Returning NULL.";
         return NULL ;
     }
 }
@@ -64,8 +69,20 @@ void RsGxsIdLocalInfoItem::serial_process(RsGenericSerializer::SerializeJob j,Rs
 
 void RsGxsIdGroupItem::serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx)
 {
+    if (j == RsGenericSerializer::DESERIALIZE) {
+        RsDbg() << "ROGUE: RsGxsIdGroupItem::serial_process START. Offset=" << ctx.mOffset << " Size=" << ctx.mSize;
+    }
     RsTypeSerializer::serial_process(j,ctx,mPgpIdHash,"mPgpIdHash") ;
+    
+    if (j == RsGenericSerializer::DESERIALIZE) {
+        RsDbg() << "ROGUE: After mPgpIdHash. Offset=" << ctx.mOffset;
+    }
+
     RsTypeSerializer::serial_process(j,ctx,TLV_TYPE_STR_SIGN,mPgpIdSign,"mPgpIdSign") ;
+    
+    if (j == RsGenericSerializer::DESERIALIZE) {
+        RsDbg() << "ROGUE: After mPgpIdSign. Offset=" << ctx.mOffset;
+    }
 
     RsTlvStringSetRef rset(TLV_TYPE_RECOGNSET,mRecognTags) ;
 

@@ -385,6 +385,10 @@ RsItem *    RsSerialiser::deserialise(void *data, uint32_t *size)
 	//std::cerr << "RsSerialiser::deserialise() RsItem Type: " << std::hex << getRsItemId(data) << " Size: " << pkt_size;
 	//std::cerr << std::endl;
 
+    if (((type >> 8) & 0xFFFF) == 0x0211) {
+        RsDbg() << "ROGUE: RsSerialiser::deserialise() Type=" << std::hex << type << " FullType=" << getRsItemId(data) << std::dec << " PktSize=" << pkt_size << " *Size=" << *size;
+    }
+
 	if (pkt_size > *size)
 	{
 #ifdef  RSSERIAL_ERROR_DEBUG
