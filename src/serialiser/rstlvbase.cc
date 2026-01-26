@@ -566,6 +566,10 @@ bool GetTlvString(const void *data, uint32_t size, uint32_t *offset,
     uint16_t tlvtype = GetTlvType(tlvstart);
     uint32_t tlvsize = GetTlvSize(tlvstart);
 
+    if (type == 0x00b4 && tlvsize > 100000) {
+        RsDbg() << "ROGUE: GetTlvString() Malicious Size Detected! Type=" << std::hex << type << " Size=" << size << " Offset=" << *offset << " TLVSize=" << tlvsize;
+    }
+
     /* check that there is size */
     uint32_t tlvend = *offset + tlvsize;
     if (size < tlvend)

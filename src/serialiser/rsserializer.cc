@@ -58,6 +58,9 @@ RsItem *RsServiceSerializer::deserialise(void *data, uint32_t *size)
 	}
 
 	uint32_t rstype = getRsItemId(const_cast<void*>((const void*)data)) ;
+    
+    RsDbg() << "ROGUE: RsServiceSerializer::deserialise() Class=" << typeid(*this).name() << " ItemType=" << std::hex << rstype << " Service=" << getRsItemService(rstype) << " SubType=" << (int)getRsItemSubType(rstype) << std::dec;
+    RsDbg() << "ROGUE: Dump: " << hexDump(data, std::min(50u, *size));
 
 	RsItem *item = create_item(getRsItemService(rstype),getRsItemSubType(rstype)) ;
 
