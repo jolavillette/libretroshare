@@ -231,7 +231,10 @@ void p3GxsForums::notifyChanges(std::vector<RsGxsNotify*>& changes)
 #ifdef RS_DEEP_FORUMS_INDEX
 					RsGxsForumMsg tmpPost = newForumMessageItem->mMsg;
 					tmpPost.mMeta = newForumMessageItem->meta;
+                    std::cerr << "DEBUG: Indexing Forum Post: " << tmpPost.mMeta.mMsgName << std::endl;
 					mDeepIndex.indexForumPost(tmpPost);
+#else
+                    std::cerr << "DEBUG: Not Indexing Forum Post (RS_DEEP_FORUMS_INDEX disabled)" << std::endl;
 #endif
 					auto ev = std::make_shared<RsGxsForumEvent>();
 					ev->mForumMsgId = msgChange->mMsgId;
