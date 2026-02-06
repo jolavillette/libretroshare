@@ -142,7 +142,6 @@ void *FixedAllocator::allocate()
 			}
 			newChunk->init(_blockSize,_numBlocks) ;
 			_chunks.push_back(newChunk) ;
-			RsDbg() << "SMALLOBJ Growing pool for size: " << _blockSize << " bytes (" << _chunks.size() << " chunks of " << (int)_numBlocks << " blocks)";
 
 			_allocChunk = _chunks.size()-1 ;
 			_deallocChunk = _chunks.size()-1 ;
@@ -173,7 +172,9 @@ void FixedAllocator::deallocate(void *p)
 
 	_chunks[_deallocChunk]->deallocate(p,_blockSize) ;
 
-	if(_chunks[_deallocChunk]->_blocksAvailable == BLOCKS_PER_CHUNK)
+	// JOLA: Keep minimum 1 chunk as cache to avoid churn
+	// Only delete empty chunks if we have more than 1 chunk
+	if(_chunks[_deallocChunk]->_blocksAvailable == BLOCKS_PER_CHUNK && _chunks.size() > 1)
 	{
 		_chunks[_deallocChunk]->free() ;
 		delete _chunks[_deallocChunk] ;
@@ -241,9 +242,24 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 
 		if(it == _pool.end())
 		{
-			RsDbg() << "SMALLOBJ Creating new pool for size: " << bytes << " bytes (" << _pool.size() + 1 << " pools)" ;
 			_pool[bytes] = new FixedAllocator(bytes) ;
 			it = _pool.find(bytes) ;
+		}
+
+		// JOLA: Periodic summary log - display every 10 seconds
+		static time_t lastStatsTime = 0;
+		time_t now = time(NULL);
+		if (now > lastStatsTime + 10)
+		{
+			lastStatsTime = now;
+			uint32_t totalChunks = 0;
+			uint64_t totalMemory = 0;
+			for (const auto& p : _pool)
+			{
+				totalChunks += p.second->numChunks();
+				totalMemory += p.second->numChunks() * p.second->blockSize() * BLOCKS_PER_CHUNK;
+			}
+			RsDbg() << "SMALLOBJ Stats: " << _pool.size() << " pools, " << totalChunks << " chunks, " << totalMemory << " bytes allocated";
 		}
 		_lastAlloc = it->second ;
 

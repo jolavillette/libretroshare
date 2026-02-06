@@ -67,6 +67,7 @@ namespace RsMemoryManagement
 
             void printStatistics() const ;
             uint32_t currentSize() const;
+            inline uint32_t numChunks() const { return _chunks.size(); }
     private:
 			size_t _blockSize ;
 			unsigned char _numBlocks ;
