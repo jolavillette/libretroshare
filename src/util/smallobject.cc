@@ -240,6 +240,7 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 
 		if(it == _pool.end())
 		{
+			RsDbg() << "SMALLOBJ Creating new pool for size: " << bytes << " bytes";
 			_pool[bytes] = new FixedAllocator(bytes) ;
 			it = _pool.find(bytes) ;
 		}
