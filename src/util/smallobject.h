@@ -32,7 +32,7 @@
 
 namespace RsMemoryManagement
 {
-	static const int MAX_SMALL_OBJECT_SIZE = 128 ;
+	static const int MAX_SMALL_OBJECT_SIZE = 512 ;
 	static const unsigned char BLOCKS_PER_CHUNK = 255 ;
 
 	struct Chunk
