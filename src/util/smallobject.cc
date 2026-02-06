@@ -142,6 +142,7 @@ void *FixedAllocator::allocate()
 			}
 			newChunk->init(_blockSize,_numBlocks) ;
 			_chunks.push_back(newChunk) ;
+			RsDbg() << "SMALLOBJ Growing pool for size: " << _blockSize << " bytes (" << _chunks.size() << " chunks of " << (int)_numBlocks << " blocks)";
 
 			_allocChunk = _chunks.size()-1 ;
 			_deallocChunk = _chunks.size()-1 ;
@@ -231,7 +232,7 @@ SmallObjectAllocator::~SmallObjectAllocator()
 void *SmallObjectAllocator::allocate(size_t bytes)
 {
 	if(bytes > _maxObjectSize)
-		return rs_malloc(bytes) ;
+		return RS_MALLOC(bytes) ;
 	else if(_lastAlloc != NULL && _lastAlloc->blockSize() == bytes)
 		return _lastAlloc->allocate() ;
 	else
@@ -240,7 +241,7 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 
 		if(it == _pool.end())
 		{
-			RsDbg() << "SMALLOBJ Creating new pool for size: " << bytes << " bytes";
+			RsDbg() << "SMALLOBJ Creating new pool for size: " << bytes << " bytes (" << _pool.size() + 1 << " pools)" ;
 			_pool[bytes] = new FixedAllocator(bytes) ;
 			it = _pool.find(bytes) ;
 		}
@@ -253,7 +254,7 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 void SmallObjectAllocator::deallocate(void *p,size_t bytes)
 {
 	if(bytes > _maxObjectSize)
-		free(p) ;
+		RS_FREE(p) ;
 	else if(_lastDealloc != NULL && _lastDealloc->blockSize() == bytes)
 		_lastDealloc->deallocate(p) ;
 	else
@@ -314,7 +315,7 @@ void *SmallObject::operator new(size_t size)
 	else
         {
             std::cerr << "(EE) allocating " << size << " bytes of memory that cannot be deleted. This is a bug, except if it happens when closing Retroshare" << std::endl;
-	    return malloc(size) ;	
+	    return RS_MALLOC(size) ;	
         }
         
 #ifdef DEBUG_MEMORY
