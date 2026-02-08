@@ -30,6 +30,8 @@
 
 using namespace RsMemoryManagement ;
 
+//#define DEBUG_MEMORY 1
+
 RsMutex SmallObject::_mtx("SmallObject") ;
 SmallObjectAllocator SmallObject::_allocator(RsMemoryManagement::MAX_SMALL_OBJECT_SIZE) ;
 
@@ -172,7 +174,9 @@ void FixedAllocator::deallocate(void *p)
 
 	_chunks[_deallocChunk]->deallocate(p,_blockSize) ;
 
-	if(_chunks[_deallocChunk]->_blocksAvailable == BLOCKS_PER_CHUNK)
+	// JOLA: Keep minimum 1 chunk as cache to avoid churn
+	// Only delete empty chunks if we have more than 1 chunk
+	if(_chunks[_deallocChunk]->_blocksAvailable == BLOCKS_PER_CHUNK && _chunks.size() > 1)
 	{
 		_chunks[_deallocChunk]->free() ;
 		delete _chunks[_deallocChunk] ;
@@ -230,9 +234,7 @@ SmallObjectAllocator::~SmallObjectAllocator()
 
 void *SmallObjectAllocator::allocate(size_t bytes)
 {
-	if(bytes > _maxObjectSize)
-		return rs_malloc(bytes) ;
-	else if(_lastAlloc != NULL && _lastAlloc->blockSize() == bytes)
+	if(_lastAlloc != NULL && _lastAlloc->blockSize() == bytes)
 		return _lastAlloc->allocate() ;
 	else
 	{
@@ -243,6 +245,22 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 			_pool[bytes] = new FixedAllocator(bytes) ;
 			it = _pool.find(bytes) ;
 		}
+
+		// JOLA: Periodic summary log - display every 10 seconds
+		static time_t lastStatsTime = 0;
+		time_t now = time(NULL);
+		if (now > lastStatsTime + 10)
+		{
+			lastStatsTime = now;
+			uint32_t totalChunks = 0;
+			uint64_t totalMemory = 0;
+			for (const auto& p : _pool)
+			{
+				totalChunks += p.second->numChunks();
+				totalMemory += p.second->numChunks() * p.second->blockSize() * BLOCKS_PER_CHUNK;
+			}
+			RsDbg() << "SMALLOBJ Stats: " << _pool.size() << " pools, " << totalChunks << " chunks, " << totalMemory << " bytes allocated";
+		}
 		_lastAlloc = it->second ;
 
 		return it->second->allocate() ;
@@ -251,9 +269,7 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 
 void SmallObjectAllocator::deallocate(void *p,size_t bytes)
 {
-	if(bytes > _maxObjectSize)
-		free(p) ;
-	else if(_lastDealloc != NULL && _lastDealloc->blockSize() == bytes)
+	if(_lastDealloc != NULL && _lastDealloc->blockSize() == bytes)
 		_lastDealloc->deallocate(p) ;
 	else
 	{
@@ -286,43 +302,60 @@ void SmallObjectAllocator::printStatistics() const
 
 void *SmallObject::operator new(size_t size)
 {
-#ifdef DEBUG_MEMORY
-	bool print=false ;
+	void *p = NULL ;
+
+	if(size > MAX_SMALL_OBJECT_SIZE)
 	{
-		RsStackMutex m(_mtx) ;
-		static rstime_t last_time = 0 ;
-		rstime_t now = time(NULL) ;
-		if(now > last_time + 20)
-		{
-			last_time = now ;
-			print=true ;
-		}
+		p = rs_malloc(size) ;
 	}
-	if(print)
-		printStatistics() ;
+	else
+	{
+#ifdef DEBUG_MEMORY
+		bool print=false ;
+		{
+			RsStackMutex m(_mtx) ;
+			static rstime_t last_time = 0 ;
+			rstime_t now = time(NULL) ;
+			if(now > last_time + 20)
+			{
+				last_time = now ;
+				print=true ;
+			}
+		}
+		if(print)
+			printStatistics() ;
 #endif
 
-	RsStackMutex m(_mtx) ;
-    
-    	// This should normally not happen. But that prevents a crash when quitting, since we cannot prevent the constructor
-    	// of an object to call operator new(), nor to handle the case where it returns NULL.
-    	// The memory will therefore not be deleted if that happens. We thus print a warning.
-    
-    	if(_allocator._active)
-		return _allocator.allocate(size) ;
-	else
-        {
-            std::cerr << "(EE) allocating " << size << " bytes of memory that cannot be deleted. This is a bug, except if it happens when closing Retroshare" << std::endl;
-	    return malloc(size) ;	
-        }
-        
+		RsStackMutex m(_mtx) ;
+
+		// This should normally not happen. But that prevents a crash when quitting, since we cannot prevent the constructor
+		// of an object to call operator new(), nor to handle the case where it returns NULL.
+		// The memory will therefore not be deleted if that happens. we thus print a warning.
+
+		if(_allocator._active)
+			p = _allocator.allocate(size) ;
+		else
+		{
+			std::cerr << "(EE) allocating " << size << " bytes of memory that cannot be deleted. This is a bug, except if it happens when closing Retroshare" << std::endl;
+			p = rs_malloc(size) ;
+		}
+	}
+
 #ifdef DEBUG_MEMORY
 	std::cerr << "new RsItem: " << p << ", size=" << size << std::endl;
 #endif
+
+	return p ;
 }
 
 void SmallObject::operator delete(void *p,size_t size)
 {
+	if(size > MAX_SMALL_OBJECT_SIZE)
+	{
+		free(p) ;
+		return ;
+	}
+
 	RsStackMutex m(_mtx) ;
 
 	if(!_allocator._active)

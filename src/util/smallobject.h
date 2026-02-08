@@ -32,7 +32,7 @@
 
 namespace RsMemoryManagement
 {
-	static const int MAX_SMALL_OBJECT_SIZE = 128 ;
+	static const int MAX_SMALL_OBJECT_SIZE = 0 ;
 	static const unsigned char BLOCKS_PER_CHUNK = 255 ;
 
 	struct Chunk
@@ -67,6 +67,7 @@ namespace RsMemoryManagement
 
             void printStatistics() const ;
             uint32_t currentSize() const;
+            inline uint32_t numChunks() const { return _chunks.size(); }
     private:
 			size_t _blockSize ;
 			unsigned char _numBlocks ;
