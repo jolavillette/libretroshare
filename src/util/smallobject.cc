@@ -233,7 +233,7 @@ SmallObjectAllocator::~SmallObjectAllocator()
 void *SmallObjectAllocator::allocate(size_t bytes)
 {
 	if(bytes > _maxObjectSize)
-		return malloc(bytes) ;
+		return RS_MALLOC(bytes) ;
 	else if(_lastAlloc != NULL && _lastAlloc->blockSize() == bytes)
 		return _lastAlloc->allocate() ;
 	else
@@ -270,7 +270,7 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 void SmallObjectAllocator::deallocate(void *p,size_t bytes)
 {
 	if(bytes > _maxObjectSize)
-		free(p) ;
+		RS_FREE(p) ;
 	else if(_lastDealloc != NULL && _lastDealloc->blockSize() == bytes)
 		_lastDealloc->deallocate(p) ;
 	else
@@ -331,7 +331,7 @@ void *SmallObject::operator new(size_t size)
 	else
         {
             std::cerr << "(EE) allocating " << size << " bytes of memory that cannot be deleted. This is a bug, except if it happens when closing Retroshare" << std::endl;
-	    return malloc(size) ;	
+	    return RS_MALLOC(size) ;	
         }
         
 #ifdef DEBUG_MEMORY
