@@ -306,7 +306,7 @@ void *SmallObject::operator new(size_t size)
 
 	if(size > MAX_SMALL_OBJECT_SIZE)
 	{
-		p = RS_MALLOC(size) ;
+		p = rs_malloc(size) ;
 	}
 	else
 	{
@@ -337,7 +337,7 @@ void *SmallObject::operator new(size_t size)
 		else
 		{
 			std::cerr << "(EE) allocating " << size << " bytes of memory that cannot be deleted. This is a bug, except if it happens when closing Retroshare" << std::endl;
-			p = RS_MALLOC(size) ;
+			p = rs_malloc(size) ;
 		}
 	}
 
@@ -352,7 +352,7 @@ void SmallObject::operator delete(void *p,size_t size)
 {
 	if(size > MAX_SMALL_OBJECT_SIZE)
 	{
-		RS_FREE(p) ;
+		free(p) ;
 		return ;
 	}
 
