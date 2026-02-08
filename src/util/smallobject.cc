@@ -30,6 +30,8 @@
 
 using namespace RsMemoryManagement ;
 
+//#define DEBUG_MEMORY 1
+
 RsMutex SmallObject::_mtx("SmallObject") ;
 SmallObjectAllocator SmallObject::_allocator(RsMemoryManagement::MAX_SMALL_OBJECT_SIZE) ;
 
@@ -232,9 +234,7 @@ SmallObjectAllocator::~SmallObjectAllocator()
 
 void *SmallObjectAllocator::allocate(size_t bytes)
 {
-	if(bytes > _maxObjectSize)
-		return RS_MALLOC(bytes) ;
-	else if(_lastAlloc != NULL && _lastAlloc->blockSize() == bytes)
+	if(_lastAlloc != NULL && _lastAlloc->blockSize() == bytes)
 		return _lastAlloc->allocate() ;
 	else
 	{
@@ -269,9 +269,7 @@ void *SmallObjectAllocator::allocate(size_t bytes)
 
 void SmallObjectAllocator::deallocate(void *p,size_t bytes)
 {
-	if(bytes > _maxObjectSize)
-		RS_FREE(p) ;
-	else if(_lastDealloc != NULL && _lastDealloc->blockSize() == bytes)
+	if(_lastDealloc != NULL && _lastDealloc->blockSize() == bytes)
 		_lastDealloc->deallocate(p) ;
 	else
 	{
@@ -304,43 +302,60 @@ void SmallObjectAllocator::printStatistics() const
 
 void *SmallObject::operator new(size_t size)
 {
-#ifdef DEBUG_MEMORY
-	bool print=false ;
+	void *p = NULL ;
+
+	if(size > MAX_SMALL_OBJECT_SIZE)
 	{
-		RsStackMutex m(_mtx) ;
-		static rstime_t last_time = 0 ;
-		rstime_t now = time(NULL) ;
-		if(now > last_time + 20)
-		{
-			last_time = now ;
-			print=true ;
-		}
+		p = RS_MALLOC(size) ;
 	}
-	if(print)
-		printStatistics() ;
+	else
+	{
+#ifdef DEBUG_MEMORY
+		bool print=false ;
+		{
+			RsStackMutex m(_mtx) ;
+			static rstime_t last_time = 0 ;
+			rstime_t now = time(NULL) ;
+			if(now > last_time + 20)
+			{
+				last_time = now ;
+				print=true ;
+			}
+		}
+		if(print)
+			printStatistics() ;
 #endif
 
-	RsStackMutex m(_mtx) ;
-    
-    	// This should normally not happen. But that prevents a crash when quitting, since we cannot prevent the constructor
-    	// of an object to call operator new(), nor to handle the case where it returns NULL.
-    	// The memory will therefore not be deleted if that happens. We thus print a warning.
-    
-    	if(_allocator._active)
-		return _allocator.allocate(size) ;
-	else
-        {
-            std::cerr << "(EE) allocating " << size << " bytes of memory that cannot be deleted. This is a bug, except if it happens when closing Retroshare" << std::endl;
-	    return RS_MALLOC(size) ;	
-        }
-        
+		RsStackMutex m(_mtx) ;
+
+		// This should normally not happen. But that prevents a crash when quitting, since we cannot prevent the constructor
+		// of an object to call operator new(), nor to handle the case where it returns NULL.
+		// The memory will therefore not be deleted if that happens. we thus print a warning.
+
+		if(_allocator._active)
+			p = _allocator.allocate(size) ;
+		else
+		{
+			std::cerr << "(EE) allocating " << size << " bytes of memory that cannot be deleted. This is a bug, except if it happens when closing Retroshare" << std::endl;
+			p = RS_MALLOC(size) ;
+		}
+	}
+
 #ifdef DEBUG_MEMORY
 	std::cerr << "new RsItem: " << p << ", size=" << size << std::endl;
 #endif
+
+	return p ;
 }
 
 void SmallObject::operator delete(void *p,size_t size)
 {
+	if(size > MAX_SMALL_OBJECT_SIZE)
+	{
+		RS_FREE(p) ;
+		return ;
+	}
+
 	RsStackMutex m(_mtx) ;
 
 	if(!_allocator._active)
