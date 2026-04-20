@@ -190,7 +190,7 @@ def processFile(file):
 				orderedParamNames.append(pName)
 
 			for tmpPN in memberdef.findall('.//parametername'):
-				tmpParam = paramsMap[tmpPN.text]
+				tmpParam = paramsMap[getText(tmpPN)]
 				tmpD = tmpPN.attrib['direction'] if 'direction' in tmpPN.attrib else ''
 
 				if 'in' in tmpD:
