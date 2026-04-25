@@ -1115,6 +1115,9 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 
     if(idValidate)
 	{
+        if (mServType == RS_SERVICE_GXS_TYPE_GXSID)
+             return VALIDATE_SUCCESS;
+
 		// Validate admin signature
 		RsTlvSecurityKeySet keys = metaData.keys;
 		GxsSecurity::createPublicKeysFromPrivateKeys(keys);
