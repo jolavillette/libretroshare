@@ -484,25 +484,18 @@ void p3GRouter::handleLowLevelTransactionChunkItem(RsGRouterTransactionChunkItem
 
 void p3GRouter::handleLowLevelTransactionAckItem(RsGRouterTransactionAcknItem *trans_ack_item)
 {
-#ifdef GROUTER_DEBUG
-    std::cerr << "  item is a transaction ACK." << std::endl;
-#endif
     RS_STACK_MUTEX(grMtx) ;
 
     std::map<GRouterMsgPropagationId, GRouterRoutingInfo>::iterator it=_pending_messages.find(trans_ack_item->propagation_id) ;
 
     if(it != _pending_messages.end() && it->second.data_status == RS_GROUTER_DATA_STATUS_ONGOING)
     {
+        RsDbg() << "EMAIL: Received Transaction ACK for message " << std::hex << trans_ack_item->propagation_id << std::dec << " via friend/tunnel " << trans_ack_item->PeerId() << ". Setting status to SENT." << std::endl;
         it->second.data_status = RS_GROUTER_DATA_STATUS_SENT;
         it->second.last_sent_TS = time(NULL) ;
-#ifdef GROUTER_DEBUG
-        std::cerr << "  setting new status as sent/awaiting receipt." << std::endl;
-#endif
     }
-#ifdef GROUTER_DEBUG
     else
-        std::cerr << "  Note: no routing ID corresponds to this ACK item. This probably corresponds to a signed receipt" << std::endl;
-#endif
+        RsDbg() << "EMAIL: Received Transaction ACK but no corresponding pending message found (id=" << std::hex << trans_ack_item->propagation_id << std::dec << ")" << std::endl;
 }
 
 void p3GRouter::receiveTurtleData(const RsTurtleGenericTunnelItem *gitem, const RsFileHash & hash, const RsPeerId &virtual_peer_id, RsTurtleGenericTunnelItem::Direction direction)
@@ -925,10 +918,6 @@ void p3GRouter::routePendingObjects()
     rstime_t now = time(NULL) ;
 
     RS_STACK_MUTEX(grMtx) ;
-#ifdef GROUTER_DEBUG
-    if(!_pending_messages.empty())
-        std::cerr << "p3GRouter::routePendingObjects()" << std::endl;
-#endif
     bool pending_messages_changed = false ;
 
     for(std::map<GRouterMsgPropagationId, GRouterRoutingInfo>::iterator it=_pending_messages.begin();it!=_pending_messages.end();++it)
@@ -947,9 +936,7 @@ void p3GRouter::routePendingObjects()
 
             if(!peers_and_duplication_factors.empty())
 	    {
-#ifdef GROUTER_DEBUG
-		std::cerr << "  tunnels available! sending!" << std::endl;
-#endif
+		RsDbg() << "EMAIL: tunnels available! sending!" << std::endl;
 		    locked_sendToPeers(it->second.data_item,peers_and_duplication_factors) ;
 
 		    // change item state in waiting list
@@ -966,9 +953,7 @@ void p3GRouter::routePendingObjects()
 
             if(!peers_and_duplication_factors.empty())
 	    {
-#ifdef GROUTER_DEBUG
-		std::cerr << "  friends available! sending!" << std::endl;
-#endif
+		RsDbg() << "EMAIL: friends available! sending!" << std::endl;
 		    locked_sendToPeers(it->second.data_item,peers_and_duplication_factors) ;
 
 		    // change item state in waiting list
@@ -986,9 +971,7 @@ void p3GRouter::routePendingObjects()
 
                 if(it->second.received_time_TS + DIRECT_FRIEND_TRY_DELAY < now && !(it->second.routing_flags & GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS))
                 {
-#ifdef GROUTER_DEBUG
-                    std::cerr << "  enabling tunnels for this message." << std::endl;
-#endif
+                    RsDbg() << "EMAIL: enabling tunnels for this message." << std::endl;
                     it->second.routing_flags |= GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS ;
                 }
             }
@@ -1003,22 +986,22 @@ void p3GRouter::routePendingObjects()
             it->second.data_status = RS_GROUTER_DATA_STATUS_PENDING ;
         }
         else if(it->second.data_status == RS_GROUTER_DATA_STATUS_SENT)
-        {
             if( (it->second.routing_flags & GRouterRoutingInfo::ROUTING_FLAGS_IS_ORIGIN) && it->second.last_sent_TS + MAX_DELAY_FOR_RESEND < now)
             {
-#ifdef GROUTER_DEBUG
-                std::cerr << "  item was not received. Re-setting status to PENDING" << std::endl;
-#endif
-                it->second.data_status = RS_GROUTER_DATA_STATUS_PENDING ;
+                if (it->second.data_status != RS_GROUTER_DATA_STATUS_PENDING)
+                {
+                    RsDbg() << "EMAIL: item was not received. Re-setting status to PENDING" << std::endl;
+                    it->second.data_status = RS_GROUTER_DATA_STATUS_PENDING ;
+                }
             }
             else
             {
-#ifdef GROUTER_DEBUG
-                std::cerr << "  item was sent. Desactivating tunnels." << std::endl;
-#endif
-                it->second.routing_flags &= ~GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS ;
+                if (it->second.routing_flags & GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS)
+                {
+                    RsDbg() << "EMAIL: item was sent. Desactivating tunnels." << std::endl;
+                    it->second.routing_flags &= ~GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS ;
+                }
             }
-        }
 
         // We treat this case apart, so as to make sure that receipt items are always forwarded wen possible even if the data_status
         // is not set correctly.
@@ -1554,6 +1537,9 @@ void p3GRouter::handleIncomingItem(const RsGRouterAbstractMsgItem *item)
 
 void p3GRouter::handleIncomingReceiptItem(const RsGRouterSignedReceiptItem *receipt_item)
 {
+    RsDbg() << "EMAIL: handleIncomingReceiptItem() from peer " << receipt_item->PeerId() << std::endl;
+    RsDbg() << "EMAIL:   routing_id : " << std::hex << receipt_item->routing_id << std::dec << std::endl;
+    RsDbg() << "EMAIL:   destination: " << receipt_item->destination_key << std::endl;
     bool changed = false ;
 #ifdef GROUTER_DEBUG
     std::cerr << "Handling incoming signed receipt item." << std::endl;
