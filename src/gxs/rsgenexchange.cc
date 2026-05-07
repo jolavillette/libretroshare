@@ -1062,9 +1062,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 
 		    if(haveKey)
 		    {
-#ifdef GEN_EXCH_DEBUG
-			    std::cerr << "  have ID key in cache: yes" << std::endl;
-#endif
+			    RsDbg() << "GXSSYNC: Author key " << metaData.mAuthorId << " found in GXS identity cache." ;
 
 			    RsTlvPublicRSAKey authorKey;
 			    bool auth_key_fetched = mGixs->getKey(metaData.mAuthorId, authorKey) ;
@@ -1080,7 +1078,9 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 #endif
 					mGixs->timeStampKey(metaData.mAuthorId,RsIdentityUsage(RsServiceType(mServType),RsIdentityUsage::GROUP_AUTHOR_SIGNATURE_VALIDATION,metaData.mGroupId));
 					if (!idValidate) {
-						RsDbg() << "GXSSYNC: validateGrp failed for forum " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author signature validation failed." ;
+						RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author signature validation failed." ;
+					} else {
+						RsDbg() << "GXSSYNC: Author signature successfully validated using key ID: " << metaData.mAuthorId ;
 					}
 			    }
 			    else
@@ -1089,7 +1089,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 				    std::cerr << " ERROR Cannot Retrieve AUTHOR KEY for Group Sign Validation";
 				    std::cerr << std::endl;
 				    idValidate = false;
-				    RsDbg() << "GXSSYNC: validateGrp failed for forum " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " is in cache but could not be fetched." ;
+				    RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " is in cache but could not be fetched." ;
 			    }
 
 		    }else
@@ -1101,7 +1101,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 			    std::list<RsPeerId> peers;
 			    peers.push_back(grp->PeerId());
 			    mGixs->requestKey(metaData.mAuthorId, peers,RsIdentityUsage(RsServiceType(mServType),RsIdentityUsage::GROUP_AUTHOR_SIGNATURE_VALIDATION,metaData.mGroupId));
-			    RsDbg() << "GXSSYNC: validateGrp returned VALIDATE_FAIL_TRY_LATER for forum " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " not found in GXS identity cache. Requested key from peer " << grp->PeerId() ;
+			    RsDbg() << "GXSSYNC: validateGrp returned VALIDATE_FAIL_TRY_LATER for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " not found in GXS identity cache. Requested key from peer " << grp->PeerId() ;
 			    return VALIDATE_FAIL_TRY_LATER;
 		    }
 	    }
@@ -1111,7 +1111,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 		    std::cerr << "  (EE) Gixs not enabled while request identity signature validation!" << std::endl;
 #endif
 		    idValidate = false;
-		    RsDbg() << "GXSSYNC: validateGrp failed for forum " << metaData.mGroupName << " (" << grp->grpId << "). Reason: GIXS (identity service) not enabled." ;
+		    RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: GIXS (identity service) not enabled." ;
 	    }
     }
     else
@@ -1134,7 +1134,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 			std::cerr << "RsGenExchange::validateGrp() admin sign not found! " << std::endl;
 			std::cerr << "RsGenExchange::validateGrp() grpId: " << metaData.mGroupId << std::endl;
 #endif
-			RsDbg() << "GXSSYNC: validateGrp failed for forum " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature not found in group metadata." ;
+			RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature not found in group metadata." ;
 			return VALIDATE_FAIL;
 		}
 		
@@ -1147,22 +1147,36 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 			admin_validated = GxsSecurity::validateNxsGrp(*grp, adminSign, keyMit->second);
 			if (admin_validated) {
 				RsDbg() << "GXSSYNC: Admin signature successfully validated using main key ID " << metaData.mGroupId ;
+			} else {
+				RsDbg() << "GXSSYNC: Main key " << metaData.mGroupId << " found but signature validation failed." ;
 			}
+		}
+		else
+		{
+			RsDbg() << "GXSSYNC: Main key " << metaData.mGroupId << " not found in group public_keys map." ;
 		}
 		
 		if (!admin_validated)
 		{
-			RsDbg() << "GXSSYNC: Main key " << metaData.mGroupId << " not found or failed validation. Trying fallback keys in public_keys map..." ;
+			RsDbg() << "GXSSYNC: Trying fallback keys in public_keys map..." ;
 			for (const auto& pair : public_keys)
 			{
 				if (!(pair.second.keyFlags & RSTLV_KEY_DISTRIB_ADMIN))
+				{
+					RsDbg() << "GXSSYNC: Fallback key " << pair.first << " skipped (not an ADMIN key)." ;
 					continue;
+				}
 
+				RsDbg() << "GXSSYNC: Trying fallback key " << pair.first << "..." ;
 				if (GxsSecurity::validateNxsGrp(*grp, adminSign, pair.second))
 				{
 					RsDbg() << "GXSSYNC: Admin signature successfully validated using fallback key ID: " << pair.first ;
 					admin_validated = true;
 					break;
+				}
+				else
+				{
+					RsDbg() << "GXSSYNC: Fallback key " << pair.first << " failed signature validation." ;
 				}
 			}
 		}
@@ -1180,16 +1194,16 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 				oss << "), ";
 			}
 			oss << "]";
-			RsDbg() << "GXSSYNC: validateGrp failed for forum " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature validation failed for all keys. " << oss.str() ;
+			RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature validation failed for all keys. " << oss.str() ;
 			return VALIDATE_FAIL;
 		}
 		
-		RsDbg() << "GXSSYNC: validateGrp SUCCEEDED for forum " << metaData.mGroupName << " (" << grp->grpId << "). Returning VALIDATE_SUCCESS." ;
+		RsDbg() << "GXSSYNC: validateGrp SUCCEEDED for group " << metaData.mGroupName << " (" << grp->grpId << "). Returning VALIDATE_SUCCESS." ;
 	    return VALIDATE_SUCCESS;
 	}
     else
 	{
-		RsDbg() << "GXSSYNC: validateGrp failed for forum " << metaData.mGroupName << " (" << grp->grpId << "). Reason: idValidate was false." ;
+		RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: idValidate was false." ;
 	    return VALIDATE_FAIL;
 	}
 }
