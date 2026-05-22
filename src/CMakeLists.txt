@@ -250,11 +250,13 @@ else()
 	list(APPEND RS_IMPLEMENTATION_HEADERS pgp/openpgpsdkhandler.h)
 endif()
 
-#./plugins/dlfcn_win32.cc
-#./plugins/dlfcn_win32.h
-#./plugins/pluginmanager.h
 #./plugins/rscacheservice.h
 #./plugins/rspqiservice.h
+
+if(WIN32)
+	list(APPEND RS_SOURCES plugins/dlfcn_win32.cc)
+	list(APPEND RS_IMPLEMENTATION_HEADERS plugins/dlfcn_win32.h)
+endif()
 
 list(
 	APPEND RS_SOURCES
@@ -617,13 +619,12 @@ list(
 	util/rsnet.cc
 	util/rsnet_ss.cc
 	util/rsstacktrace.cc
-	util/rsthreads.cc )
-
-# util/i2pcommon.cpp
-# util/i2pcommon.h
+	util/rsthreads.cc
+	util/i2pcommon.cpp )
 
 list(
 	APPEND RS_IMPLEMENTATION_HEADERS
+	util/i2pcommon.h
 	util/argstream.h
 	util/contentvalue.h
 	util/cxx11retrocompat.h
@@ -677,13 +678,18 @@ list(
 if(RS_FORUM_DEEP_INDEX)
 	list(
 		APPEND RS_SOURCES
-		deep_search/commonutils.cpp
-		deep_search/forumsindex.cpp )
+		deep_search/commonutils.cpp )
 
 	list(
 		APPEND RS_IMPLEMENTATION_HEADERS
-		deep_search/commonutils.hpp
-		deep_search/forumsindex.hpp )
+		deep_search/commonutils.hpp )
+
+	list(
+		APPEND RS_SOURCES
+		deep_search/forumsindex_fts5.cpp )
+	list(
+		APPEND RS_IMPLEMENTATION_HEADERS
+		deep_search/forumsindex_fts5.hpp )
 endif(RS_FORUM_DEEP_INDEX)
 
 

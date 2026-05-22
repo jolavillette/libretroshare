@@ -101,7 +101,7 @@ cmake_dependent_option(
 option(
 	RS_WARN_DEPRECATED
 	"Print warning about RetroShare deprecated components usage during build"
-	ON )
+	OFF )
 
 option(
 	RS_WARN_LESS
@@ -245,6 +245,19 @@ else()
 	set_property(TARGET ${PROJECT_NAME} PROPERTY CXX_STANDARD 17)
 endif()
 
+if(WIN32)
+	target_compile_definitions(
+		${PROJECT_NAME} PUBLIC
+		WINDOWS_SYS
+		UNICODE
+		_UNICODE
+		NOGDI
+		NOMINMAX
+		NOCRYPT
+		WIN_DLL_EXPORT )
+	target_link_libraries(${PROJECT_NAME} PUBLIC ws2_32)
+endif()
+
 ## As of today libretroshare doesn't hide implementation details properly so it
 ## is necessary to flag all implementation headers as public
 target_include_directories(
@@ -297,21 +310,27 @@ target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
 ################################################################################
 
 if(RS_RNPLIB)
+	find_library(BOTAN_LIBRARY NAMES botan botan-3 botan-2 libbotan-3 libbotan-2 REQUIRED)
+
 	# Add RNP build directories to linker search path
-	target_link_directories(${PROJECT_NAME} PRIVATE
-		${CMAKE_CURRENT_BINARY_DIR}/../supportlibs/librnp/Build/src/lib
-		${CMAKE_CURRENT_BINARY_DIR}/../supportlibs/librnp/Build/src/libsexpp
+	target_link_directories(${PROJECT_NAME} PUBLIC
+		${CMAKE_CURRENT_SOURCE_DIR}/../supportlibs/librnp/Build/src/lib
+		${CMAKE_CURRENT_SOURCE_DIR}/../supportlibs/librnp/Build/src/libsexpp
 	)
 
 	# Link libraries by name, including RNP libs and dependencies first
-	target_link_libraries(${PROJECT_NAME} PRIVATE
+	target_link_libraries(${PROJECT_NAME} PUBLIC
 		rnp             # Link by name
 		sexpp
+		${BOTAN_LIBRARY}
+		json-c
+		bz2
+		z
 	)
 
 	target_include_directories(${PROJECT_NAME} PUBLIC
 		"${CMAKE_CURRENT_SOURCE_DIR}/../supportlibs/librnp/include"
-		"${CMAKE_CURRENT_BINARY_DIR}/../supportlibs/librnp/Build/src/lib"
+		"${CMAKE_CURRENT_SOURCE_DIR}/../supportlibs/librnp/Build/src/lib"
 	)
 else()
 
@@ -430,19 +449,21 @@ if(RS_JSON_API)
 		JSONAPI_GENERATOR_EXECUTABLE
 		"${JSONAPI_GENERATOR_SOURCE_DIR}/jsonapi-generator.py" )
 
-	file(
-		COPY "src/jsonapi/jsonapi-generator-doxygen.conf"
-		DESTINATION "${JSON_API_GENERATOR_WORK_DIR}" )
+	if(NOT EXISTS "${JSON_API_GENERATOR_DOXYFILE}")
+		file(
+			COPY "src/jsonapi/jsonapi-generator-doxygen.conf"
+			DESTINATION "${JSON_API_GENERATOR_WORK_DIR}" )
 
-	file(
-		APPEND
-		"${JSON_API_GENERATOR_DOXYFILE}"
-		"OUTPUT_DIRECTORY=${JSONAPI_GENERATOR_OUTPUT_DIR}\n"
-		"INPUT=${CMAKE_CURRENT_SOURCE_DIR}/src/\n"
-		"EXCLUDE="
-		"	${CMAKE_CURRENT_SOURCE_DIR}/src/tests"
-		"	${CMAKE_CURRENT_SOURCE_DIR}/src/unused"
-		"	${CMAKE_CURRENT_SOURCE_DIR}/src/unfinished\n" )
+		file(
+			APPEND
+			"${JSON_API_GENERATOR_DOXYFILE}"
+			"OUTPUT_DIRECTORY=${JSONAPI_GENERATOR_OUTPUT_DIR}\n"
+			"INPUT=${CMAKE_CURRENT_SOURCE_DIR}/src/\n"
+			"EXCLUDE="
+			"	${CMAKE_CURRENT_SOURCE_DIR}/src/tests"
+			"	${CMAKE_CURRENT_SOURCE_DIR}/src/unused"
+			"	${CMAKE_CURRENT_SOURCE_DIR}/src/unfinished\n" )
+	endif()
 
 	add_custom_command(
 		OUTPUT
@@ -465,6 +486,8 @@ if(RS_JSON_API)
 
 	set(BUILD_TESTS OFF CACHE BOOL "Do not build restbed tests")
 	set(BUILD_SSL OFF CACHE BOOL "Do not build restbed SSL support")
+	set(BUILD_SHARED_LIBRARY OFF)
+	set(BUILD_SHARED_LIBS OFF)
 
 	set(RESTBED_DEVEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../supportlibs/restbed/")
 	if(RS_ANDROID)
@@ -473,7 +496,10 @@ if(RS_JSON_API)
 		## should be sent upstream.
 		## Restbed is therefore compiled by Android toolchain preparation script
 		target_link_libraries(${PROJECT_NAME} PRIVATE restbed)
-	elseif(EXISTS "${RESTBED_DEVEL_DIR}/CMakeLists.txt")
+	elseif(NOT WIN32 AND EXISTS "${RESTBED_DEVEL_DIR}/CMakeLists.txt")
+		## On Windows, skip the local submodule: recent restbed HEAD requires
+		## system ASIO (not available by default on MSYS2/MinGW). Fall through
+		## to FetchContent which downloads restbed 4.8 with bundled ASIO.
 		message( STATUS
 		         "Restbed submodule found at ${RESTBED_DEVEL_DIR} using it" )
 		add_subdirectory(
@@ -484,9 +510,9 @@ if(RS_JSON_API)
 		# dependencies see https://stackoverflow.com/a/64900982
 
 		target_include_directories(
-			${PROJECT_NAME} PRIVATE "${RESTBED_DEVEL_DIR}/source/" )
+			${PROJECT_NAME} PUBLIC "${RESTBED_DEVEL_DIR}/source/" )
 		target_link_directories(${PROJECT_NAME} PUBLIC "${CMAKE_CURRENT_BINARY_DIR}/../supportlibs/restbed")
-		target_link_libraries(${PROJECT_NAME} PRIVATE restbed)
+		target_link_libraries(${PROJECT_NAME} PRIVATE restbed-static)
 	else()
 		message( WARNING
 		         "FetchContent restbed, will be installed if you run make install")
@@ -498,13 +524,20 @@ if(RS_JSON_API)
 			GIT_SHALLOW TRUE
 			GIT_PROGRESS TRUE
 			TIMEOUT 10
-#			EXCLUDE_FROM_ALL # Available only in CMake >= 3.28
+			PATCH_COMMAND sed -i -e "s|/wd4251||g" -e "s|VERSION 3.1.0|VERSION 3.5.0|g" CMakeLists.txt
 		)
 		FetchContent_MakeAvailable(restbed)
 
+		if(TARGET restbed-shared)
+			set_target_properties(restbed-shared PROPERTIES EXCLUDE_FROM_ALL TRUE)
+		endif()
+
 		target_include_directories(
-			${PROJECT_NAME} PRIVATE ${restbed_SOURCE_DIR}/source/ )
+			${PROJECT_NAME} PUBLIC ${restbed_SOURCE_DIR}/source/ )
 		target_link_libraries(${PROJECT_NAME} PRIVATE restbed-static)
+		if(WIN32)
+			target_link_libraries(restbed-static INTERFACE ws2_32 winmm iphlpapi mswsock)
+		endif()
 	endif()
 
 
@@ -619,7 +652,7 @@ if(RS_BRODCAST_DISCOVERY)
 endif(RS_BRODCAST_DISCOVERY)
 
 if(NOT RS_WARN_DEPRECATED)
-	target_compile_definitions(${PROJECT_NAME} PRIVATE RS_NO_WARN_DEPRECATED)
+	target_compile_definitions(${PROJECT_NAME} PUBLIC RS_NO_WARN_DEPRECATED)
 	target_compile_options(
 		${PROJECT_NAME} PRIVATE
 		-Wno-deprecated -Wno-deprecated-declarations )
@@ -676,8 +709,6 @@ endif(RS_ANDROID)
 
 ################################################################################
 
-set( CMAKE_CXX_FLAGS "-Wno-deprecated-declarations" )
-target_compile_definitions(${PROJECT_NAME} PUBLIC RS_NO_WARN_DEPRECATED )
 
 set(V_VERSION_SET OFF)
 
@@ -690,9 +721,14 @@ else()
 	set(V_GIT_DESCRIBE_OUTPUT "")
 	set(V_GIT_DESCRIBE_REGEXP "^v([0-9]+).([0-9]+).([0-9]+)(.*)\n$")
 
+	set(V_GIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/../.git")
+		set(V_GIT_DIR "${CMAKE_CURRENT_SOURCE_DIR}/..")
+	endif()
+
 	execute_process(
 		COMMAND ${GIT_EXECUTABLE} describe --tags --long --match v*.*.*
-		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+		WORKING_DIRECTORY "${V_GIT_DIR}"
 		OUTPUT_VARIABLE V_GIT_DESCRIBE_OUTPUT )
 
 	if(V_GIT_DESCRIBE_OUTPUT MATCHES "${V_GIT_DESCRIBE_REGEXP}")
@@ -721,6 +757,22 @@ if(V_VERSION_SET)
 		PUBLIC RS_EXTRA_VERSION="${RS_EXTRA_VERSION}" )
 endif(V_VERSION_SET)
 
+# Define the libretroshare specific version hash (submodule hash)
+set(V_LIB_GIT_HASH "")
+execute_process(
+	COMMAND ${GIT_EXECUTABLE} describe --tags --abbrev=7 --always --dirty
+	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+	OUTPUT_VARIABLE V_LIB_GIT_HASH
+	OUTPUT_STRIP_TRAILING_WHITESPACE )
+
+if(V_LIB_GIT_HASH STREQUAL "")
+	set(V_LIB_GIT_HASH "[version not available]")
+endif()
+
+target_compile_definitions(
+	${PROJECT_NAME}
+	PUBLIC RS_LIB_VERSION_HASH="${V_LIB_GIT_HASH}" )
+
 ################################################################################
 
 # TODO: Use generator expressions instead of CMAKE_BUILD_TYPE see
@@ -735,7 +787,7 @@ if(RS_ANDROID AND CMAKE_BUILD_TYPE STREQUAL "Release")
 	set_property(TARGET ${PROJECT_NAME} PROPERTY VISIBILITY_INLINES_HIDDEN ON)
 endif()
 
-if(CMAKE_BUILD_TYPE STREQUAL "Release")
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT WIN32)
 	set_property(TARGET ${PROJECT_NAME} PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 
@@ -755,3 +807,4 @@ if(RS_CPPTRACE_STACKTRACE)
     target_compile_definitions(
         ${LIBRARY_NAME} PRIVATE RS_JEREMY_RIFKIN_CPPTRACE )
 endif(RS_CPPTRACE_STACKTRACE)
+
