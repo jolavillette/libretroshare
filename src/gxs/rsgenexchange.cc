@@ -30,6 +30,7 @@
 #include "util/contentvalue.h"
 #include "util/rsprint.h"
 #include "util/rstime.h"
+#include "util/rsdebug.h"
 #include "retroshare/rsgxsflags.h"
 #include "retroshare/rsgxscircles.h"
 #include "retroshare/rsgrouter.h"
@@ -72,6 +73,8 @@ static const uint32_t INTEGRITY_CHECK_PERIOD = 60*31; // 31 minutes
 /*
  *  #define GEN_EXCH_DEBUG	1
  */
+
+//#define GXSPROFILING
 
 #if defined(GEN_EXCH_DEBUG)
 static const uint32_t service_to_print  = RS_SERVICE_GXS_TYPE_FORUMS;// use this to allow to this service id only, or 0 for all services
@@ -1062,9 +1065,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 
 		    if(haveKey)
 		    {
-#ifdef GEN_EXCH_DEBUG
-			    std::cerr << "  have ID key in cache: yes" << std::endl;
-#endif
+			    RsDbg() << "GXSSYNC: Author key " << metaData.mAuthorId << " found in GXS identity cache." ;
 
 			    RsTlvPublicRSAKey authorKey;
 			    bool auth_key_fetched = mGixs->getKey(metaData.mAuthorId, authorKey) ;
@@ -1079,6 +1080,11 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 				    std::cerr << "  key ID validation result: " << idValidate << std::endl;
 #endif
 					mGixs->timeStampKey(metaData.mAuthorId,RsIdentityUsage(RsServiceType(mServType),RsIdentityUsage::GROUP_AUTHOR_SIGNATURE_VALIDATION,metaData.mGroupId));
+					if (!idValidate) {
+						RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author signature validation failed." ;
+					} else {
+						RsDbg() << "GXSSYNC: Author signature successfully validated using key ID: " << metaData.mAuthorId ;
+					}
 			    }
 			    else
 			    {
@@ -1086,6 +1092,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 				    std::cerr << " ERROR Cannot Retrieve AUTHOR KEY for Group Sign Validation";
 				    std::cerr << std::endl;
 				    idValidate = false;
+				    RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " is in cache but could not be fetched." ;
 			    }
 
 		    }else
@@ -1097,6 +1104,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 			    std::list<RsPeerId> peers;
 			    peers.push_back(grp->PeerId());
 			    mGixs->requestKey(metaData.mAuthorId, peers,RsIdentityUsage(RsServiceType(mServType),RsIdentityUsage::GROUP_AUTHOR_SIGNATURE_VALIDATION,metaData.mGroupId));
+			    RsDbg() << "GXSSYNC: validateGrp returned VALIDATE_FAIL_TRY_LATER for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " not found in GXS identity cache. Requested key from peer " << grp->PeerId() ;
 			    return VALIDATE_FAIL_TRY_LATER;
 		    }
 	    }
@@ -1106,6 +1114,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 		    std::cerr << "  (EE) Gixs not enabled while request identity signature validation!" << std::endl;
 #endif
 		    idValidate = false;
+		    RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: GIXS (identity service) not enabled." ;
 	    }
     }
     else
@@ -1119,16 +1128,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 		RsTlvSecurityKeySet keys = metaData.keys;
 		GxsSecurity::createPublicKeysFromPrivateKeys(keys);
 		std::map<RsGxsId, RsTlvPublicRSAKey>& public_keys = keys.public_keys;
-		std::map<RsGxsId, RsTlvPublicRSAKey>::iterator keyMit = public_keys.find(RsGxsId(metaData.mGroupId));
-	
-		if(keyMit == public_keys.end())
-		{
-#ifdef GEN_EXCH_DEBUG
-			std::cerr << "RsGenExchange::validateGrp() admin key not found! " << std::endl;
-#endif
-			return VALIDATE_FAIL;
-		}
-	
+		
 		std::map<SignType, RsTlvKeySignature>& signSet = metaData.signSet.keySignSet;
 		std::map<SignType, RsTlvKeySignature>::iterator mit = signSet.find(INDEX_AUTHEN_ADMIN);
 		if(mit == signSet.end())
@@ -1137,17 +1137,76 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 			std::cerr << "RsGenExchange::validateGrp() admin sign not found! " << std::endl;
 			std::cerr << "RsGenExchange::validateGrp() grpId: " << metaData.mGroupId << std::endl;
 #endif
+			RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature not found in group metadata." ;
 			return VALIDATE_FAIL;
 		}
+		
 		RsTlvKeySignature adminSign = mit->second;
-		if (!GxsSecurity::validateNxsGrp(*grp, adminSign, keyMit->second))
+		bool admin_validated = false;
+		
+		std::map<RsGxsId, RsTlvPublicRSAKey>::iterator keyMit = public_keys.find(RsGxsId(metaData.mGroupId));
+		if (keyMit != public_keys.end())
 		{
+			admin_validated = GxsSecurity::validateNxsGrp(*grp, adminSign, keyMit->second);
+			if (admin_validated) {
+				RsDbg() << "GXSSYNC: Admin signature successfully validated using main key ID " << metaData.mGroupId ;
+			} else {
+				RsDbg() << "GXSSYNC: Main key " << metaData.mGroupId << " found but signature validation failed." ;
+			}
+		}
+		else
+		{
+			RsDbg() << "GXSSYNC: Main key " << metaData.mGroupId << " not found in group public_keys map." ;
+		}
+		
+		if (!admin_validated)
+		{
+			RsDbg() << "GXSSYNC: Trying fallback keys in public_keys map..." ;
+			for (const auto& pair : public_keys)
+			{
+				if (!(pair.second.keyFlags & RSTLV_KEY_DISTRIB_ADMIN))
+				{
+					RsDbg() << "GXSSYNC: Fallback key " << pair.first << " skipped (not an ADMIN key)." ;
+					continue;
+				}
+
+				RsDbg() << "GXSSYNC: Trying fallback key " << pair.first << "..." ;
+				if (GxsSecurity::validateNxsGrp(*grp, adminSign, pair.second))
+				{
+					RsDbg() << "GXSSYNC: Admin signature successfully validated using fallback key ID: " << pair.first ;
+					admin_validated = true;
+					break;
+				}
+				else
+				{
+					RsDbg() << "GXSSYNC: Fallback key " << pair.first << " failed signature validation." ;
+				}
+			}
+		}
+
+		if (!admin_validated)
+		{
+			std::ostringstream oss;
+			oss << "Keys in group: [";
+			for (const auto& pair : public_keys) {
+				oss << pair.first << " (flags=0x" << std::hex << pair.second.keyFlags << std::dec;
+				if (pair.second.keyFlags & RSTLV_KEY_DISTRIB_ADMIN)
+					oss << " ADMIN";
+				if (pair.second.keyFlags & RSTLV_KEY_DISTRIB_PUBLISH)
+					oss << " PUBLISH";
+				oss << "), ";
+			}
+			oss << "]";
+			RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature validation failed for all keys. " << oss.str() ;
 			return VALIDATE_FAIL;
 		}
+		
+		RsDbg() << "GXSSYNC: validateGrp SUCCEEDED for group " << metaData.mGroupName << " (" << grp->grpId << "). Returning VALIDATE_SUCCESS." ;
 	    return VALIDATE_SUCCESS;
 	}
     else
 	{
+		RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: idValidate was false." ;
 	    return VALIDATE_FAIL;
 	}
 }
@@ -1569,22 +1628,34 @@ bool RsGenExchange::getGroupData(const uint32_t &token, std::vector<RsGxsGrpItem
 
 bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 {
+#ifdef GXSPROFILING
+    // [TRACE] Start CPU/Deserialization timer
+    auto start_time = std::chrono::steady_clock::now();
+#endif
 	RS_STACK_MUTEX(mGenMtx) ;
 	NxsMsgDataResult msgResult;
 	bool ok = mDataAccess->getMsgData(token, msgResult);
 
 	if(ok)
 	{
+		uint32_t count = 0;
 		NxsMsgDataResult::iterator mit = msgResult.begin();
 		for(; mit != msgResult.end(); ++mit)
 		{
 			const RsGxsGroupId& grpId = mit->first;
 			std::vector<RsGxsMsgItem*>& gxsMsgItems = msgItems[grpId];
 			std::vector<RsNxsMsg*>& nxsMsgsV = mit->second;
-			std::vector<RsNxsMsg*>::iterator vit = nxsMsgsV.begin();
-			for(; vit != nxsMsgsV.end(); ++vit)
+			
+			// Pre-allocate a temporary vector for results to avoid locking in the parallel loop
+			std::vector<RsGxsMsgItem*> tempItems(nxsMsgsV.size(), nullptr);
+
+			// THREAD-SAFETY NOTE: This OMP loop performs in-memory deserialization only.
+			// The SQLite/SQLCipher query has already completed above (getMsgData).
+			// The serialiser (mSerialiser) must remain stateless/re-entrant for this to be safe.
+			#pragma omp parallel for
+			for(size_t i = 0; i < nxsMsgsV.size(); ++i)
 			{
-				RsNxsMsg*& msg = *vit;
+				RsNxsMsg* msg = nxsMsgsV[i];
 				RsItem* item = NULL;
 
 				if(msg->msg.bin_len != 0)
@@ -1595,25 +1666,44 @@ bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 					RsGxsMsgItem* mItem = dynamic_cast<RsGxsMsgItem*>(item);
 					if (mItem)
 					{
-						mItem->meta = *((*vit)->metaData); // get meta info from nxs msg
-						gxsMsgItems.push_back(mItem);
+						mItem->meta = *(msg->metaData); // get meta info from nxs msg
+						tempItems[i] = mItem;
 					}
 					else
 					{
-						std::cerr << "RsGenExchange::getMsgData() deserialisation/dynamic_cast ERROR";
-						std::cerr << std::endl;
+						// Should almost never happen if serializer is correct
 						delete item;
 					}
 				}
 				else
 				{
-					std::cerr << "RsGenExchange::getMsgData() deserialisation ERROR";
-					std::cerr << std::endl;
+                    // Deserialization failed (corrupt data?)
+					// std::cerr << "RsGenExchange::getMsgData() deserialisation ERROR" << std::endl;
 				}
-				delete msg;
+				delete msg; 
+			}
+
+			// Serial merge of successful items
+			for(size_t i = 0; i < tempItems.size(); ++i) {
+				if(tempItems[i]) {
+					gxsMsgItems.push_back(tempItems[i]);
+					count++;
+				}
 			}
 		}
+		// [TRACE] Log the number of items processed
+#ifdef GXSPROFILING
+		RsDbg() << "GXSPROFILING [GenExch]: Deserialized " << count << " items";
+#endif
 	}
+
+#ifdef GXSPROFILING
+    // [TRACE] End timer and log total processing time
+    auto end_time = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time).count();
+    RsDbg() << "GXSPROFILING [GenExch]: getMsgData (Token: " << token << ") total time: " << elapsed << "ms";
+#endif
+
 	return ok;
 }
 
