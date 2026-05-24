@@ -678,13 +678,18 @@ list(
 if(RS_FORUM_DEEP_INDEX)
 	list(
 		APPEND RS_SOURCES
-		deep_search/commonutils.cpp
-		deep_search/forumsindex.cpp )
+		deep_search/commonutils.cpp )
 
 	list(
 		APPEND RS_IMPLEMENTATION_HEADERS
-		deep_search/commonutils.hpp
-		deep_search/forumsindex.hpp )
+		deep_search/commonutils.hpp )
+
+	list(
+		APPEND RS_SOURCES
+		deep_search/forumsindex_fts5.cpp )
+	list(
+		APPEND RS_IMPLEMENTATION_HEADERS
+		deep_search/forumsindex_fts5.hpp )
 endif(RS_FORUM_DEEP_INDEX)
 
 
