@@ -440,6 +440,8 @@ int p3MsgService::checkOutgoingMessages()
                 {
                     if(to.toRsPeerId() == ownId || mServiceCtrl->isPeerConnected(getServiceInfo().mServiceType, to.toRsPeerId()) )
                     {
+                        RsDbg() << "MAIL: Node2Node - Peer is connected. Sending message ID " << mit->first
+                                << " directly to PeerId " << to.toRsPeerId() << std::endl;
 
                         auto msg_item = createOutgoingMessageItem(*sit->second,to);
 
@@ -463,6 +465,8 @@ int p3MsgService::checkOutgoingMessages()
                     }
                     else
                     {
+                        RsDbg() << "MAIL: Node2Node - Peer is NOT connected. Delaying delivery of message ID " << mit->first
+                                << " to PeerId " << to.toRsPeerId() << " until they go online" << std::endl;
 #ifdef DEBUG_DISTANT_MSG
                         Dbg3() << __PRETTY_FUNCTION__ << " Delaying until available..." << std::endl;
 #endif
@@ -2469,6 +2473,9 @@ void p3MsgService::notifyDataStatus( const GRouterMsgPropagationId& id,
 
         uint32_t msg_id = it->second;
 
+        RsDbg() << "MAIL: GRouter - Delivery failed for GRouter Msg ID " << id
+                << ". Message ID " << msg_id << " marked for re-sending." << std::endl;
+
         RsWarn() << __PRETTY_FUNCTION__ << " Global router tells "
                  << "us that item ID " << id
                  << " could not be delivered on time to " << signer_id << ". Message id: "
@@ -2512,6 +2519,9 @@ void p3MsgService::notifyDataStatus( const GRouterMsgPropagationId& id,
         }
 
         uint32_t msg_id = it->second;
+
+        RsDbg() << "MAIL: GRouter - Delivery receipt confirmed! Message ID " << msg_id
+                << " successfully delivered (receipt received via GRouter Msg ID " << id << ")" << std::endl;
 
         // We should now remove the item from the msgOutgoing list. msgOutgoing is indexed by the original msg, not its copy, so we need
         // a linear search. It's bad, but really doesn't happen very often.
@@ -2583,6 +2593,8 @@ bool p3MsgService::receiveGxsTransMail( const RsGxsId& authorId,
                                 const RsGxsId& recipientId,
                                 const uint8_t* data, uint32_t dataSize )
 {
+	RsDbg() << "MAIL: GxsTrans - Received incoming distant mail item of size " << dataSize
+	        << " from GxsId " << authorId << " destined to GxsId " << recipientId << std::endl;
 
 	Dbg2() << __PRETTY_FUNCTION__ << " " << authorId << ", " << recipientId
 	       << ",, " << dataSize << std::endl;
@@ -2593,6 +2605,7 @@ bool p3MsgService::receiveGxsTransMail( const RsGxsId& authorId,
 		RS_STACK_MUTEX(recentlyReceivedMutex);
 		if( mRecentlyReceivedMessageHashes.find(hash) != mRecentlyReceivedMessageHashes.end() )
 		{
+			RsDbg() << "MAIL: GxsTrans - Duplicate mail item ignored (hash already recently received)." << std::endl;
 			RsInfo() << __PRETTY_FUNCTION__ << " (II) receiving "
 			          << "message of hash " << hash << " more than once. "
 			          << "Probably it has arrived  before by other means."
@@ -2665,8 +2678,13 @@ bool p3MsgService::notifyGxsTransSendStatus( RsGxsTransId mailId,
     }
     std::cerr << " message id = " << msg_id << std::endl;
 
+    RsDbg() << "MAIL: GxsTrans - Received send status notification for transaction ID " << mailId
+            << ", status: " << static_cast<uint32_t>(status) << " (associated message ID " << msg_id << ")" << std::endl;
+
     if( status == GxsTransSendStatus::RECEIPT_RECEIVED )
     {
+        RsDbg() << "MAIL: GxsTrans - Delivery receipt confirmed! Message ID " << msg_id
+                << " successfully delivered (receipt received via GxsTrans ID " << mailId << ")" << std::endl;
         pEvent->mMailStatusEventCode = RsMailStatusEventCode::MESSAGE_RECEIVED_ACK;
 
         // We should now remove the item from the msgOutgoing list. msgOutgoing is indexed by the original msg, not its copy, so we need
@@ -2700,6 +2718,9 @@ bool p3MsgService::notifyGxsTransSendStatus( RsGxsTransId mailId,
     }
     else if( status >= GxsTransSendStatus::FAILED_RECEIPT_SIGNATURE )
     {
+        RsDbg() << "MAIL: GxsTrans - Delivery failed for transaction ID " << mailId
+                << " (status: " << static_cast<uint32_t>(status) << "). Message ID " << msg_id
+                << " marked for re-sending." << std::endl;
         pEvent->mMailStatusEventCode = RsMailStatusEventCode::SIGNATURE_FAILED;
 
         RS_STACK_MUTEX(mMsgMtx);
@@ -2740,6 +2761,8 @@ void p3MsgService::receiveGRouterData( const RsGxsId &destination_key,
                                        GRouterServiceId &/*client_id*/,
                                        uint8_t *data, uint32_t data_size )
 {
+	RsDbg() << "MAIL: GRouter - Received incoming data of size " << data_size
+	        << " destined to GxsId " << destination_key << " signed by GxsId " << signing_key << std::endl;
 
 	std::cerr << "p3MsgService::receiveGRouterData(): received message item of"
 	          << " size " << data_size << ", for key " << destination_key
@@ -2755,6 +2778,7 @@ void p3MsgService::receiveGRouterData( const RsGxsId &destination_key,
 		if( mRecentlyReceivedMessageHashes.find(hash) !=
 		        mRecentlyReceivedMessageHashes.end() )
 		{
+			RsDbg() << "MAIL: GRouter - Duplicate data item ignored (hash already recently received)." << std::endl;
 			std::cerr << "p3MsgService::receiveGRouterData(...) (II) receiving"
 			          << "distant message of hash " << hash << " more than once"
 			          << ". Probably it has arrived  before by other means."
@@ -2774,6 +2798,7 @@ void p3MsgService::receiveGRouterData( const RsGxsId &destination_key,
 
 	if(msg_item != NULL)
 	{
+		RsDbg() << "MAIL: GRouter - Successfully deserialized message item from GRouter." << std::endl;
 		std::cerr << "  Encrypted item correctly deserialised. Passing on to incoming list." << std::endl;
 
 		msg_item->msgFlags |= RS_MSG_FLAGS_DISTANT ;
@@ -2822,15 +2847,24 @@ void p3MsgService::locked_sendDistantMsgItem(RsMsgItem *msgitem,const RsGxsId& s
 	std::cerr << "  serialised size : " << msg_serialized_rssize << std::endl;
 #endif
 
+	RsDbg() << "MAIL: GxsTrans - Initiating dual dispatch for distant message ID " << msgId
+	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id << std::endl;
+
 	GRouterMsgPropagationId grouter_message_id;
 	mGRouter->sendData( destination_key_id, GROUTER_CLIENT_ID_MESSAGES,
 	                    msg_serialized_data, msg_serialized_rssize,
 	                    signing_key_id, grouter_message_id );
+	RsDbg() << "MAIL: GRouter - Dispatching message ID " << msgId
+	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id
+	        << " (assigned GRouter Msg ID " << grouter_message_id << ")" << std::endl;
 
 	RsGxsTransId gxsMailId;
 	mGxsTransServ.sendData( gxsMailId, GxsTransSubServices::P3_MSG_SERVICE,
 	                         signing_key_id, destination_key_id,
 	                         msg_serialized_data, msg_serialized_rssize );
+	RsDbg() << "MAIL: GxsTrans - Dispatching message ID " << msgId
+	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id
+	        << " (assigned GxsTrans ID " << gxsMailId << ")" << std::endl;
 
 	/* now store the grouter id along with the message id, so that we can keep
 	 * track of received messages */
