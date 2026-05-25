@@ -556,7 +556,13 @@ void p3GxsTrans::service_tick()
 
 			locked_processOutgoingRecord(pr);
 
-			if (oldStatus != pr.status) notifyClientService(pr);
+			if (oldStatus != pr.status)
+			{
+				RsDbg() << "MAIL: GxsTrans - State transition for transaction ID " << pr.mailItem.mailId
+				        << " from status " << (int)oldStatus << " to status " << (int)pr.status
+				        << " for recipient " << pr.recipient << std::endl;
+				notifyClientService(pr);
+			}
 			if( pr.status >= GxsTransSendStatus::RECEIPT_RECEIVED )
 			{
 				it = mOutgoingQueue.erase(it);
