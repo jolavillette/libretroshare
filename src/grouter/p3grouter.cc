@@ -936,7 +936,10 @@ void p3GRouter::routePendingObjects()
 
             if(!peers_and_duplication_factors.empty())
 	    {
-		RsDbg() << "EMAIL: tunnels available! sending!" << std::endl;
+		RsDbg() << "MAIL: GRouter Tunnel - Attempting to send GRouter Msg ID " << it->first
+		        << " via " << peers_and_duplication_factors.size()
+		        << " active Turtle tunnel(s) (duplication factor: "
+		        << it->second.data_item->duplication_factor << ")" << std::endl;
 		    locked_sendToPeers(it->second.data_item,peers_and_duplication_factors) ;
 
 		    // change item state in waiting list
@@ -953,7 +956,10 @@ void p3GRouter::routePendingObjects()
 
             if(!peers_and_duplication_factors.empty())
 	    {
-		RsDbg() << "EMAIL: friends available! sending!" << std::endl;
+		RsDbg() << "MAIL: GRouter Matrix - Attempting to send GRouter Msg ID " << it->first
+		        << " via " << peers_and_duplication_factors.size()
+		        << " active direct friend(s) (duplication factor: "
+		        << it->second.data_item->duplication_factor << ")" << std::endl;
 		    locked_sendToPeers(it->second.data_item,peers_and_duplication_factors) ;
 
 		    // change item state in waiting list
@@ -971,7 +977,8 @@ void p3GRouter::routePendingObjects()
 
                 if(it->second.received_time_TS + DIRECT_FRIEND_TRY_DELAY < now && !(it->second.routing_flags & GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS))
                 {
-                    RsDbg() << "EMAIL: enabling tunnels for this message." << std::endl;
+                    RsDbg() << "MAIL: GRouter - Direct friend try delay expired for GRouter Msg ID " << it->first
+                            << ". Enabling Turtle tunnels as fallback routing strategy." << std::endl;
                     it->second.routing_flags |= GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS ;
                 }
             }
@@ -990,7 +997,8 @@ void p3GRouter::routePendingObjects()
             {
                 if (it->second.data_status != RS_GROUTER_DATA_STATUS_PENDING)
                 {
-                    RsDbg() << "EMAIL: item was not received. Re-setting status to PENDING" << std::endl;
+                    RsDbg() << "MAIL: GRouter - Resend delay (" << MAX_DELAY_FOR_RESEND << "s) reached for GRouter Msg ID " << it->first
+                            << ". Re-setting status to PENDING for re-attempt." << std::endl;
                     it->second.data_status = RS_GROUTER_DATA_STATUS_PENDING ;
                 }
             }
@@ -998,7 +1006,8 @@ void p3GRouter::routePendingObjects()
             {
                 if (it->second.routing_flags & GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS)
                 {
-                    RsDbg() << "EMAIL: item was sent. Desactivating tunnels." << std::endl;
+                    RsDbg() << "MAIL: GRouter - GRouter Msg ID " << it->first
+                            << " successfully sent. Deactivating Turtle tunnels." << std::endl;
                     it->second.routing_flags &= ~GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_TUNNELS ;
                 }
             }
@@ -1270,6 +1279,25 @@ bool p3GRouter::locked_sendTransactionData(const RsPeerId& pid,const RsGRouterTr
 {
     if(mTurtle->isTurtlePeer(pid))
     {
+        if (trans_item.PacketSubType() == RS_PKT_SUBTYPE_GROUTER_TRANSACTION_CHUNK)
+        {
+            const RsGRouterTransactionChunkItem* chunk = dynamic_cast<const RsGRouterTransactionChunkItem*>(&trans_item);
+            if (chunk)
+            {
+                RsDbg() << "MAIL: GRouter Tunnel - Sending transaction chunk for GRouter Msg ID " << chunk->propagation_id
+                        << " via Turtle tunnel to virtual PeerId " << pid
+                        << " (slice starting at " << chunk->chunk_start << ", size " << chunk->chunk_size << " of " << chunk->total_size << " bytes)" << std::endl;
+            }
+        }
+        else if (trans_item.PacketSubType() == RS_PKT_SUBTYPE_GROUTER_TRANSACTION_ACKN)
+        {
+            const RsGRouterTransactionAcknItem* ack = dynamic_cast<const RsGRouterTransactionAcknItem*>(&trans_item);
+            if (ack)
+            {
+                RsDbg() << "MAIL: GRouter Tunnel - Sending transaction ACK for GRouter Msg ID " << ack->propagation_id
+                        << " via Turtle tunnel to virtual PeerId " << pid << std::endl;
+            }
+        }
 #ifdef GROUTER_DEBUG
         std::cerr << "  sending to tunnel vpid " << pid << std::endl;
 #endif
@@ -1301,6 +1329,25 @@ bool p3GRouter::locked_sendTransactionData(const RsPeerId& pid,const RsGRouterTr
     }
     else
     {
+        if (trans_item.PacketSubType() == RS_PKT_SUBTYPE_GROUTER_TRANSACTION_CHUNK)
+        {
+            const RsGRouterTransactionChunkItem* chunk = dynamic_cast<const RsGRouterTransactionChunkItem*>(&trans_item);
+            if (chunk)
+            {
+                RsDbg() << "MAIL: GRouter Matrix - Sending transaction chunk for GRouter Msg ID " << chunk->propagation_id
+                        << " to direct friend PeerId " << pid
+                        << " (slice starting at " << chunk->chunk_start << ", size " << chunk->chunk_size << " of " << chunk->total_size << " bytes)" << std::endl;
+            }
+        }
+        else if (trans_item.PacketSubType() == RS_PKT_SUBTYPE_GROUTER_TRANSACTION_ACKN)
+        {
+            const RsGRouterTransactionAcknItem* ack = dynamic_cast<const RsGRouterTransactionAcknItem*>(&trans_item);
+            if (ack)
+            {
+                RsDbg() << "MAIL: GRouter Matrix - Sending transaction ACK for GRouter Msg ID " << ack->propagation_id
+                        << " to direct friend PeerId " << pid << std::endl;
+            }
+        }
 #ifdef GROUTER_DEBUG
         std::cerr << "  sending to pid " << pid << std::endl;
 #endif
@@ -1343,6 +1390,17 @@ void p3GRouter::autoWash()
                     
             if(delete_entry)
             {
+                if( it->second.data_status != RS_GROUTER_DATA_STATUS_DONE && it->second.data_status != RS_GROUTER_DATA_STATUS_RECEIPT_OK )
+                {
+                    RsDbg() << "MAIL: GRouter - Message GRouter Msg ID " << it->first
+                            << " expired in GRouter cache after 48h (status was " << (int)it->second.data_status
+                            << "). Discarding message." << std::endl;
+                }
+                else
+                {
+                    RsDbg() << "MAIL: GRouter - Cleaning fully delivered/done message GRouter Msg ID " << it->first
+                            << " from cache." << std::endl;
+                }
 #ifdef GROUTER_DEBUG
                 grouter_debug() << "  Removing cached item " << std::hex << it->first << std::dec << std::endl;
 #endif
@@ -1537,6 +1595,10 @@ void p3GRouter::handleIncomingItem(const RsGRouterAbstractMsgItem *item)
 
 void p3GRouter::handleIncomingReceiptItem(const RsGRouterSignedReceiptItem *receipt_item)
 {
+    RsDbg() << "MAIL: GRouter - Received signed receipt from peer " << receipt_item->PeerId()
+            << " for GRouter Msg ID " << receipt_item->routing_id
+            << " destined to " << receipt_item->destination_key << std::endl;
+
     RsDbg() << "EMAIL: handleIncomingReceiptItem() from peer " << receipt_item->PeerId() << std::endl;
     RsDbg() << "EMAIL:   routing_id : " << std::hex << receipt_item->routing_id << std::dec << std::endl;
     RsDbg() << "EMAIL:   destination: " << receipt_item->destination_key << std::endl;
@@ -1673,6 +1735,9 @@ Sha1CheckSum p3GRouter::computeDataItemHash(const RsGRouterGenericDataItem *data
 
 void p3GRouter::handleIncomingDataItem(const RsGRouterGenericDataItem *data_item)
 {
+    RsDbg() << "MAIL: GRouter - Received data item from PeerId " << data_item->PeerId()
+            << " with GRouter Msg ID " << data_item->routing_id
+            << " destined to GxsId " << data_item->destination_key << std::endl;
 #ifdef GROUTER_DEBUG
     std::cerr << "Handling incoming data item. " << std::endl;
     std::cerr << "Item content:" << std::endl;
@@ -1770,6 +1835,9 @@ void p3GRouter::handleIncomingDataItem(const RsGRouterGenericDataItem *data_item
 
     if(item_is_for_us && !item_is_already_known)
     {
+        RsDbg() << "MAIL: GRouter - Message GRouter Msg ID " << data_item->routing_id
+                << " is for us and is new. Generating signed delivery receipt." << std::endl;
+
         // Check that we actually have a registered service ready to accept this item. If not, drop it.
 
 		{
@@ -1856,6 +1924,8 @@ void p3GRouter::handleIncomingDataItem(const RsGRouterGenericDataItem *data_item
         }
             else
             {
+                RsDbg() << "MAIL: GRouter - Message GRouter Msg ID " << data_item->routing_id
+                        << " is NOT for us. Storing in GRouter cache for routing to next hops." << std::endl;
                 info.routing_flags = GRouterRoutingInfo::ROUTING_FLAGS_ALLOW_FRIENDS ;	// don't allow tunnels just yet
                 info.data_status = RS_GROUTER_DATA_STATUS_PENDING ;
             }
@@ -1883,11 +1953,14 @@ void p3GRouter::handleIncomingDataItem(const RsGRouterGenericDataItem *data_item
 
         if(!decryptDataItem(decrypted_item))
         {
+            RsDbg() << "MAIL: GRouter - Decryption failed for message GRouter Msg ID " << data_item->routing_id << std::endl;
             std::cerr << "    decrypting item : FAILED! Item cannot be passed to the client." << std::endl;
             delete decrypted_item ;
 
             return ;
         }
+        RsDbg() << "MAIL: GRouter - Successfully decrypted message GRouter Msg ID " << data_item->routing_id
+                << " and passing data to client service." << std::endl;
 #ifdef GROUTER_DEBUG
         else
             std::cerr << "    decrypting item : OK!" << std::endl;
