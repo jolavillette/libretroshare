@@ -571,11 +571,14 @@ RsGxsGroupId RsGxsNetService::hashGrpId(const RsGxsGroupId& gid,const RsPeerId& 
 }
 
 std::error_condition RsGxsNetService::checkUpdatesFromPeers(
-        std::set<RsPeerId> peers )
+        std::set<RsPeerId> peers,
+        bool isPeriodic )
 {
 #ifdef NXS_NET_DEBUG_0
 	RS_DBG("this=", (void*)this, ". serviceInfo=", mServiceInfo);
 #endif
+
+	rstime_t now = time(NULL);
 
 	/* If specific peers are passed as paramether ask only to them */
 	if(peers.empty())
@@ -593,6 +596,8 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 			for(auto it(vpids.begin());it!=vpids.end();++it)
 				peers.insert(RsPeerId(*it)) ;
 		}
+
+		isPeriodic = true;
 	}
 
 	// Still empty? Reports there are no available peers
@@ -602,9 +607,19 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 	RS_STACK_MUTEX(mNxsMutex);
 
 	// for now just grps
-	for(auto sit = peers.begin(); sit != peers.end(); ++sit)
+	for(auto sit = peers.begin(); sit != peers.end(); )
 	{
 		const RsPeerId peerId = *sit;
+
+		if (isPeriodic && (mLastPeerSyncTS.find(peerId) != mLastPeerSyncTS.end()) && (now - mLastPeerSyncTS[peerId] < mSYNC_PERIOD))
+		{
+			RsDbg() << "GXSPUSH: saut du pull périodique pour " << peerId.toStdString() << " (dernière synchro il y a " << (int)(now - mLastPeerSyncTS[peerId]) << " s)";
+			sit = peers.erase(sit);
+			continue;
+		}
+
+		mLastPeerSyncTS[peerId] = now;
+		RsDbg() << "GXSPUSH: déclenchement du pull pour " << peerId.toStdString() << " (isPeriodic: " << (int)isPeriodic << ")";
 
 		ClientGrpMap::const_iterator cit = mClientGrpUpdateMap.find(peerId);
 		uint32_t updateTS = 0;
@@ -623,6 +638,7 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 		GXSNETDEBUG_P_(*sit) << "Service "<< std::hex << ((mServiceInfo.mServiceType >> 8)& 0xffff) << std::dec << "  sending global group TS of peer id: " << *sit << " ts=" << nice_time_stamp(time(NULL),updateTS) << " (secs ago) to himself" << std::endl;
 #endif
 		generic_sendItem(grp);
+		++sit;
 	}
 
     if(!(mSyncFlags & RsGxsNetServiceSyncFlags::AUTO_SYNC_MESSAGES))
