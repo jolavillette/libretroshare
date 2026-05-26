@@ -455,7 +455,6 @@ int RsGxsNetService::tick()
     rstime_t now = time(NULL);
     if(mSyncTs + 5 < now)
     {
-		RsDbg() << "GXSPUSH: analyse périodique des expirations de synchro par ami (tick de 5 secondes)";
 		checkUpdatesFromPeers(std::set<RsPeerId>(), true /* isPeriodic */);
         syncGrpStatistics();
 		checkDistantSyncState();
@@ -513,7 +512,7 @@ void RsGxsNetService::processObserverNotifications()
 
     if(!grps_copy.empty() || !msgs_copy.empty())
     {
-        RsDbg() << "GXSPUSH: réception de nouveau contenu, propagation en cascade vers les autres amis en ligne";
+        RsDbg() << "GXSPUSH: new content received, cascading propagation to other online friends";
         requestPull();
     }
 
@@ -618,13 +617,12 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 
 		if (isPeriodic && (mLastPeerSyncTS.find(peerId) != mLastPeerSyncTS.end()) && (now - mLastPeerSyncTS[peerId] < mSYNC_PERIOD))
 		{
-			RsDbg() << "GXSPUSH: saut du pull périodique pour " << peerId.toStdString() << " (dernière synchro il y a " << (int)(now - mLastPeerSyncTS[peerId]) << " s)";
 			sit = peers.erase(sit);
 			continue;
 		}
 
 		mLastPeerSyncTS[peerId] = now;
-		RsDbg() << "GXSPUSH: déclenchement du pull pour " << peerId.toStdString() << " (isPeriodic: " << (int)isPeriodic << ")";
+		RsDbg() << "GXSPUSH: triggering pull for " << peerId.toStdString() << " (isPeriodic: " << (int)isPeriodic << ")";
 
 		ClientGrpMap::const_iterator cit = mClientGrpUpdateMap.find(peerId);
 		uint32_t updateTS = 0;
