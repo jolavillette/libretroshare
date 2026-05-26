@@ -332,7 +332,8 @@ public:
 	 * @param peers peers to check, if empty all available peers are checked
 	 */
 	virtual std::error_condition checkUpdatesFromPeers(
-	        std::set<RsPeerId> peers = std::set<RsPeerId>() ) = 0;
+	        std::set<RsPeerId> peers = std::set<RsPeerId>(),
+	        bool isPeriodic = false ) = 0;
 
 	/**
 	 * @brief request online peers to pull updates from our node ASAP
