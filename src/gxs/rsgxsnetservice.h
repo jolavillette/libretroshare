@@ -266,7 +266,8 @@ public:
 
 	/// @see RsNetworkExchangeService
 	std::error_condition checkUpdatesFromPeers(
-	        std::set<RsPeerId> peers = std::set<RsPeerId>() ) override;
+	        std::set<RsPeerId> peers = std::set<RsPeerId>(),
+	        bool isPeriodic = false ) override;
 
 	/// @see RsNetworkExchangeService
 	std::error_condition requestPull(
@@ -690,4 +691,6 @@ private:
     rstime_t mLastCacheReloadTS ;
 
     bool mUseMetaCache;
+
+    std::map<RsPeerId, rstime_t> mLastPeerSyncTS;
 };
