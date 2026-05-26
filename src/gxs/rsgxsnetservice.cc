@@ -453,11 +453,10 @@ int RsGxsNetService::tick()
         processObserverNotifications() ;
 
     rstime_t now = time(NULL);
-    rstime_t elapsed = mSYNC_PERIOD + mSyncTs;
-
-    if((elapsed) < now)
+    if(mSyncTs + 5 < now)
     {
-		checkUpdatesFromPeers();
+		RsDbg() << "GXSPUSH: analyse périodique des expirations de synchro par ami (tick de 5 secondes)";
+		checkUpdatesFromPeers(std::set<RsPeerId>(), true /* isPeriodic */);
         syncGrpStatistics();
 		checkDistantSyncState();
 
