@@ -872,6 +872,8 @@ bool p3GxsTrans::dispatchDecryptedMail( const RsGxsId& authorId,
 	          << "with: msgId: " << receipt->msgId << std::endl;
 #endif
 
+	RsDbg() << "MAIL: GxsTrans - Receiver placing ACK in GxsTrans GXS database. Message ID: " << receipt->msgId;
+
 	std::vector<RsNxsMsg*> rcct; rcct.push_back(receipt);
 	RsGenExchange::receiveNewMessages(rcct);
 
