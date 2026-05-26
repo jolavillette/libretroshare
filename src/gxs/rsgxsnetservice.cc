@@ -511,6 +511,12 @@ void RsGxsNetService::processObserverNotifications()
     if(!grps_copy.empty()) mObserver->receiveNewGroups  (grps_copy);
     if(!msgs_copy.empty()) mObserver->receiveNewMessages(msgs_copy);
 
+    if(!grps_copy.empty() || !msgs_copy.empty())
+    {
+        RsDbg() << "GXSPUSH: réception de nouveau contenu, propagation en cascade vers les autres amis en ligne";
+        requestPull();
+    }
+
     for(std::set<RsGxsGroupId>::const_iterator it(keys_copy.begin());it!=keys_copy.end();++it)
 		mObserver->notifyReceivePublishKey(*it);
 
