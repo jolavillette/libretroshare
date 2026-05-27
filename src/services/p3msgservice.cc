@@ -2850,12 +2850,12 @@ void p3MsgService::locked_sendDistantMsgItem(RsMsgItem *msgitem,const RsGxsId& s
  	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id;
 
 	GRouterMsgPropagationId grouter_message_id;
-	mGRouter->sendData( destination_key_id, GROUTER_CLIENT_ID_MESSAGES,
+	/*mGRouter->sendData( destination_key_id, GROUTER_CLIENT_ID_MESSAGES,
 	                    msg_serialized_data, msg_serialized_rssize,
 	                    signing_key_id, grouter_message_id );
  	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GRouter - Dispatching message ID " << std::hex << msgId << std::dec
  	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id
- 	        << " (assigned GRouter Msg ID " << std::hex << grouter_message_id << std::dec << ")";
+ 	        << " (assigned GRouter Msg ID " << std::hex << grouter_message_id << std::dec << ")";*/
 
 	RsGxsTransId gxsMailId;
 	mGxsTransServ.sendData( gxsMailId, GxsTransSubServices::P3_MSG_SERVICE,
