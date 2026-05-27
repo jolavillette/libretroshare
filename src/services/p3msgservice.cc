@@ -84,6 +84,7 @@
 #include "grouter/groutertypes.h"
 
 #include "util/rsdebug.h"
+#include "pqi/authssl.h"
 #include "util/rsdir.h"
 #include "util/rsstring.h"
 #include "util/radix64.h"
@@ -440,7 +441,7 @@ int p3MsgService::checkOutgoingMessages()
                 {
                     if(to.toRsPeerId() == ownId || mServiceCtrl->isPeerConnected(getServiceInfo().mServiceType, to.toRsPeerId()) )
                     {
-                        RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): Node2Node - Peer is connected. Sending message ID " << std::hex << mit->first << std::dec
+                        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): Node2Node - Peer is connected. Sending message ID " << std::hex << mit->first << std::dec
                                 << " directly to PeerId " << std::hex << to.toRsPeerId() << std::dec;
 
                         auto msg_item = createOutgoingMessageItem(*sit->second,to);
@@ -465,7 +466,7 @@ int p3MsgService::checkOutgoingMessages()
                     }
                     else
                     {
-                        RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): Node2Node - Peer is NOT connected. Delaying delivery of message ID " << std::hex << mit->first << std::dec
+                        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): Node2Node - Peer is NOT connected. Delaying delivery of message ID " << std::hex << mit->first << std::dec
                                 << " to PeerId " << std::hex << to.toRsPeerId() << std::dec << " until they go online";
 #ifdef DEBUG_DISTANT_MSG
                         Dbg3() << __PRETTY_FUNCTION__ << " Delaying until available..." << std::endl;
@@ -2474,7 +2475,7 @@ void p3MsgService::notifyDataStatus( const GRouterMsgPropagationId& id,
 
         uint32_t msg_id = it->second;
 
-        RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GRouter - Delivery failed for GRouter Msg ID " << std::hex << id << std::dec
+        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GRouter - Delivery failed for GRouter Msg ID " << std::hex << id << std::dec
                 << ". Message ID " << std::hex << msg_id << std::dec << " marked for re-sending.";
 
         RsWarn() << __PRETTY_FUNCTION__ << " Global router tells "
@@ -2517,7 +2518,7 @@ void p3MsgService::notifyDataStatus( const GRouterMsgPropagationId& id,
 
         uint32_t msg_id = it->second;
 
-        RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GRouter - Delivery receipt confirmed! Message ID " << std::hex << msg_id << std::dec
+        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GRouter - Delivery receipt confirmed! Message ID " << std::hex << msg_id << std::dec
                 << " successfully delivered (receipt received via GRouter Msg ID " << std::hex << id << std::dec << ")";
 
         // We should now remove the item from the msgOutgoing list. msgOutgoing is indexed by the original msg, not its copy, so we need
@@ -2590,7 +2591,7 @@ bool p3MsgService::receiveGxsTransMail( const RsGxsId& authorId,
                                 const RsGxsId& recipientId,
                                 const uint8_t* data, uint32_t dataSize )
 {
- 	RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Received incoming distant mail item of size " << dataSize
+ 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Received incoming distant mail item of size " << dataSize
  	        << " from GxsId " << authorId << " destined to GxsId " << recipientId;
 
 	Dbg2() << __PRETTY_FUNCTION__ << " " << authorId << ", " << recipientId
@@ -2602,7 +2603,7 @@ bool p3MsgService::receiveGxsTransMail( const RsGxsId& authorId,
 		RS_STACK_MUTEX(recentlyReceivedMutex);
 		if( mRecentlyReceivedMessageHashes.find(hash) != mRecentlyReceivedMessageHashes.end() )
 		{
- 			RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Duplicate mail item ignored (hash already recently received).";
+ 			RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Duplicate mail item ignored (hash already recently received).";
 			RsInfo() << __PRETTY_FUNCTION__ << " (II) receiving "
 			          << "message of hash " << hash << " more than once. "
 			          << "Probably it has arrived  before by other means."
@@ -2675,12 +2676,12 @@ bool p3MsgService::notifyGxsTransSendStatus( RsGxsTransId mailId,
     }
     std::cerr << " message id = " << msg_id << std::endl;
 
-    RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Received send status notification for transaction ID " << std::hex << mailId << std::dec
+    RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Received send status notification for transaction ID " << std::hex << mailId << std::dec
             << ", status: " << static_cast<uint32_t>(status) << " (associated message ID " << std::hex << msg_id << std::dec << ")";
 
     if( status == GxsTransSendStatus::RECEIPT_RECEIVED )
     {
-        RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Delivery receipt confirmed! Message ID " << std::hex << msg_id << std::dec
+        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Delivery receipt confirmed! Message ID " << std::hex << msg_id << std::dec
                 << " successfully delivered (receipt received via GxsTrans ID " << std::hex << mailId << std::dec << ")";
         pEvent->mMailStatusEventCode = RsMailStatusEventCode::MESSAGE_RECEIVED_ACK;
 
@@ -2716,7 +2717,7 @@ bool p3MsgService::notifyGxsTransSendStatus( RsGxsTransId mailId,
     }
     else if( status >= GxsTransSendStatus::FAILED_RECEIPT_SIGNATURE )
     {
-        RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Delivery failed for transaction ID " << std::hex << mailId << std::dec
+        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Delivery failed for transaction ID " << std::hex << mailId << std::dec
                 << " (status: " << static_cast<uint32_t>(status) << "). Message ID " << std::hex << msg_id << std::dec
                 << " marked for re-sending.";
         pEvent->mMailStatusEventCode = RsMailStatusEventCode::SIGNATURE_FAILED;
@@ -2759,7 +2760,7 @@ void p3MsgService::receiveGRouterData( const RsGxsId &destination_key,
                                        GRouterServiceId &/*client_id*/,
                                        uint8_t *data, uint32_t data_size )
 {
- 	RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GRouter - Received incoming data of size " << data_size
+ 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GRouter - Received incoming data of size " << data_size
  	        << " destined to GxsId " << destination_key << " signed by GxsId " << signing_key;
 
 	std::cerr << "p3MsgService::receiveGRouterData(): received message item of"
@@ -2776,7 +2777,7 @@ void p3MsgService::receiveGRouterData( const RsGxsId &destination_key,
 		if( mRecentlyReceivedMessageHashes.find(hash) !=
 		        mRecentlyReceivedMessageHashes.end() )
 		{
- 			RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GRouter - Duplicate data item ignored (hash already recently received).";
+ 			RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GRouter - Duplicate data item ignored (hash already recently received).";
 			std::cerr << "p3MsgService::receiveGRouterData(...) (II) receiving"
 			          << "distant message of hash " << hash << " more than once"
 			          << ". Probably it has arrived  before by other means."
@@ -2796,7 +2797,7 @@ void p3MsgService::receiveGRouterData( const RsGxsId &destination_key,
 
 	if(msg_item != NULL)
 	{
- 		RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GRouter - Successfully deserialized message item from GRouter.";
+ 		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GRouter - Successfully deserialized message item from GRouter.";
 		std::cerr << "  Encrypted item correctly deserialised. Passing on to incoming list." << std::endl;
 
 		msg_item->msgFlags |= RS_MSG_FLAGS_DISTANT ;
@@ -2845,14 +2846,14 @@ void p3MsgService::locked_sendDistantMsgItem(RsMsgItem *msgitem,const RsGxsId& s
 	std::cerr << "  serialised size : " << msg_serialized_rssize << std::endl;
 #endif
 
- 	RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Initiating dual dispatch for distant message ID " << std::hex << msgId << std::dec
+ 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Initiating dual dispatch for distant message ID " << std::hex << msgId << std::dec
  	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id;
 
 	GRouterMsgPropagationId grouter_message_id;
 	mGRouter->sendData( destination_key_id, GROUTER_CLIENT_ID_MESSAGES,
 	                    msg_serialized_data, msg_serialized_rssize,
 	                    signing_key_id, grouter_message_id );
- 	RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GRouter - Dispatching message ID " << std::hex << msgId << std::dec
+ 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GRouter - Dispatching message ID " << std::hex << msgId << std::dec
  	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id
  	        << " (assigned GRouter Msg ID " << std::hex << grouter_message_id << std::dec << ")";
 
@@ -2860,7 +2861,7 @@ void p3MsgService::locked_sendDistantMsgItem(RsMsgItem *msgitem,const RsGxsId& s
 	mGxsTransServ.sendData( gxsMailId, GxsTransSubServices::P3_MSG_SERVICE,
 	                         signing_key_id, destination_key_id,
 	                         msg_serialized_data, msg_serialized_rssize );
- 	RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Dispatching message ID " << std::hex << msgId << std::dec
+ 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Dispatching message ID " << std::hex << msgId << std::dec
  	        << " (size: " << msg_serialized_rssize << " bytes) to GxsId " << destination_key_id
  	        << " (assigned GxsTrans ID " << std::hex << gxsMailId << std::dec << ")";
 
