@@ -251,6 +251,7 @@
 #include "retroshare/rsgxsflags.h"
 #include "retroshare/rsgxscircles.h"
 #include "retroshare/rspeers.h"
+#include "pqi/authssl.h"
 #include "pgp/pgpauxutils.h"
 #include "crypto/rscrypto.h"
 #include "util/rsdir.h"
@@ -512,7 +513,7 @@ void RsGxsNetService::processObserverNotifications()
 
     if(!grps_copy.empty() || !msgs_copy.empty())
     {
-        RsDbg() << "PUSH: " << (rsPeers ? rsPeers->getPeerName(rsPeers->getOwnId()) : "unknown")
+        RsDbg() << "PUSH: " << AuthSSL::getAuthSSL()->getOwnLocation()
                 << ": new content received, cascading propagation to other online friends";
         requestPull();
     }
@@ -623,7 +624,7 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 		}
 
 		mLastPeerSyncTS[peerId] = now;
-		RsDbg() << "PUSH: " << (rsPeers ? rsPeers->getPeerName(rsPeers->getOwnId()) : "unknown")
+		RsDbg() << "PUSH: " << AuthSSL::getAuthSSL()->getOwnLocation()
 				<< ": triggering pull for " << peerId.toStdString()
 				<< " (isPeriodic: 0x" << std::hex << (int)isPeriodic << ")";
 
