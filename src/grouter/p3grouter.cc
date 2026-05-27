@@ -496,7 +496,7 @@ void p3GRouter::handleLowLevelTransactionAckItem(RsGRouterTransactionAcknItem *t
         it->second.last_sent_TS = time(NULL) ;
     }
     else
-        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): Received Transaction ACK but no corresponding pending message found (id=" << std::hex << trans_ack_item->propagation_id << std::dec << ")";
+        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): Received Transaction ACK but no corresponding pending message found (id=" << std::hex << trans_ack_item->propagation_id << std::dec << ") via friend/tunnel " << trans_ack_item->PeerId();
 }
 
 void p3GRouter::receiveTurtleData(const RsTurtleGenericTunnelItem *gitem, const RsFileHash & hash, const RsPeerId &virtual_peer_id, RsTurtleGenericTunnelItem::Direction direction)
