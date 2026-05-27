@@ -512,7 +512,8 @@ void RsGxsNetService::processObserverNotifications()
 
     if(!grps_copy.empty() || !msgs_copy.empty())
     {
-        RsDbg() << "GXSPUSH: new content received, cascading propagation to other online friends";
+        RsDbg() << "PUSH: " << (rsPeers ? rsPeers->getPeerName(rsPeers->getOwnId()) : "unknown")
+                << ": new content received, cascading propagation to other online friends";
         requestPull();
     }
 
@@ -622,7 +623,9 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 		}
 
 		mLastPeerSyncTS[peerId] = now;
-		RsDbg() << "GXSPUSH: triggering pull for " << peerId.toStdString() << " (isPeriodic: " << (int)isPeriodic << ")";
+		RsDbg() << "PUSH: " << (rsPeers ? rsPeers->getPeerName(rsPeers->getOwnId()) : "unknown")
+				<< ": triggering pull for " << peerId.toStdString()
+				<< " (isPeriodic: 0x" << std::hex << (int)isPeriodic << ")";
 
 		ClientGrpMap::const_iterator cit = mClientGrpUpdateMap.find(peerId);
 		uint32_t updateTS = 0;
