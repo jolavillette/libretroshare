@@ -23,6 +23,7 @@
 #include "gxstrans/p3gxstrans.h"
 #include "util/stacktrace.h"
 #include "util/rsdebug.h"
+#include "pqi/authssl.h"
 
 //#define DEBUG_GXSTRANS 1
 
@@ -558,7 +559,7 @@ void p3GxsTrans::service_tick()
 
 			if (oldStatus != pr.status)
 			{
-				RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - State transition for transaction ID " << std::hex << pr.mailItem.mailId << std::dec
+				RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - State transition for transaction ID " << std::hex << pr.mailItem.mailId << std::dec
 				        << " from status " << (int)oldStatus << " to status " << (int)pr.status
 				        << " for recipient " << pr.recipient;
 				notifyClientService(pr);
@@ -872,7 +873,7 @@ bool p3GxsTrans::dispatchDecryptedMail( const RsGxsId& authorId,
 	          << "with: msgId: " << receipt->msgId << std::endl;
 #endif
 
-	RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Receiver placing ACK in GxsTrans GXS database. Message ID: " << std::hex << receipt->msgId << std::dec;
+	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Receiver placing ACK in GxsTrans GXS database. Message ID: " << std::hex << receipt->msgId << std::dec;
 
 	std::vector<RsNxsMsg*> rcct; rcct.push_back(receipt);
 	RsGenExchange::receiveNewMessages(rcct);
