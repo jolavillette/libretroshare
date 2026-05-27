@@ -558,9 +558,9 @@ void p3GxsTrans::service_tick()
 
 			if (oldStatus != pr.status)
 			{
-				RsDbg() << "MAIL: GxsTrans - State transition for transaction ID " << pr.mailItem.mailId
+				RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - State transition for transaction ID " << std::hex << pr.mailItem.mailId << std::dec
 				        << " from status " << (int)oldStatus << " to status " << (int)pr.status
-				        << " for recipient " << pr.recipient << std::endl;
+				        << " for recipient " << pr.recipient;
 				notifyClientService(pr);
 			}
 			if( pr.status >= GxsTransSendStatus::RECEIPT_RECEIVED )
@@ -872,7 +872,7 @@ bool p3GxsTrans::dispatchDecryptedMail( const RsGxsId& authorId,
 	          << "with: msgId: " << receipt->msgId << std::endl;
 #endif
 
-	RsDbg() << "MAIL: GxsTrans - Receiver placing ACK in GxsTrans GXS database. Message ID: " << receipt->msgId;
+	RsDbg() << "MAIL (" << rsPeers->getPeerName(rsPeers->getOwnId()) << "): GxsTrans - Receiver placing ACK in GxsTrans GXS database. Message ID: " << std::hex << receipt->msgId << std::dec;
 
 	std::vector<RsNxsMsg*> rcct; rcct.push_back(receipt);
 	RsGenExchange::receiveNewMessages(rcct);
