@@ -873,6 +873,24 @@ bool p3GxsTrans::dispatchDecryptedMail( const RsGxsId& authorId,
 	          << "with: msgId: " << receipt->msgId << std::endl;
 #endif
 
+	RsGxsTransId mailId = 0;
+	RsGxsTransSerializer trans_s;
+	uint32_t size = receipt->msg.bin_len;
+	RsItem* inner_item = trans_s.deserialise(receipt->msg.bin_data, &size);
+	if (inner_item)
+	{
+		RsGxsTransPresignedReceipt* pitem = dynamic_cast<RsGxsTransPresignedReceipt*>(inner_item);
+		if (pitem)
+		{
+			mailId = pitem->mailId;
+		}
+		delete inner_item;
+	}
+
+	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Received incoming distant mail item of size " << (decrypted_data_size-offset)
+	        << " from GxsId " << authorId << " destined to GxsId " << decryptId
+	        << " (assigned GxsTrans ID " << std::hex << mailId << std::dec << ")";
+
 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Receiver placing ACK in GxsTrans GXS database. Message ID: " << std::hex << receipt->msgId << std::dec;
 
 	std::vector<RsNxsMsg*> rcct; rcct.push_back(receipt);

@@ -2594,8 +2594,8 @@ bool p3MsgService::receiveGxsTransMail( const RsGxsId& authorId,
                                 const RsGxsId& recipientId,
                                 const uint8_t* data, uint32_t dataSize )
 {
- 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Received incoming distant mail item of size " << dataSize
- 	        << " from GxsId " << authorId << " destined to GxsId " << recipientId;
+ 	/*RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Received incoming distant mail item of size " << dataSize
+ 	        << " from GxsId " << authorId << " destined to GxsId " << recipientId;*/
 
 	Dbg2() << __PRETTY_FUNCTION__ << " " << authorId << ", " << recipientId
 	       << ",, " << dataSize << std::endl;
