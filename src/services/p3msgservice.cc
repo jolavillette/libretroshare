@@ -516,6 +516,9 @@ int p3MsgService::checkOutgoingMessages()
             if(mit->second.empty())
             {
                 sit->second->msg.msgFlags &= ~RS_MSG_FLAGS_PENDING;
+                
+                pEvent->mChangedMsgIds.insert(std::to_string(sit->first));
+
                 auto tmp = mit;
                 ++tmp;
                 msgOutgoing.erase(mit);
@@ -2483,6 +2486,8 @@ void p3MsgService::notifyDataStatus( const GRouterMsgPropagationId& id,
                  << " could not be delivered on time to " << signer_id << ". Message id: "
                  << msg_id << std::endl;
 
+        bool found = false;
+
         for(auto it=msgOutgoing.begin();it!=msgOutgoing.end();++it)
         {
             auto mit = it->second.find(msg_id);
@@ -2491,15 +2496,17 @@ void p3MsgService::notifyDataStatus( const GRouterMsgPropagationId& id,
             {
                 std::cerr << "  reseting the ROUTED flag so that the message is requested again" << std::endl;
                 mit->second.flags &= ~RS_MSG_FLAGS_ROUTED;
+                found = true;
                 break;
             }
-            else
-            {
-                std::cerr << "(ii) message has been notified as delivered, but it's"
-                          << " not in outgoing list. probably it has been delivered"
-                          << " successfully by other means." << std::endl;
-                return;
-            }
+        }
+
+        if(!found)
+        {
+            std::cerr << "(ii) message has been notified as delivered, but it's"
+                      << " not in outgoing list. probably it has been delivered"
+                      << " successfully by other means." << std::endl;
+            return;
         }
     }
     else if(data_status == GROUTER_CLIENT_SERVICE_DATA_STATUS_RECEIVED)
@@ -2591,8 +2598,8 @@ bool p3MsgService::receiveGxsTransMail( const RsGxsId& authorId,
                                 const RsGxsId& recipientId,
                                 const uint8_t* data, uint32_t dataSize )
 {
- 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Received incoming distant mail item of size " << dataSize
- 	        << " from GxsId " << authorId << " destined to GxsId " << recipientId;
+ 	/*RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): GxsTrans - Received incoming distant mail item of size " << dataSize
+ 	        << " from GxsId " << authorId << " destined to GxsId " << recipientId;*/
 
 	Dbg2() << __PRETTY_FUNCTION__ << " " << authorId << ", " << recipientId
 	       << ",, " << dataSize << std::endl;
@@ -2699,11 +2706,10 @@ bool p3MsgService::notifyGxsTransSendStatus( RsGxsTransId mailId,
             {
                 it->second.erase(mit);
 
-                pEvent->mChangedMsgIds.insert(std::to_string(msg_id));
+                pEvent->mChangedMsgIds.insert(std::to_string(it->first));
                 found = true;
+                break;
             }
-
-            break;
         }
 
         if(!found)
@@ -2733,10 +2739,10 @@ bool p3MsgService::notifyGxsTransSendStatus( RsGxsTransId mailId,
             {
                 mit->second.flags &= ~RS_MSG_FLAGS_ROUTED; // forces re-send.
 
-                pEvent->mChangedMsgIds.insert(std::to_string(msg_id));
+                pEvent->mChangedMsgIds.insert(std::to_string(it->first));
                 found = true;
+                break;
             }
-            break;
         }
 
         if(!found)
