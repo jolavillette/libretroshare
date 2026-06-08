@@ -3330,6 +3330,13 @@ void RsGenExchange::processRecvdMessages()
 	    // would otherwise be stored but never advertised to friends.
 	    for(const RsGxsGroupId& grpId : grps_with_new_msgs)
 		    mNetService->stampMsgServerUpdateTS(grpId) ;
+
+	    // Messages injected via receiveNewMessages() (e.g. the GxsTrans ACK) do not go through
+	    // processObserverNotifications(), so they miss the cascade push there. Trigger it here too, after the
+	    // server TS has been stamped above, so the injected content (the ACK) propagates to friends instantly
+	    // instead of waiting for the next periodic sync.
+	    if(!grps_with_new_msgs.empty())
+		    mNetService->requestPull();
     }
 }
 
