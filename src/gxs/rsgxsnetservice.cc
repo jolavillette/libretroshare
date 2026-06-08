@@ -617,13 +617,20 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 	{
 		const RsPeerId peerId = *sit;
 
-		if (isPeriodic && (mLastPeerSyncTS.find(peerId) != mLastPeerSyncTS.end()) && (now - mLastPeerSyncTS[peerId] < mSYNC_PERIOD))
+		// Per-peer rate limiting applies ONLY to periodic syncs. Cascade pulls (isPeriodic=false) must not
+		// touch mLastPeerSyncTS, otherwise every received pull-request would re-arm the periodic timer and,
+		// under sustained cascade traffic, the periodic fallback would be starved indefinitely -- so a single
+		// missed cascade pull could leave a message stuck far longer than one SYNC_PERIOD.
+		if (isPeriodic)
 		{
-			sit = peers.erase(sit);
-			continue;
-		}
+			if ((mLastPeerSyncTS.find(peerId) != mLastPeerSyncTS.end()) && (now - mLastPeerSyncTS[peerId] < mSYNC_PERIOD))
+			{
+				sit = peers.erase(sit);
+				continue;
+			}
 
-		mLastPeerSyncTS[peerId] = now;
+			mLastPeerSyncTS[peerId] = now;
+		}
 		RsDbg() << "PUSH: " << AuthSSL::getAuthSSL()->getOwnLocation()
 				<< ": triggering pull for " << peerId.toStdString()
 				<< " (isPeriodic: 0x" << std::hex << (int)isPeriodic << ")";
