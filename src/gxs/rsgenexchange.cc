@@ -29,6 +29,7 @@
 #include "util/contentvalue.h"
 #include "util/rsprint.h"
 #include "util/rstime.h"
+#include "pqi/authssl.h"
 #include "retroshare/rsgxsflags.h"
 #include "retroshare/rsgxscircles.h"
 #include "retroshare/rsgrouter.h"
@@ -3315,11 +3316,18 @@ void RsGenExchange::processRecvdMessages()
 	    for(std::list<RsGxsMessageId>::const_iterator it(messages_to_reject.begin());it!=messages_to_reject.end();++it)
 		    mNetService->rejectMessage(*it) ;
 
-	    // Stamp the server-side msg update TS for groups that received new messages, so that friends get
-	    // notified and re-synchronise. For messages received through the regular netservice transaction path
-	    // this is already done in RsGxsNetService::processCompletedTransactions(), but messages injected
-	    // directly via receiveNewMessages() (e.g. presigned receipts) bypass that path and would otherwise be
-	    // stored but never advertised to friends.
+	    // MAIL: relay/recipient visibility — this node just stored new GxsTrans message(s) (mail or ACK
+	    // passing through). Gated to the GxsTrans service so it does not fire for forums/channels/etc.
+	    if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */ && !grps_with_new_msgs.empty())
+		    RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+		            << "): GxsTrans - stored new message(s) in group " << *grps_with_new_msgs.begin()
+		            << ", advertising to friends";
+
+	    // MAIL: stamp the server-side msg update TS for groups that received new messages, so that friends
+	    // get notified and re-synchronise. For messages received through the regular netservice transaction
+	    // path this is already done in RsGxsNetService::processCompletedTransactions(), but messages injected
+	    // directly via receiveNewMessages() (e.g. GxsTrans presigned receipts / ACKs) bypass that path and
+	    // would otherwise be stored but never advertised to friends.
 	    for(const RsGxsGroupId& grpId : grps_with_new_msgs)
 		    mNetService->stampMsgServerUpdateTS(grpId) ;
     }
