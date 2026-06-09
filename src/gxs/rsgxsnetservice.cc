@@ -631,6 +631,7 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 
 			mLastPeerSyncTS[peerId] = now;
 		}
+		if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */)
 		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
 				<< "): SYNC - triggering pull from peer " << peerId.toStdString()
 				<< " (isPeriodic=" << (int)isPeriodic << ")";
@@ -4397,6 +4398,7 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
     RS_STACK_MUTEX(mNxsMutex) ;
 
     const RsPeerId& peer = item->PeerId();
+    if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */)
     RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
             << "): SERVER - received msg-sync-request from peer " << peer.toStdString() << " for group " << item->grpId;
     bool grp_is_known = false;
@@ -4619,6 +4621,7 @@ void RsGxsNetService::locked_pushMsgRespFromList(std::list<RsNxsItem*>& itemL, c
     GXSNETDEBUG_PG(sslId,grp_id) << "   peerId = " << sslId << std::endl;
     GXSNETDEBUG_PG(sslId,grp_id) << "   transN = " << transN << std::endl;
 #endif
+    if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */)
     RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
             << "): SERVER - serving " << itemL.size() << " msg item(s) to peer " << sslId.toStdString() << " for group " << grp_id;
     NxsTransaction* tr = new NxsTransaction();
@@ -5197,6 +5200,7 @@ std::error_condition RsGxsNetService::requestPull(std::set<RsPeerId> peers)
 	{
         auto item = new RsNxsPullRequestItem(mServType);
 		item->PeerId(peerId);
+		if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */)
 		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
 		        << "): PUSH - sending pull-request to peer " << peerId.toStdString();
 		generic_sendItem(item);
@@ -5207,6 +5211,7 @@ std::error_condition RsGxsNetService::requestPull(std::set<RsPeerId> peers)
 
 void RsGxsNetService::handlePullRequest(RsNxsPullRequestItem *item)
 {
+	if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */)
 	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
 	        << "): PUSH - received pull-request from peer " << item->PeerId().toStdString() << " -> checkUpdatesFromPeers";
 	checkUpdatesFromPeers(std::set<RsPeerId>{item->PeerId()});
