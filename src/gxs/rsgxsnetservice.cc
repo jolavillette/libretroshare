@@ -3131,6 +3131,10 @@ void RsGxsNetService::locked_genReqMsgTransaction(NxsTransaction* tr)
 
     if(!reqList.empty())
     {
+        if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */)
+            RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+                    << "): REQ - requesting " << reqList.size() << " msg(s) from peer " << tr->mTransaction->PeerId().toStdString()
+                    << " (of " << mcount << " advertised, reqlist_capped=" << (int)reqListSizeExceeded << ")";
 #ifdef NXS_NET_DEBUG_1
         GXSNETDEBUG_PG(item->PeerId(),grpId) << "  Request list: " << reqList.size() << " elements." << std::endl;
 #endif

@@ -3322,6 +3322,11 @@ void RsGenExchange::processRecvdMessages()
 	    for(std::list<RsGxsMessageId>::const_iterator it(messages_to_reject.begin());it!=messages_to_reject.end();++it)
 		    mNetService->rejectMessage(*it) ;
 
+	    // MAIL: debug — count of incoming msgs this node REJECTED (already-known/re-sent by a peer)
+	    if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */ && !messages_to_reject.empty())
+		    RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+		            << "): RECV - rejected " << messages_to_reject.size() << " incoming msg(s) (already-known/re-sent)";
+
 	    // MAIL: relay/recipient visibility — this node just stored new GxsTrans message(s) (mail or ACK
 	    // passing through). Gated to the GxsTrans service so it does not fire for forums/channels/etc.
 	    if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */ && !grps_with_new_msgs.empty())
