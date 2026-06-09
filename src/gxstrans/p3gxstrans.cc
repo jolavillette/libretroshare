@@ -469,6 +469,14 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
         }
     }
 
+    {
+        uint32_t ndel = 0;
+        for(const auto& it : msgsToDel) ndel += it.second.size();
+        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+                << "): CLEANUP - group holds " << stored_msgs.size() << " mail(s) + " << received_msgs.size()
+                << " receipt(s); scheduling " << ndel << " mail(s) for deletion (mails matched by a present receipt)";
+    }
+
 	RS_STACK_MUTEX(mMtx) ;
 	mMsgToDel = msgsToDel ;
 	total_message_size_and_count = totalMessageSizeAndCount;
