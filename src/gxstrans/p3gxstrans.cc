@@ -475,6 +475,20 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
         RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
                 << "): CLEANUP - group holds " << stored_msgs.size() << " mail(s) + " << received_msgs.size()
                 << " receipt(s); scheduling " << ndel << " mail(s) for deletion (mails matched by a present receipt)";
+
+        // DEBUG bug A: how many mailIds are 0, and do the two sets overlap at all?
+        uint32_t mail_zero = 0, rcpt_zero = 0, overlap = 0;
+        for(const auto& it : stored_msgs)   if(it.first == 0) ++mail_zero;
+        for(const auto& r  : received_msgs) if(r == 0)        ++rcpt_zero;
+        for(const auto& r  : received_msgs) if(stored_msgs.find(r) != stored_msgs.end()) ++overlap;
+        RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+                << "): CLEANUP/dbg - mailId==0: mails=" << mail_zero << "/" << stored_msgs.size()
+                << ", receipts=" << rcpt_zero << "/" << received_msgs.size()
+                << "; receipts matching a stored mail=" << overlap;
+        int n = 0;
+        for(const auto& it : stored_msgs)   { if(n++ >= 4) break; RsDbg() << "MAIL CLEANUP/dbg   sample mail    mailId=" << std::hex << it.first << std::dec; }
+        n = 0;
+        for(const auto& r  : received_msgs) { if(n++ >= 4) break; RsDbg() << "MAIL CLEANUP/dbg   sample receipt mailId=" << std::hex << r << std::dec; }
     }
 
 	RS_STACK_MUTEX(mMtx) ;
