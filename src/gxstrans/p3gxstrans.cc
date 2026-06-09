@@ -404,6 +404,7 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 		std::cerr << "Group " << mit->first << ": " << std::endl;
 #endif
 
+	    int dbg_mail_dump = 0, dbg_rcpt_dump = 0;	// DEBUG bug A: dump raw bytes for the first few of each
 	    for(; vit != msgV.end(); ++vit)
 	    {
 		    RsNxsMsg* msg = *vit;
@@ -423,6 +424,13 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 #endif
 
                 stored_msgs[mitem->mailId] = std::make_pair(msg->metaData->mGroupId,msg->metaData->mMsgId) ;
+
+                if(dbg_mail_dump++ < 3) {
+                    static const char* H = "0123456789abcdef";
+                    std::string hx; const uint8_t* p = (const uint8_t*)msg->msg.bin_data;
+                    for(uint32_t k=0;k<24 && k<msg->msg.bin_len;++k){ hx += H[p[k]>>4]; hx += H[p[k]&0xf]; hx += ' '; }
+                    RsDbg() << "MAIL CLEANUP/dbg RAW mail  msgId=" << msg->metaData->mMsgId << " deserialised mailId=" << std::hex << mitem->mailId << std::dec << " rawbytes=" << hx;
+                }
             }
             else if(NULL != (pitem = dynamic_cast<RsGxsTransPresignedReceipt*>(item)))
             {
@@ -431,6 +439,13 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 #endif
 
                 received_msgs.push_back(pitem->mailId) ;
+
+                if(dbg_rcpt_dump++ < 3) {
+                    static const char* H = "0123456789abcdef";
+                    std::string hx; const uint8_t* p = (const uint8_t*)msg->msg.bin_data;
+                    for(uint32_t k=0;k<24 && k<msg->msg.bin_len;++k){ hx += H[p[k]>>4]; hx += H[p[k]&0xf]; hx += ' '; }
+                    RsDbg() << "MAIL CLEANUP/dbg RAW rcpt  msgId=" << msg->metaData->mMsgId << " deserialised mailId=" << std::hex << pitem->mailId << std::dec << " rawbytes=" << hx;
+                }
             }
             else
                 std::cerr << "  Unknown item type!" << std::endl;
