@@ -2545,7 +2545,12 @@ void RsGenExchange::publishMsgs()
         mGrpLocMetaMap.insert(std::make_pair(token, g));
     }
 
-	if(atLeastOneMessageCreatedSuccessfully) mNetService->requestPull();
+	if(atLeastOneMessageCreatedSuccessfully)
+	{
+		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+		        << "): PUBLISH - publishMsgs stored new message(s), triggering requestPull to friends";
+		mNetService->requestPull();
+	}
 }
 
 RsGenExchange::ServiceCreate_Return RsGenExchange::service_CreateGroup(RsGxsGrpItem* /* grpItem */,

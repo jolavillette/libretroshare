@@ -631,9 +631,9 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 
 			mLastPeerSyncTS[peerId] = now;
 		}
-		RsDbg() << "PUSH: " << AuthSSL::getAuthSSL()->getOwnLocation()
-				<< ": triggering pull for " << peerId.toStdString()
-				<< " (isPeriodic: 0x" << std::hex << (int)isPeriodic << ")";
+		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+				<< "): SYNC - triggering pull from peer " << peerId.toStdString()
+				<< " (isPeriodic=" << (int)isPeriodic << ")";
 
 		ClientGrpMap::const_iterator cit = mClientGrpUpdateMap.find(peerId);
 		uint32_t updateTS = 0;
@@ -4397,6 +4397,8 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
     RS_STACK_MUTEX(mNxsMutex) ;
 
     const RsPeerId& peer = item->PeerId();
+    RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+            << "): SERVER - received msg-sync-request from peer " << peer.toStdString() << " for group " << item->grpId;
     bool grp_is_known = false;
     bool was_circle_protected = item_was_encrypted || bool(item->flag & RsNxsSyncMsgReqItem::FLAG_USE_HASHED_GROUP_ID);
 
@@ -4617,6 +4619,8 @@ void RsGxsNetService::locked_pushMsgRespFromList(std::list<RsNxsItem*>& itemL, c
     GXSNETDEBUG_PG(sslId,grp_id) << "   peerId = " << sslId << std::endl;
     GXSNETDEBUG_PG(sslId,grp_id) << "   transN = " << transN << std::endl;
 #endif
+    RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+            << "): SERVER - serving " << itemL.size() << " msg item(s) to peer " << sslId.toStdString() << " for group " << grp_id;
     NxsTransaction* tr = new NxsTransaction();
 	tr->mItems = itemL;
 	tr->mFlag = NxsTransaction::FLAG_STATE_WAITING_CONFIRM;
@@ -5193,6 +5197,8 @@ std::error_condition RsGxsNetService::requestPull(std::set<RsPeerId> peers)
 	{
         auto item = new RsNxsPullRequestItem(mServType);
 		item->PeerId(peerId);
+		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+		        << "): PUSH - sending pull-request to peer " << peerId.toStdString();
 		generic_sendItem(item);
 	}
 
@@ -5201,6 +5207,8 @@ std::error_condition RsGxsNetService::requestPull(std::set<RsPeerId> peers)
 
 void RsGxsNetService::handlePullRequest(RsNxsPullRequestItem *item)
 {
+	RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
+	        << "): PUSH - received pull-request from peer " << item->PeerId().toStdString() << " -> checkUpdatesFromPeers";
 	checkUpdatesFromPeers(std::set<RsPeerId>{item->PeerId()});
 }
 
