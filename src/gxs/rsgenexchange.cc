@@ -3100,7 +3100,8 @@ void RsGenExchange::computeHash(const RsTlvBinaryData& data, RsFileHash& hash)
 void RsGenExchange::processRecvdMessages()
 {
     std::list<RsGxsMessageId> messages_to_reject ;
-    std::set<RsGxsGroupId> grps_with_new_msgs ;	// groups that received new messages, to stamp their server update TS off-mutex below
+    size_t dbg_rej_quota = 0, dbg_rej_validate = 0;	// debug: split reject reason (anti-spam quota vs validation FAIL)
+    std::set<RsGxsGroupId> grps_with_new_msgs ;	// MAIL: groups that received new messages, to stamp their server update TS off-mutex below
 
     {
 	    RS_STACK_MUTEX(mGenMtx) ;
@@ -3135,7 +3136,10 @@ void RsGenExchange::processRecvdMessages()
 			bool accept_new_msg = msg->metaData != NULL && acceptNewMessage(msg->metaData,msg->msg.bin_len);
 
 			if(!accept_new_msg)
+			{
 				messages_to_reject.push_back(msg->metaData->mMsgId); // This prevents reloading the message again at next sync.
+				++dbg_rej_quota;
+			}
 
 		    if(!accept_new_msg || gpsi.mFirstTryTS + VALIDATE_MAX_WAITING_TIME < now)
 		    {
@@ -3251,6 +3255,7 @@ void RsGenExchange::processRecvdMessages()
 			              << "msg->grpId: " << msg->grpId << ", msgId: " << msg->msgId << std::endl;
 #endif
 				messages_to_reject.push_back(msg->msgId) ;
+				++dbg_rej_validate;
 				delete msg ;
 			}
 			else if(validateReturn == VALIDATE_FAIL_TRY_LATER)
@@ -3325,7 +3330,8 @@ void RsGenExchange::processRecvdMessages()
 	    // MAIL: debug — count of incoming msgs this node REJECTED (already-known/re-sent by a peer)
 	    if(mServType == 0x0230 /* RS_SERVICE_TYPE_GXS_TRANS */ && !messages_to_reject.empty())
 		    RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
-		            << "): RECV - rejected " << messages_to_reject.size() << " incoming msg(s) (already-known/re-sent)";
+		            << "): RECV - rejected " << messages_to_reject.size() << " incoming msg(s) ("
+			            << dbg_rej_quota << " by anti-spam QUOTA, " << dbg_rej_validate << " by validation FAIL)";
 
 	    // MAIL: relay/recipient visibility — this node just stored new GxsTrans message(s) (mail or ACK
 	    // passing through). Gated to the GxsTrans service so it does not fire for forums/channels/etc.
