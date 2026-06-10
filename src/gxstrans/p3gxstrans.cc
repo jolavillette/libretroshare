@@ -500,10 +500,14 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
                 << "): CLEANUP/dbg - mailId==0: mails=" << mail_zero << "/" << stored_msgs.size()
                 << ", receipts=" << rcpt_zero << "/" << received_msgs.size()
                 << "; receipts matching a stored mail=" << overlap;
-        int n = 0;
-        for(const auto& it : stored_msgs)   { if(n++ >= 4) break; RsDbg() << "MAIL CLEANUP/dbg   sample mail    mailId=" << std::hex << it.first << std::dec; }
-        n = 0;
-        for(const auto& r  : received_msgs) { if(n++ >= 4) break; RsDbg() << "MAIL CLEANUP/dbg   sample receipt mailId=" << std::hex << r << std::dec; }
+        {
+            static const char* H2 = "0123456789abcdef";
+            std::string allm, allr;
+            for(const auto& it : stored_msgs)   { uint64_t v=it.first; for(int i=15;i>=0;--i) allm += H2[(v>>(i*4))&0xf]; allm += ' '; }
+            for(const auto& r  : received_msgs) { uint64_t v=r;        for(int i=15;i>=0;--i) allr += H2[(v>>(i*4))&0xf]; allr += ' '; }
+            RsDbg() << "MAIL CLEANUP/dbg ALLMAILS " << allm;
+            RsDbg() << "MAIL CLEANUP/dbg ALLRCPTS " << allr;
+        }
     }
 
 	RS_STACK_MUTEX(mMtx) ;
