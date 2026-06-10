@@ -1411,16 +1411,16 @@ bool p3GxsTrans::acceptNewMessage(const RsGxsMsgMetaData *msgMeta,uint32_t msg_s
 
 	if(s.size + msg_size > max_size || 1+s.count > max_count)
 	{
-#ifdef DEBUG_GXSTRANS
-		std::cerr << "=> rejected." << std::endl;
-#endif
+		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): QUOTA author=" << msgMeta->mAuthorId.toStdString().substr(0,8)
+		        << " rep=" << static_cast<int>(rep_lev) << " pgp=" << pgp_linked
+		        << " count=" << s.count << "/" << max_count << " size=" << s.size << "/" << max_size << " => REJECT";
 		return false ;
 	}
 	else
 	{
-#ifdef DEBUG_GXSTRANS
-		std::cerr << "=> accepted." << std::endl;
-#endif
+		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): QUOTA author=" << msgMeta->mAuthorId.toStdString().substr(0,8)
+		        << " rep=" << static_cast<int>(rep_lev) << " pgp=" << pgp_linked
+		        << " count=" << s.count << "/" << max_count << " size=" << s.size << "/" << max_size << " => accept";
 
 		s.count++ ;
 		s.size += msg_size ;	// update the statistics, so that it's not possible to pass a bunch of msgs at once below the limits.
