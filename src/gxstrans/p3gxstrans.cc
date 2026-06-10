@@ -392,6 +392,7 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 
     std::map<RsGxsTransId,std::pair<RsGxsGroupId,RsGxsMessageId> > stored_msgs ;
     std::list<RsGxsTransId> received_msgs ;
+    std::map<RsGxsGroupId, std::pair<int,int> > per_group ;	// DEBUG bug A: per-group (mails, receipts)
 
     GxsMsgResult msgs;
     mDs->retrieveNxsMsgs(grps, msgs, true);
@@ -424,6 +425,7 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 #endif
 
                 stored_msgs[mitem->mailId] = std::make_pair(msg->metaData->mGroupId,msg->metaData->mMsgId) ;
+                per_group[msg->metaData->mGroupId].first++;
 
                 if(dbg_mail_dump++ < 3) {
                     static const char* H = "0123456789abcdef";
@@ -439,6 +441,7 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 #endif
 
                 received_msgs.push_back(pitem->mailId) ;
+                per_group[msg->metaData->mGroupId].second++;
 
                 if(dbg_rcpt_dump++ < 3) {
                     static const char* H = "0123456789abcdef";
@@ -490,6 +493,11 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
         RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation()
                 << "): CLEANUP - group holds " << stored_msgs.size() << " mail(s) + " << received_msgs.size()
                 << " receipt(s); scheduling " << ndel << " mail(s) for deletion (mails matched by a present receipt)";
+        {
+            std::string pg;
+            for(const auto& it : per_group) pg += it.first.toStdString().substr(0,8) + ":" + std::to_string(it.second.first) + "m/" + std::to_string(it.second.second) + "r  ";
+            RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): CLEANUP/dbg per-group (mails/receipts): " << pg;
+        }
 
         // DEBUG bug A: how many mailIds are 0, and do the two sets overlap at all?
         uint32_t mail_zero = 0, rcpt_zero = 0, overlap = 0;
@@ -1111,6 +1119,7 @@ void p3GxsTrans::locked_processOutgoingRecord(OutgoingRecord& pr)
 		mail_item->meta.mOrigMsgId.clear();
 
 		uint32_t token;
+		RsDbg() << "MAIL (" << AuthSSL::getAuthSSL()->getOwnLocation() << "): PUBLISH - publishing mail mailId=" << std::hex << mail_item->mailId << std::dec << " to group " << pr.group_id;
 		publishMsg(token, mail_item) ;
 
 		pr.status = GxsTransSendStatus::PENDING_RECEIPT_RECEIVE;
