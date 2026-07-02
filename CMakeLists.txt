@@ -890,7 +890,10 @@ endif()
 # because enabling it causes the MinGW linker (ld) to run out of memory or exhaust the maximum
 # number of exported symbols, or emit "multiple definition" errors during LTO code generation. 
 # While this makes the binary fatter and slower, it prevents fatal build failures.
-if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT WIN32)
+# The same escape hatch (-DRS_NO_LTO=ON) also works around lto1 internal compiler
+# errors (segfault in the IPA icf pass) with the older GCC 10 LTO plugin, e.g. when
+# building on Debian 11 to produce a portable (old-glibc) AppImage.
+if(CMAKE_BUILD_TYPE STREQUAL "Release" AND NOT WIN32 AND NOT RS_NO_LTO)
 	set_property(TARGET ${PROJECT_NAME} PROPERTY INTERPROCEDURAL_OPTIMIZATION ON)
 endif()
 
