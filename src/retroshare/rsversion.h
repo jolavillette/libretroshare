@@ -51,11 +51,21 @@
 
 /**
  * @def RS_EXTRA_VERSION
- * An extra string to append to the version to make it more descriptive.
- * Customize it trough qmake command line @see retroshare.pri
+ * An extra string appended to the version to make it more descriptive.
+ *
+ * This is only the FALLBACK used when the build system could not determine the
+ * version from git (e.g. a release tarball with no git metadata, as most distro
+ * packagers use). In that case the reported version must be the clean release
+ * number, so the fallback extra is empty: MAJOR.MINOR.MINI -> "0.6.7".
+ *
+ * When git IS available the build system overrides MAJOR/MINOR/MINI/EXTRA from
+ * `git describe` (@see retroshare.pri and the CMake builds), so a build from a
+ * clone still gets its "-<commits>-g<hash>" suffix. Do NOT put a placeholder
+ * letter here: a lone "a" looked like an alpha tag and made release/tarball
+ * builds report "0.6.7a" while git builds reported "0.6.7-<n>-g<hash>".
  */
 #ifndef RS_EXTRA_VERSION
-#	define RS_EXTRA_VERSION "a"
+#	define RS_EXTRA_VERSION ""
 #endif
 
 
