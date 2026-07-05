@@ -28,6 +28,7 @@
 #include "crypto/rsaes.h"
 #include "util/rsprint.h"
 #include "util/rsmemory.h"
+#include "util/rsdebug.h"		// VOIP: RsDbg() traces for the datagram path
 
 #include <retroshare/rsidentity.h>
 #include <retroshare/rsiface.h>
@@ -331,6 +332,12 @@ void p3GxsTunnelService::handleRecvTunnelDataAckItem(const RsGxsTunnelId &/*id*/
 
 void p3GxsTunnelService::handleRecvTunnelDataItem(const RsGxsTunnelId& tunnel_id,RsGxsTunnelDataItem *item) 
 {
+    // Reliable items are acknowledged. Datagram (unreliable) items - distant VOIP media -
+    // are fire-and-forget: no ACK (saves reverse tunnel bandwidth, sender keeps no state).
+    if(item->flags & RS_GXS_TUNNEL_DATA_FLAG_UNRELIABLE)
+        RsDbg() << "VOIP datagram: received fire-and-forget item (counter=" << std::hex << item->unique_item_counter << std::dec << ") on tunnel " << tunnel_id.toStdString() << " - not sending ACK" << std::endl ;
+    else
+    {
     // imediately send an ACK for this item
     
     RsGxsTunnelDataAckItem *ackitem = new RsGxsTunnelDataAckItem ;
@@ -343,6 +350,8 @@ void p3GxsTunnelService::handleRecvTunnelDataItem(const RsGxsTunnelId& tunnel_id
 	    pendingGxsTunnelItems.push_back(ackitem) ;	// we use the queue that does not need an ACK, in order to avoid an infinite loop ;-)
     }
     
+    }
+
     // notify the client for the received data
     
 #ifdef DEBUG_GXS_TUNNEL    
@@ -1442,7 +1451,7 @@ uint64_t p3GxsTunnelService::locked_getPacketCounter()
 	return mCurrentPacketCounter++ ;
 }
 
-bool p3GxsTunnelService::sendData(const RsGxsTunnelId &tunnel_id, uint32_t service_id, const uint8_t *data, uint32_t size)
+bool p3GxsTunnelService::sendData(const RsGxsTunnelId &tunnel_id, uint32_t service_id, const uint8_t *data, uint32_t size, bool reliable)
 {
     // make sure that the tunnel ID is registered.
     
@@ -1478,17 +1487,29 @@ bool p3GxsTunnelService::sendData(const RsGxsTunnelId &tunnel_id, uint32_t servi
     RsGxsTunnelDataItem *item = new RsGxsTunnelDataItem ;
             
     item->unique_item_counter = locked_getPacketCounter() ;// this allows to make the item unique, while respecting the packet order!
-    item->flags = 0;						// not used yet.
+    item->flags = reliable ? 0 : RS_GXS_TUNNEL_DATA_FLAG_UNRELIABLE ; // VOIP: unreliable => fire-and-forget datagram (no ACK/resend). Old value was						// not used yet.
     item->service_id = service_id;
     item->data_size = size;					// encrypted data size
     item->data = (uint8_t*)rs_malloc(size);			// encrypted data
     
     if(item->data == NULL)
+    {
         delete item ;
+        return false ;			// VOIP: was missing; old code deleted the item then dereferenced it below
+    }
     
     item->PeerId(RsPeerId(tunnel_id)) ;
     memcpy(item->data,data,size) ;
     
+    if(!reliable)
+    {
+        // VOIP datagram path: push into the no-ACK queue. flush() sends it exactly once and
+        // deletes it - no re-send, no ACK expected => right semantics for real-time media.
+        RsDbg() << "VOIP datagram: queueing " << size << " bytes fire-and-forget for tunnel " << tunnel_id.toStdString() << " (counter=" << std::hex << item->unique_item_counter << std::dec << ")" << std::endl ;
+        pendingGxsTunnelItems.push_back(item) ;
+        return true ;
+    }
+
     GxsTunnelData& tdata( pendingGxsTunnelDataItems[item->unique_item_counter] ) ;
     
     tdata.data_item = item ;
