@@ -132,7 +132,7 @@ public:
     virtual bool closeExistingTunnel(const RsGxsTunnelId &tunnel_id,uint32_t service_id) override ;
     virtual bool getTunnelsInfo(std::vector<GxsTunnelInfo>& infos) override ;
     virtual bool getTunnelInfo(const RsGxsTunnelId& tunnel_id,GxsTunnelInfo& info) override ;
-    virtual bool sendData(const RsGxsTunnelId& tunnel_id,uint32_t service_id,const uint8_t *data,uint32_t size) override ;
+    virtual bool sendData(const RsGxsTunnelId& tunnel_id,uint32_t service_id,const uint8_t *data,uint32_t size, bool reliable = true) override ;
     virtual bool registerClientService(uint32_t service_id,RsGxsTunnelClientService *service) override ;
 
     // derived from p3service
