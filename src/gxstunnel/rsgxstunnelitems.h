@@ -22,6 +22,7 @@
 #pragma once
 
 #include <openssl/ssl.h>
+#include <cstdlib>			// VOIP: for free() in RsGxsTunnelDataItem destructor
 
 #include "rsitems/rsserviceids.h"
 #include "rsitems/itempriorities.h"
@@ -43,6 +44,11 @@ const uint8_t RS_PKT_SUBTYPE_GXS_TUNNEL_DATA           = 0x01 ;
 const uint8_t RS_PKT_SUBTYPE_GXS_TUNNEL_DH_PUBLIC_KEY  = 0x02 ;
 const uint8_t RS_PKT_SUBTYPE_GXS_TUNNEL_STATUS         = 0x03 ;
 const uint8_t RS_PKT_SUBTYPE_GXS_TUNNEL_DATA_ACK       = 0x04 ;
+
+// Flags for the 'flags' field of RsGxsTunnelDataItem.
+// UNRELIABLE marks a fire-and-forget datagram (distant VOIP real-time media): the
+// sender never re-sends it and the receiver never acknowledges it.
+const uint32_t RS_GXS_TUNNEL_DATA_FLAG_UNRELIABLE      = 0x00000001 ;
 
 typedef uint64_t		GxsTunnelDHSessionId ;
 
@@ -71,7 +77,7 @@ public:
     RsGxsTunnelDataItem() :RsGxsTunnelItem(RS_PKT_SUBTYPE_GXS_TUNNEL_DATA), unique_item_counter(0), flags(0), service_id(0), data_size(0), data(NULL) {}
     explicit RsGxsTunnelDataItem(uint8_t subtype) :RsGxsTunnelItem(subtype) , unique_item_counter(0), flags(0), service_id(0), data_size(0), data(NULL) {}
 
-    virtual ~RsGxsTunnelDataItem() {}
+    virtual ~RsGxsTunnelDataItem() { if(data) free(data) ; }	// VOIP: was empty -> data (rs_malloc'd) leaked on every sent item. Safe: receiver sets data=NULL before delete.
     virtual void clear() {}
 
 	virtual void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
