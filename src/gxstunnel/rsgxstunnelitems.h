@@ -45,6 +45,11 @@ const uint8_t RS_PKT_SUBTYPE_GXS_TUNNEL_DH_PUBLIC_KEY  = 0x02 ;
 const uint8_t RS_PKT_SUBTYPE_GXS_TUNNEL_STATUS         = 0x03 ;
 const uint8_t RS_PKT_SUBTYPE_GXS_TUNNEL_DATA_ACK       = 0x04 ;
 
+// Flags for the 'flags' field of RsGxsTunnelDataItem.
+// UNRELIABLE marks a fire-and-forget datagram (distant VOIP real-time media): the
+// sender never re-sends it and the receiver never acknowledges it.
+const uint32_t RS_GXS_TUNNEL_DATA_FLAG_UNRELIABLE      = 0x00000001 ;
+
 typedef uint64_t		GxsTunnelDHSessionId ;
 
 class RsGxsTunnelItem: public RsItem
