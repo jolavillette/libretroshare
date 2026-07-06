@@ -4034,11 +4034,22 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
 #ifdef DEBUG_IDS
         std::cerr << "Bruteforcing PGP hash from GxsId mPgpHash: " << grp.mPgpIdHash << std::endl;
 #endif
+        // The signature carries no readable issuer id, so we cannot tell which
+        // PGP key signed this identity: we try every known key and look for the
+        // one whose fingerprint reproduces the stored hash. Log a single summary
+        // line here; the per-key detail below would otherwise flood the log with
+        // thousands of entries on a single line, so it stays under DEBUG_IDS.
+        RsDbg() << "GXS_SIGCHECK GxsId " << grp.mMeta.mGroupId
+                << ": signature has no issuer id, brute-forcing PGP link against "
+                << mPgpFingerprintMap.size() << " known keys" ;
+
         for(auto mit = mPgpFingerprintMap.begin(); mit != mPgpFingerprintMap.end(); ++mit)
         {
             calcPGPHash(RsGxsId(grp.mMeta.mGroupId), mit->second, hash);
 
+#ifdef DEBUG_IDS
             std::cerr << "   profile key " << mit->first << " (" << mit->second << ") : ";
+#endif
 
             if (grp.mPgpIdHash == hash)
             {
