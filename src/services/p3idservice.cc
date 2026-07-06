@@ -4000,6 +4000,10 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
     RsPgpFingerprint pgp_fingerprint;
     pgpId.clear() ;
 
+    // Set when the parsed issuer turns out unusable (an unknown key is handled separately
+    // below), so we fall through to the brute-force scan instead of rejecting the identity.
+    bool do_bruteforce = false ;
+
     if(mPgpUtils->parseSignature((unsigned char *) grp.mPgpIdSign.c_str(), grp.mPgpIdSign.length(),issuer_id) && !issuer_id.isNull())
     {
         RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
@@ -4021,15 +4025,25 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
 #endif
         if(grp.mPgpIdHash != hash)
         {
-            std::cerr << "(EE) Unexpected situation: GxsId signature hash (" << hash << ") doesn't correspond to what's listed in the mPgpIdHash field (" << grp.mPgpIdHash << ")." << std::endl;
-            error = true;
-            return false;
+            // The parsed issuer may come from the unauthenticated unhashed area (case A) and
+            // point to a known but wrong key. Do not reject the identity on this mismatch:
+            // fall back to brute-forcing the real signer below.
+            RsDbg() << "GXS_SIGCHECK GxsId " << grp.mMeta.mGroupId
+                    << ": parsed issuer " << issuer_id
+                    << " does not match the stored PGP hash, falling back to brute-force" ;
+            do_bruteforce = true;
         }
-        pgp_fingerprint = mit->second;
+        else
+            pgp_fingerprint = mit->second;
     }
     else
+        do_bruteforce = true;
+
+    if(do_bruteforce)
     {
         RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
+
+        pgpId.clear();
 
 #ifdef DEBUG_IDS
         std::cerr << "Bruteforcing PGP hash from GxsId mPgpHash: " << grp.mPgpIdHash << std::endl;
