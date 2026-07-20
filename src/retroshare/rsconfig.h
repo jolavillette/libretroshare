@@ -479,7 +479,6 @@ public:
 	/* Data Rate Control */
 	/**
 	 * @brief SetMaxDataRates set maximum upload and download rates
-	 * @jsonapi{development}
 	 * @param[in] downKb download rate in kB
 	 * @param[in] upKb upload rate in kB
 	 * @return returns 1 on succes and 0 otherwise
@@ -501,7 +500,6 @@ public:
 
 	/**
 	 * @brief GetMaxDataRates get maximum upload and download rates
-	 * @jsonapi{development}
 	 * @param[out] inKb download rate in kB
 	 * @param[out] outKb upload rate in kB
 	 * @return returns 1 on succes and 0 otherwise
