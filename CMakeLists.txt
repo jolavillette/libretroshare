@@ -790,7 +790,7 @@ endif(RS_EXPORT_JNI_ONLOAD)
 if(RS_ANDROID)
 	FetchContent_Declare(
 		jni-hpp
-		GIT_REPOSITORY "https://github.com/RetroShare/jni-hpp.git"
+		GIT_REPOSITORY "https://github.com/RetroShare/jni.hpp.git"
 		GIT_TAG "origin/master"
 		GIT_SHALLOW TRUE
 		GIT_PROGRESS TRUE
