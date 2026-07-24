@@ -2852,8 +2852,12 @@ bool p3IdService::cache_store(const RsGxsIdGroupItem *item)
 
     if (!pub_key_ok)
     {
-        std::cerr << "p3IdService::cache_store() ERROR No Public Key Found";
+        // Not an error: identity data can legitimately arrive before (or without) its public key.
+        // The caller retries later, so only trace this when debugging identities.
+#ifdef DEBUG_IDS
+        std::cerr << "p3IdService::cache_store() No Public Key Found (yet)";
         std::cerr << std::endl;
+#endif
         return false;
     }
 
@@ -4000,6 +4004,10 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
     RsPgpFingerprint pgp_fingerprint;
     pgpId.clear() ;
 
+    // Set when the parsed issuer turns out unusable (an unknown key is handled separately
+    // below), so we fall through to the brute-force scan instead of rejecting the identity.
+    bool do_bruteforce = false ;
+
     if(mPgpUtils->parseSignature((unsigned char *) grp.mPgpIdSign.c_str(), grp.mPgpIdSign.length(),issuer_id) && !issuer_id.isNull())
     {
         RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
@@ -4021,24 +4029,45 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
 #endif
         if(grp.mPgpIdHash != hash)
         {
-            std::cerr << "(EE) Unexpected situation: GxsId signature hash (" << hash << ") doesn't correspond to what's listed in the mPgpIdHash field (" << grp.mPgpIdHash << ")." << std::endl;
-            error = true;
-            return false;
+            // The parsed issuer may come from the unauthenticated unhashed area (case A) and
+            // point to a known but wrong key. Do not reject the identity on this mismatch:
+            // fall back to brute-forcing the real signer below.
+            RsDbg() << "GXS_SIGCHECK GxsId " << grp.mMeta.mGroupId
+                    << ": parsed issuer " << issuer_id
+                    << " does not match the stored PGP hash, falling back to brute-force" ;
+            do_bruteforce = true;
         }
-        pgp_fingerprint = mit->second;
+        else
+            pgp_fingerprint = mit->second;
     }
     else
+        do_bruteforce = true;
+
+    if(do_bruteforce)
     {
         RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
+
+        pgpId.clear();
 
 #ifdef DEBUG_IDS
         std::cerr << "Bruteforcing PGP hash from GxsId mPgpHash: " << grp.mPgpIdHash << std::endl;
 #endif
+        // The signature carries no readable issuer id, so we cannot tell which
+        // PGP key signed this identity: we try every known key and look for the
+        // one whose fingerprint reproduces the stored hash. Log a single summary
+        // line here; the per-key detail below would otherwise flood the log with
+        // thousands of entries on a single line, so it stays under DEBUG_IDS.
+        RsDbg() << "GXS_SIGCHECK GxsId " << grp.mMeta.mGroupId
+                << ": signature has no issuer id, brute-forcing PGP link against "
+                << mPgpFingerprintMap.size() << " known keys" ;
+
         for(auto mit = mPgpFingerprintMap.begin(); mit != mPgpFingerprintMap.end(); ++mit)
         {
             calcPGPHash(RsGxsId(grp.mMeta.mGroupId), mit->second, hash);
 
+#ifdef DEBUG_IDS
             std::cerr << "   profile key " << mit->first << " (" << mit->second << ") : ";
+#endif
 
             if (grp.mPgpIdHash == hash)
             {

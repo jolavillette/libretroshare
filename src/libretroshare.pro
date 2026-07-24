@@ -21,6 +21,10 @@ DESTDIR = lib
 
 QMAKE_CXXFLAGS += -fPIC
 
+# OpenMP support for parallel deserialization in GXS (rsgenexchange.cc)
+QMAKE_CXXFLAGS += -fopenmp
+LIBS += -fopenmp
+
 ## Uncomment to enable Unfinished Services.
 #CONFIG += wikipoos
 #CONFIG += gxsthewire
@@ -1043,12 +1047,15 @@ rs_jsonapi {
     SOURCES += jsonapi/jsonapi.cpp
 }
 
+
 rs_deep_forums_index {
     HEADERS *= deep_search/commonutils.hpp
     SOURCES *= deep_search/commonutils.cpp
 
-    HEADERS += deep_search/forumsindex.hpp
-    SOURCES += deep_search/forumsindex.cpp
+    
+    # FTS5 implementation (parallel to Xapian for now)
+    HEADERS += deep_search/forumsindex_fts5.hpp
+    SOURCES += deep_search/forumsindex_fts5.cpp
 }
 
 rs_deep_channels_index {
@@ -1152,8 +1159,10 @@ message("In rnp_rnplib precompilation code")
     # Generate header file rnp_export.h
     librnp_header.name = Generating librnp header.
     librnp_header.input = DUMMYQMAKECOMPILERINPUT
-    librnp_header.output = $$clean_path($${LIBRNP_BUILD_PATH}/src/lib/rnp/rnp_export.h)
+    # Use a relative path to match qmake's dependency scanner and avoid race conditions
+    librnp_header.output = ../../../supportlibs/librnp/Build/src/lib/rnp/rnp_export.h
     librnp_header.variable_out = HEADERS
+    librnp_header.CONFIG += target_predeps no_link
 
     LIBRNP_CMAKE_CXXFLAGS =
     LIBRNP_CMAKE_PARAMS =
@@ -1248,7 +1257,7 @@ message("In rnp_rnplib precompilation code")
     librnp.output = $$clean_path($${LIBRNP_BUILD_PATH}/src/lib/$${LIBRNP_OUTPUT_LIBRARY})
     librnp.CONFIG += target_predeps combine
     librnp.variable_out = PRE_TARGETDEPS
-    librnp.depends = $${librnp_header.output}
+    librnp.depends = ../../../supportlibs/librnp/Build/src/lib/rnp/rnp_export.h
     librnp.commands += cd $$shell_path($${LIBRNP_BUILD_PATH}) && $(MAKE) rnp
 
     QMAKE_EXTRA_COMPILERS += librnp

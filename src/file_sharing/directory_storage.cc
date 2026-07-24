@@ -138,6 +138,16 @@ bool DirectoryStorage::getDirectoryUpdateTime   (EntryIndex index,rstime_t& upda
 bool DirectoryStorage::getDirectoryRecursModTime(EntryIndex index,rstime_t& rec_md_TS) const { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->getTS(index,rec_md_TS,&InternalFileHierarchyStorage::DirEntry::dir_most_recent_time); }
 bool DirectoryStorage::getDirectoryLocalModTime (EntryIndex index,rstime_t& loc_md_TS) const { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->getTS(index,loc_md_TS,&InternalFileHierarchyStorage::DirEntry::dir_modtime         ); }
 
+bool DirectoryStorage::getDirectoryCumulatedFileCount(EntryIndex index,uint32_t& file_count) const
+{
+    RS_STACK_MUTEX(mDirStorageMtx) ;
+    const InternalFileHierarchyStorage::DirEntry *d = mFileHierarchy->getDirEntry(index) ;
+    if(d == nullptr)
+        return false ;
+    file_count = d->dir_cumulated_files ;
+    return true ;
+}
+
 bool DirectoryStorage::setDirectoryUpdateTime   (EntryIndex index,rstime_t  update_TS) { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->setTS(index,update_TS,&InternalFileHierarchyStorage::DirEntry::dir_update_time     ); }
 bool DirectoryStorage::setDirectoryRecursModTime(EntryIndex index,rstime_t  rec_md_TS) { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->setTS(index,rec_md_TS,&InternalFileHierarchyStorage::DirEntry::dir_most_recent_time); }
 bool DirectoryStorage::setDirectoryLocalModTime (EntryIndex index,rstime_t  loc_md_TS) { RS_STACK_MUTEX(mDirStorageMtx) ; return mFileHierarchy->setTS(index,loc_md_TS,&InternalFileHierarchyStorage::DirEntry::dir_modtime         ); }
@@ -248,6 +258,8 @@ bool DirectoryStorage::extractData(const EntryIndex& indx,DirDetails& d)
         d.type = DIR_TYPE_DIR;
         d.hash.clear() ;
         d.size   = dir_entry->dir_cumulated_size;//dir_entry->subdirs.size() + dir_entry->subfiles.size();
+        d.count  = dir_entry->dir_cumulated_files;
+        d.uploads = dir_entry->dir_cumulated_uploads;
         d.max_mtime = dir_entry->dir_most_recent_time ;
         d.mtime     = dir_entry->dir_modtime ;
         d.name    = dir_entry->dir_name;
@@ -259,6 +271,8 @@ bool DirectoryStorage::extractData(const EntryIndex& indx,DirDetails& d)
             d.type = DIR_TYPE_PERSON ;
             d.name = mPeerId.toStdString();
         }
+
+
     }
     else if(type == InternalFileHierarchyStorage::FileStorageNode::TYPE_FILE)
     {
@@ -298,13 +312,13 @@ bool DirectoryStorage::getIndexFromDirHash(const RsFileHash& hash,EntryIndex& in
     return mFileHierarchy->getIndexFromDirHash(hash,index) ;
 }
 
-void DirectoryStorage::checkSave()
+void DirectoryStorage::checkSave(std::function<uint64_t(const RsFileHash&)> get_uploads)
 {
     rstime_t now = time(NULL);
 
     if(mChanged && mLastSavedTime + MIN_INTERVAL_BETWEEN_REMOTE_DIRECTORY_SAVE < now)
 	{
-        mFileHierarchy->recursUpdateCumulatedSize(mFileHierarchy->mRoot);
+        mFileHierarchy->recursUpdateCumulatedSize(mFileHierarchy->mRoot, get_uploads);
 
 	   {
 		  RS_STACK_MUTEX(mDirStorageMtx) ;

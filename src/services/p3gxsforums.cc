@@ -60,7 +60,7 @@ p3GxsForums::p3GxsForums( RsGeneralDataService *gds,
     mGenActive(false), mGenCount(0),
     mKnownForumsMutex("GXS forums known forums timestamp cache")
 #ifdef RS_DEEP_FORUMS_INDEX
-    , mDeepIndex(DeepForumsIndex::dbDefaultPath())
+    , mDeepIndex(DeepForumsIndexFTS5::dbDefaultPath(), gds->getEncryptionKey())
 #endif
 {
 	// Test Data disabled in Repo.
@@ -895,6 +895,49 @@ bool p3GxsForums::markRead(const RsGxsGrpMsgIdPair& msgId, bool read)
 	return true;
 }
 
+bool p3GxsForums::markRead(const RsGxsGroupId& forumId, const std::vector<RsGxsMessageId>& msgIds, bool read)
+{
+	if(msgIds.empty())
+		return true;
+
+	uint32_t mask   = GXS_SERV::GXS_MSG_STATUS_GUI_NEW | GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;
+	uint32_t status = read ? 0 : GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;
+
+	// Queue every status change at once. They all land in mMsgLocMetaMap and are
+	// drained together by a single processMsgMetaChanges() tick, which persists
+	// them in one DB transaction. This is what keeps "mark all as read" cheap
+	// instead of one blocking request (and one detached thread) per message.
+	std::vector<uint32_t> tokens;
+	tokens.reserve(msgIds.size());
+
+	for(const RsGxsMessageId& msgId : msgIds)
+	{
+		uint32_t token;
+		setMsgStatusFlags(token, RsGxsGrpMsgIdPair(forumId, msgId), status, mask);
+		tokens.push_back(token);
+	}
+
+	// Wait for the whole batch to be processed. All tokens complete in the same
+	// tick, so waiting on the last one is enough.
+	waitToken(tokens.back(), std::chrono::milliseconds(30000));
+
+	RsGxsGrpMsgIdPair p;
+	for(uint32_t token : tokens)
+		acknowledgeMsg(token, p);
+
+	// A single event for the whole batch (the per-message event storm was part
+	// of what froze the UI). Consumers only use the group id to refresh counts.
+	if(rsEvents)
+	{
+		auto ev = std::make_shared<RsGxsForumEvent>();
+		ev->mForumGroupId   = forumId;
+		ev->mForumEventCode = RsForumEventCode::READ_STATUS_CHANGED;
+		rsEvents->postEvent(ev);
+	}
+
+	return true;
+}
+
 bool p3GxsForums::subscribeToForum(const RsGxsGroupId& groupId, bool subscribe )
 {
 	uint32_t token;
@@ -913,6 +956,86 @@ bool p3GxsForums::subscribeToForum(const RsGxsGroupId& groupId, bool subscribe )
 	if(subscribe) RsGenExchange::netService()->checkUpdatesFromPeers();
 
 	return true;
+}
+
+void p3GxsForums::reindexAll()
+{
+#ifdef RS_DEEP_FORUMS_INDEX
+	std::cerr << "DEEPSEARCH: Starting full re-indexation..." << std::endl;
+
+    // Clear existing index to avoid duplicates
+    mDeepIndex.clearIndex();
+
+    // Use a transaction for re-indexing (much faster and safer)
+    mDeepIndex.beginTransaction();
+
+	// 1. Get all groups (empty list = request all)
+	std::vector<RsGxsForumGroup> groupsInfo;
+	if(!getForumsInfo({}, groupsInfo)) 
+	{
+		std::cerr << "DEEPSEARCH: Failed to get group list using getForumsInfo" << std::endl;
+        mDeepIndex.commitTransaction();
+		return;
+	}
+
+	int grpCount = 0;
+	int msgCount = 0;
+
+	for(const auto& group : groupsInfo)
+	{
+		// 1. Index Group
+		mDeepIndex.indexForumGroup(group);
+		grpCount++;
+		
+		// 2. Get Message IDs using Metadata
+        std::vector<RsMsgMetaData> msgMetas;
+        if(!getForumMsgMetaData(group.mMeta.mGroupId, msgMetas))
+        {
+             std::cerr << "DEEPSEARCH: Failed to get metadata for group " << group.mMeta.mGroupId << std::endl;
+             continue;
+        }
+
+        if(msgMetas.empty()) continue;
+
+        // 3. Fetch Message Content in Batches of 50
+        std::set<RsGxsMessageId> batch;
+        
+        auto processBatch = [&](const std::set<RsGxsMessageId>& batchIds) 
+        {
+             std::vector<RsGxsForumMsg> msgs;
+             // getForumContent handles token request internally
+             if(getForumContent(group.mMeta.mGroupId, batchIds, msgs))
+             {
+                 for(const auto& msg : msgs) 
+                 {
+                     if(!mDeepIndex.indexForumPost(msg)) msgCount++;
+                 }
+             }
+             else
+             {
+                 std::cerr << "DEEPSEARCH: Failed to get content for batch" << std::endl;
+             }
+        };
+
+        for(const auto& meta : msgMetas)
+        {
+            batch.insert(meta.mMsgId);
+            if(batch.size() >= 50) 
+            {
+                 processBatch(batch);
+                 batch.clear();
+            }
+        }
+        if(!batch.empty())
+        {
+             processBatch(batch);
+        }
+	}
+    
+    mDeepIndex.commitTransaction();
+    
+    std::cerr << "DEEPSEARCH: Re-indexation completed. Groups: " << grpCount << ", Messages: " << msgCount << std::endl;
+#endif
 }
 
 bool p3GxsForums::exportForumLink(
@@ -1971,98 +2094,129 @@ std::error_condition p3GxsForums::distantSearchRequest(
 std::error_condition p3GxsForums::localSearch(
         const std::string& matchString,
         std::vector<RsGxsSearchResult>& searchResults )
-{ return prepareSearchResults(matchString, false, searchResults); }
+{ 
+    RsDbg() << "DEEPSEARCH: localSearch entry pattern='" << matchString << "'";
+    auto res = prepareSearchResults(matchString, false, searchResults); 
+    RsDbg() << "DEEPSEARCH: localSearch exit. Found " << searchResults.size() << " results.";
+    return res;
+}
 
 std::error_condition p3GxsForums::prepareSearchResults(
         const std::string& matchString, bool publicOnly,
         std::vector<RsGxsSearchResult>& searchResults )
 {
-	std::vector<DeepForumsSearchResult> results;
-	auto mErr = mDeepIndex.search(matchString, results);
-	if(mErr) return mErr;
+    std::vector<DeepForumsSearchResult> results;
+    auto mErr = mDeepIndex.search(matchString, results);
+    if(mErr) return mErr;
 
-	searchResults.clear();
-	for(auto uRes: results)
-	{
-		RsUrl resUrl(uRes.mUrl);
-		const auto forumIdStr = resUrl.getQueryV(RsGxsForums::FORUM_URL_ID_FIELD);
-		if(!forumIdStr)
-		{
-			RS_ERR( "Forum URL retrieved from deep index miss ID. ",
-			        "Should never happen! ", uRes.mUrl );
-			print_stacktrace();
-			return std::errc::address_not_available;
-		}
+    searchResults.clear();
 
-		std::vector<RsGxsForumGroup> forumsInfo;
-		RsGxsGroupId forumId(*forumIdStr);
-		if(forumId.isNull())
-		{
-			RS_ERR( "Forum ID retrieved from deep index is invalid. ",
-			        "Should never happen! ", uRes.mUrl );
-			print_stacktrace();
-			return std::errc::bad_address;
-		}
+    // 1. Group results by ForumId to batch requests
+    std::map<RsGxsGroupId, std::set<RsGxsMessageId>> forumToMsgs;
+    std::vector<std::pair<RsGxsGroupId, RsGxsMessageId>> orderedResults;
+    std::map<std::pair<RsGxsGroupId, RsGxsMessageId>, std::string> contextMap;
 
-		if( !getForumsInfo(std::list<RsGxsGroupId>{forumId}, forumsInfo) ||
-		        forumsInfo.empty() )
-		{
-			RS_ERR( "Forum just parsed from deep index link not found. "
-			        "Should never happen! ", forumId, " ", uRes.mUrl );
-			print_stacktrace();
-			return std::errc::identifier_removed;
-		}
+    for(const auto& uRes : results)
+    {
+        RsUrl resUrl(uRes.mUrl);
+        const auto forumIdStr = resUrl.getQueryV(RsGxsForums::FORUM_URL_ID_FIELD);
+        if(!forumIdStr) continue;
 
-		RsGroupMetaData& fMeta(forumsInfo[0].mMeta);
+        RsGxsGroupId forumId(*forumIdStr);
+        if(forumId.isNull()) continue;
 
-		// Avoid leaking sensitive information to unkown peers
-		if( publicOnly &&
-		        ( static_cast<RsGxsCircleType>(fMeta.mCircleType) !=
-		          RsGxsCircleType::PUBLIC ) ) continue;
+        RsGxsMessageId msgId;
+        const auto postIdStr = resUrl.getQueryV(RsGxsForums::FORUM_URL_MSG_ID_FIELD);
+        if(postIdStr)
+        {
+            msgId = RsGxsMessageId(*postIdStr);
+            if(!msgId.isNull())
+            {
+                forumToMsgs[forumId].insert(msgId);
+            }
+        }
 
-		RsGxsSearchResult res;
-		res.mGroupId = forumId;
-		res.mGroupName = fMeta.mGroupName;
-		res.mAuthorId = fMeta.mAuthorId;
-		res.mPublishTs = fMeta.mPublishTs;
-		res.mSearchContext = uRes.mSnippet;
+        orderedResults.push_back({forumId, msgId});
+        contextMap[{forumId, msgId}] = uRes.mSnippet;
+    }
 
-		auto postIdStr =
-		        resUrl.getQueryV(RsGxsForums::FORUM_URL_MSG_ID_FIELD);
-		if(postIdStr)
-		{
-			RsGxsMessageId msgId(*postIdStr);
-			if(msgId.isNull())
-			{
-				RS_ERR( "Post just parsed from deep index link is invalid. "
-				        "Should never happen! ", postIdStr, " ", uRes.mUrl );
-				print_stacktrace();
-				return std::errc::bad_address;
-			}
+    // 2. Batch fetch ALL needed forum metadata in one go
+    std::list<RsGxsGroupId> forumIdList;
+    for(auto const& [gid, msgs] : forumToMsgs) {
+        forumIdList.push_back(gid);
+    }
+    // Also include forums that don't have messages but were in orderedResults
+    for(auto const& resPair : orderedResults) {
+        if (forumToMsgs.find(resPair.first) == forumToMsgs.end()) {
+             forumIdList.push_back(resPair.first);
+        }
+    }
+    forumIdList.sort();
+    forumIdList.unique();
 
-			std::vector<RsMsgMetaData> msgSummaries;
-			auto errc = getContentSummaries(
-			            forumId, std::set<RsGxsMessageId>{msgId}, msgSummaries);
-			if(errc) return errc;
+    std::vector<RsGxsForumGroup> forumsInfo;
+    if(!forumIdList.empty()) {
+        getForumsInfo(forumIdList, forumsInfo);
+    }
 
-			if(msgSummaries.size() != 1)
-			{
-				RS_ERR( "getContentSummaries returned: ", msgSummaries.size(),
-				        "should never happen!" );
-				return std::errc::result_out_of_range;
-			}
+    std::map<RsGxsGroupId, RsGxsForumGroup> forumDataMap;
+    for(const auto& f : forumsInfo) {
+        forumDataMap[f.mMeta.mGroupId] = f;
+    }
 
-			RsMsgMetaData& msgMeta(msgSummaries[0]);
-			res.mMsgId = msgMeta.mMsgId;
-			res.mMsgName = msgMeta.mMsgName;
-			res.mAuthorId = msgMeta.mAuthorId;
-		}
+    // 3. Batch fetch message summaries PER forum
+    std::map<RsGxsGroupId, std::map<RsGxsMessageId, RsMsgMetaData>> msgDataMap;
+    for(auto const& [gid, msgIds] : forumToMsgs)
+    {
+        std::vector<RsMsgMetaData> msgSummaries;
+        getContentSummaries(gid, msgIds, msgSummaries);
+        for(const auto& m : msgSummaries) {
+            msgDataMap[gid][m.mMsgId] = m;
+        }
+    }
 
-		RS_DBG4(res);
-		searchResults.push_back(res);
-	}
+    RsDbg() << "DEEPSEARCH: prepareSearchResults: FTS returned " << results.size() << " raw matches.";
 
-	return std::error_condition();
+    // 4. Assemble final results maintaining search order
+    for(const auto& resPair : orderedResults)
+    {
+        const RsGxsGroupId& forumId = resPair.first;
+        const RsGxsMessageId& msgId = resPair.second;
+
+        if (forumDataMap.find(forumId) == forumDataMap.end()) {
+             RsDbg() << "DEEPSEARCH: skipping result: forum metadata not found for " << forumId.toStdString();
+             continue;
+        }
+        const RsGxsForumGroup& forum = forumDataMap[forumId];
+
+        // Avoid leaking sensitive information to unknown peers
+        if( publicOnly && ( static_cast<RsGxsCircleType>(forum.mMeta.mCircleType) != RsGxsCircleType::PUBLIC ) ) 
+            continue;
+
+        RsGxsSearchResult finalRes;
+        finalRes.mGroupId = forumId;
+        finalRes.mGroupName = forum.mMeta.mGroupName;
+        finalRes.mAuthorId = forum.mMeta.mAuthorId;
+        finalRes.mPublishTs = forum.mMeta.mPublishTs;
+        finalRes.mSearchContext = contextMap[resPair];
+
+        if(!msgId.isNull())
+        {
+            if (msgDataMap[forumId].find(msgId) == msgDataMap[forumId].end()) {
+                 RsDbg() << "DEEPSEARCH: skipping result: message metadata not found for " << msgId.toStdString() << " in forum " << forumId.toStdString();
+                 continue;
+            }
+            const RsMsgMetaData& msgMeta = msgDataMap[forumId][msgId];
+            finalRes.mMsgId = msgMeta.mMsgId;
+            finalRes.mMsgName = msgMeta.mMsgName;
+            finalRes.mAuthorId = msgMeta.mAuthorId;
+        }
+
+        RS_DBG4(finalRes);
+        searchResults.push_back(finalRes);
+    }
+
+    return std::error_condition();
 }
 
 std::error_condition p3GxsForums::receiveDistantSearchResult(

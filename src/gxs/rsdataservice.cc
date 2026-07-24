@@ -26,6 +26,8 @@
  * #define RS_DATA_SERVICE_DEBUG_CACHE 1
  ****/
 
+//#define GXSPROFILING
+
 #include <fstream>
 #include <util/rsdir.h>
 #include <algorithm>
@@ -1174,10 +1176,20 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
     int resultCount = 0;
 #endif
 
+#ifdef GXSPROFILING
+    // [TRACE] Start the database retrieval timer
+    RsDbg() << "GXSPROFILING [DataService]: START retrieveNxsMsgs for " << reqIds.size() << " groups";
+    auto start_all = std::chrono::steady_clock::now();
+#endif
+
 	for(auto mit = reqIds.begin(); mit != reqIds.end(); ++mit)
     {
-
         const RsGxsGroupId& grpId = mit->first;
+
+#ifdef GXSPROFILING
+        // [TRACE] Start timer for this specific group
+        auto start_group = std::chrono::steady_clock::now();
+#endif
 
         // if vector empty then request all messages
         const std::set<RsGxsMessageId>& msgIdV = mit->second;
@@ -1222,11 +1234,26 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
 
         msg[grpId] = msgSet;
 
+#ifdef GXSPROFILING
+        // [TRACE] Log time per group to monitor progress
+        auto end_group = std::chrono::steady_clock::now();
+        auto group_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_group - start_group).count();
+        RsDbg() << "GXSPROFILING [DataService]: Group " << grpId.toStdString() 
+                << " (Total " << msgSet.size() << " msgs) processed in " << group_ms << "ms";
+#endif
+
         msgSet.clear();
     }
 
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     std::cerr << "RsDataService::retrieveNxsMsgs() " << mDbName << ", Requests: " << reqIds.size() << ", Results: " << resultCount << ", Time: " << timer.duration() << std::endl;
+#endif
+
+#ifdef GXSPROFILING
+    // [TRACE] Log total database time
+    auto end_all = std::chrono::steady_clock::now();
+    auto total_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_all - start_all).count();
+    RsDbg() << "GXSPROFILING [DataService]: END retrieveNxsMsgs total time: " << total_ms << "ms";
 #endif
 
     return 1;
@@ -1581,6 +1608,56 @@ int RsDataService::updateMessageMetaData(const MsgLocMetaData& metaData)
     return 0;
 }
 
+int RsDataService::updateMessageMetaData(const std::vector<MsgLocMetaData>& metaList)
+{
+    if(metaList.empty())
+        return 0;
+
+    RsStackMutex stack(mDbMutex);
+
+    // Persist the whole batch inside a single transaction. Without this, every
+    // row update is its own implicit transaction (one fsync per message), which
+    // is what made "mark all as read" take more than an hour on a large forum.
+    // We hold mDbMutex for the whole span so no other statement can slip into
+    // the transaction.
+    mDb->beginTransaction();
+
+    int count = 0;
+
+    for(const MsgLocMetaData& metaData : metaList)
+    {
+        const RsGxsGroupId& grpId = metaData.msgId.first;
+        const RsGxsMessageId& msgId = metaData.msgId.second;
+
+        if(mDb->sqlUpdate(MSG_TABLE_NAME,  KEY_GRP_ID+ "='" + grpId.toStdString() + "' AND " + KEY_MSG_ID + "='" + msgId.toStdString() + "'", metaData.val) )
+        {
+            // If we use the cache, update the meta data immediately.
+            if(mUseCache)
+            {
+                RetroCursor* c = mDb->sqlQuery(MSG_TABLE_NAME, mMsgMetaColumns, KEY_GRP_ID+ "='" + grpId.toStdString() + "' AND " + KEY_MSG_ID + "='" + msgId.toStdString() + "'", "");
+
+                c->moveToFirst();
+
+                // temporarily disable the cache so that we get the value from the DB itself.
+                mUseCache=false;
+                auto meta = locked_getMsgMeta(*c, 0);
+                mUseCache=true;
+
+                if(meta)
+                    mMsgMetaDataCache[grpId].updateMeta(msgId,meta);
+
+                delete c;
+            }
+
+            ++count;
+        }
+    }
+
+    mDb->commitTransaction();
+
+    return count;
+}
+
 int RsDataService::removeMsgs(const GxsMsgReq& msgIds)
 {
     RsStackMutex stack(mDbMutex);
@@ -1779,3 +1856,8 @@ void RsDataService::debug_printCacheSize()
 
 
 
+
+std::string RsDataService::getEncryptionKey() const
+{
+	return mDb ? mDb->getKey() : "";
+}

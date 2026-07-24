@@ -271,11 +271,11 @@ int p3FileDatabase::tick()
                   mRemoteDirectories[i]->lastSweepTime() = now ;
                }
 
-               mRemoteDirectories[i]->checkSave() ;
+               mRemoteDirectories[i]->checkSave([this](const RsFileHash& h){ return this->locked_getCumulativeUpload(h); }) ;
             }
 
         mLastRemoteDirSweepTS = now;
-		mLocalSharedDirs->checkSave() ;
+		mLocalSharedDirs->checkSave([this](const RsFileHash& h){ return this->locked_getCumulativeUpload(h); }) ;
 
         // This is a hack to make loaded directories show up in the GUI, because the GUI generally isn't ready at the time they are actually loaded up,
         // so the first notify is ignored, and no other notify will happen next. We only do it if no data was received in the last 5 secs, in order to
@@ -733,8 +733,14 @@ void p3FileDatabase::cleanup()
         for(uint32_t i=0;i<mRemoteDirectories.size();++i)
             if(mRemoteDirectories[i] != NULL)
             {
-                rstime_t recurs_mod_time ;
-                mRemoteDirectories[i]->getDirectoryRecursModTime(0,recurs_mod_time) ;
+                // "Empty" here means "shares no file", using the same signal as the GUI (cumulated file
+                // count at the root). A tree made of directories only (no files) has a non-zero recursive
+                // modification time, so testing that would keep such a peer on the 60-days timer even though
+                // the GUI shows it as "Empty". Counting files instead makes both agree.
+
+                uint32_t file_count = 0 ;
+                mRemoteDirectories[i]->getDirectoryCumulatedFileCount(0,file_count) ;
+                bool dir_is_empty = (file_count == 0) ;
 
                 rstime_t last_contact = 0 ;
                 RsPeerDetails pd ;
@@ -744,11 +750,11 @@ void p3FileDatabase::cleanup()
                 // We remove directories in the following situations:
                 //	- the peer is not a friend
                 //  - the dir list is non empty but the peer is offline since more than 60 days
-                //  - the dir list is empty and the peer is ffline since more than 5 days
+                //  - the dir list is empty and the peer is offline since more than 5 days
 
                 bool should_remove =  friend_set.find(mRemoteDirectories[i]->peerId()) == friend_set.end()
-                        			|| (recurs_mod_time == 0 && last_contact + DELAY_BEFORE_DELETE_EMPTY_REMOTE_DIR     < now )
-                        			|| (recurs_mod_time != 0 && last_contact + DELAY_BEFORE_DELETE_NON_EMPTY_REMOTE_DIR < now );
+                        			|| ( dir_is_empty && last_contact + DELAY_BEFORE_DELETE_EMPTY_REMOTE_DIR     < now )
+                        			|| (!dir_is_empty && last_contact + DELAY_BEFORE_DELETE_NON_EMPTY_REMOTE_DIR < now );
 
                 if(!should_remove)
                     continue ;
@@ -1093,6 +1099,11 @@ int p3FileDatabase::getSharedDirStatistics(const RsPeerId& pid,SharedDirStats& s
 uint64_t p3FileDatabase::getCumulativeUpload(const RsFileHash& hash) const
 {
 	RS_STACK_MUTEX(mFLSMtx);
+	return locked_getCumulativeUpload(hash);
+}
+
+uint64_t p3FileDatabase::locked_getCumulativeUpload(const RsFileHash& hash) const
+{
 	auto it = mCumulativeUploaded.find(hash);
 	if (it != mCumulativeUploaded.end())
 		return it->second.total_bytes;
@@ -1439,6 +1450,13 @@ int p3FileDatabase::RequestDirDetails(
     }
 
     d.id = storage->peerId();
+ 
+    if (d.type == DIR_TYPE_FILE)
+    {
+        d.uploads = locked_getCumulativeUpload(d.hash);
+    }
+ 
+
 
 #ifdef DEBUG_FILE_HIERARCHY
     P3FILELISTS_DEBUG() << "ExtractData: ref=" << ref << ", flags=" << flags << " : returning this: " << std::endl;

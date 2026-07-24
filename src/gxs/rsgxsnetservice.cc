@@ -287,6 +287,8 @@
 
 //#define NXS_FRAG
 
+//#define GXSPROFILING
+
 // The constant below have a direct influence on how fast forums/channels/posted/identity groups propagate and on the overloading of queues:
 //
 // Channels/forums will update at a rate of SYNC_PERIOD*MAX_REQLIST_SIZE/60 messages per minute.
@@ -3514,6 +3516,11 @@ void RsGxsNetService::runVetting()
 
 void RsGxsNetService::locked_genSendMsgsTransaction(NxsTransaction* tr)
 {
+#ifdef GXSPROFILING
+    // [TRACE] Start global timer for the network transaction
+    auto start_net = std::chrono::steady_clock::now();
+#endif
+
 #ifdef NXS_NET_DEBUG_0
     GXSNETDEBUG_P_(tr->mTransaction->PeerId()) << "locked_genSendMsgsTransaction() Generating Msg data send fron TransN: " << tr->mTransaction->transactionNumber << std::endl;
 #endif
@@ -3701,8 +3708,16 @@ void RsGxsNetService::locked_genSendMsgsTransaction(NxsTransaction* tr)
 	    delete newTr;
     }
 
+#ifdef GXSPROFILING
+    // [TRACE] End global timer and log with the exact same format as V3
+    auto end_net = std::chrono::steady_clock::now();
+    auto net_ms = std::chrono::duration_cast<std::chrono::milliseconds>(end_net - start_net).count();
+    RsDbg() << "GXSPROFILING [NetService]: TOTAL locked_genSendMsgsTransaction for " << tr->mItems.size() << " items took " << net_ms << "ms";
+#endif
+
     return;
 }
+
 uint32_t RsGxsNetService::locked_getTransactionId()
 {
 	return ++mTransactionN;
@@ -3749,7 +3764,10 @@ bool RsGxsNetService::encryptSingleNxsItem(RsNxsItem *item, const RsGxsCircleId&
 
 	if(!mCircles->recipients(destination_circle,destination_group,recipients))
 	{
-		std::cerr << "  (EE) Cannot encrypt transaction: recipients list not available. Should re-try later." << std::endl;
+		// Not an error: the circle membership may simply not be cached yet. The caller retries later.
+#ifdef NXS_NET_DEBUG_7
+		GXSNETDEBUG_P_(item->PeerId()) << "  Cannot encrypt transaction yet: recipients list not available for circle " << destination_circle << ". Will re-try later." << std::endl;
+#endif
         	status = RS_NXS_ITEM_ENCRYPTION_STATUS_CIRCLE_ERROR ;
 		return false ;
 	}

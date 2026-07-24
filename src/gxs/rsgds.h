@@ -25,6 +25,7 @@
 #include <set>
 #include <map>
 #include <string>
+#include <vector>
 
 #include "inttypes.h"
 
@@ -249,6 +250,25 @@ public:
     virtual int updateMessageMetaData(const MsgLocMetaData& metaData) = 0;
 
     /*!
+     * @brief Update the meta data of several messages at once.
+     *
+     * The default implementation just updates them one by one. Stores backed by
+     * a transactional database should override this to persist the whole batch
+     * in a single transaction, which is dramatically faster when marking
+     * thousands of messages (e.g. "mark all as read" on a large forum).
+     *
+     * @param metaList the meta data items to update
+     * @return the number of items successfully updated
+     */
+    virtual int updateMessageMetaData(const std::vector<MsgLocMetaData>& metaList)
+    {
+        int count = 0;
+        for(const MsgLocMetaData& m : metaList)
+            count += updateMessageMetaData(m);
+        return count;
+    }
+
+    /*!
      * @param metaData
      */
     virtual int updateGroupMetaData(const GrpLocMetaData& meta) = 0;
@@ -277,5 +297,10 @@ public:
      * @return whether the size of grp is valid for storage
      */
     virtual bool validSize(RsNxsGrp* grp) const = 0 ;
+    
+    /*!
+     * @return the encryption key used for current data service
+     */
+    virtual std::string getEncryptionKey() const = 0;
 
 };
