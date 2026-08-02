@@ -132,11 +132,16 @@ public:
 	 * 	RSBANLIST_CHECKING_FLAGS_WHITELIST
 	 * @param check_result returned result of the check in
 	 *	RSBANLIST_CHECK_RESULT_*
+	 * @param ban_reason when the address is blacklisted, the reason the ban
+	 *	was added, in RSBANLIST_REASON_* (RSBANLIST_REASON_UNKNOWN otherwise).
+	 *	Lets callers distinguish explicit user bans from automatically
+	 *	gathered ones (DHT-flagged masquerading IPs, auto-banned ranges).
 	 * @return true if address is accepted, false false if address is rejected.
 	 */
 	virtual bool isAddressAccepted(
 	        const sockaddr_storage& addr, uint32_t checking_flags,
-	        uint32_t& check_result = RS_DEFAULT_STORAGE_PARAM(uint32_t) ) = 0;
+	        uint32_t& check_result = RS_DEFAULT_STORAGE_PARAM(uint32_t),
+	        uint32_t& ban_reason = RS_DEFAULT_STORAGE_PARAM(uint32_t) ) = 0;
 
 	virtual void getBannedIps(std::list<BanListPeer>& list) = 0;
 	virtual void getWhiteListedIps(std::list<BanListPeer>& list) = 0;
