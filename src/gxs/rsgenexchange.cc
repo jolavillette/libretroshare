@@ -26,6 +26,7 @@
 #include "pqi/pqihash.h"
 #include "rsgenexchange.h"
 #include "gxssecurity.h"
+#include "gxsprofiler.h"
 #include "util/contentvalue.h"
 #include "util/rsprint.h"
 #include "util/rstime.h"
@@ -244,25 +245,37 @@ void RsGenExchange::threadTick()
 
 void RsGenExchange::tick()
 {
+	GxsTickProfiler prof(mServType, "RsGenExchange::tick()");
+
 	// Meta Changes should happen first.
 	// This is important, as services want to change Meta, then get results.
 	// Services shouldn't rely on this ordering - but some do.
+	prof.step("processGrpMetaChanges");
 	processGrpMetaChanges();
+	prof.step("processMsgMetaChanges");
 	processMsgMetaChanges();
 
+	prof.step("processRequests");
 	mDataAccess->processRequests();
 
+	prof.step("publishGrps");
 	publishGrps();
 
+	prof.step("publishMsgs");
 	publishMsgs();
 
+	prof.step("processGroupUpdatePublish");
 	processGroupUpdatePublish();
 
+	prof.step("processGroupDelete");
 	processGroupDelete();
+	prof.step("processMessageDelete");
 	processMessageDelete();
 
+	prof.step("processRecvdData");
 	processRecvdData();
 
+	prof.step("processRoutingClues");
 	processRoutingClues() ;
 
 	{
@@ -282,11 +295,13 @@ void RsGenExchange::tick()
         // Calling notifyChanges() calls back RsGxsIfaceHelper::receiveChanges() that deletes the pointers in the array
         // and the array itself.  This is pretty bad and we should normally delete the changes here.
 
+		prof.step("notifyChanges");
 		if(!mNotifications_copy.empty())
 			notifyChanges(mNotifications_copy);
 	}
 
 	// implemented service tick function
+	prof.step("service_tick");
 	service_tick();
 
 	rstime_t now = time(NULL);
@@ -295,6 +310,7 @@ void RsGenExchange::tick()
     // of identities. This is why idendities do their own cleaning.
     now = time(NULL);
 
+    prof.step("RsGxsCleanUp");
     if( (mNetService && (mNetService->msgAutoSync() || mNetService->grpAutoSync())) && (mLastClean + MSG_CLEANUP_PERIOD < now) )
 	{
         GxsMsgReq msgs_to_delete;
@@ -315,6 +331,7 @@ void RsGenExchange::tick()
         mLastClean = now;
     }
 
+	prof.step("integrityCheck");
 	if(mChecking || (mLastCheck + INTEGRITY_CHECK_PERIOD < now))
 	{
 		mLastCheck = time(NULL);
@@ -2248,6 +2265,8 @@ void RsGenExchange::processMsgMetaChanges()
 
 void RsGenExchange::processGrpMetaChanges()
 {
+    auto prof_t0 = std::chrono::steady_clock::now();
+
     std::map<uint32_t, GrpLocMetaData > metaMap;
 
     {
@@ -2323,6 +2342,16 @@ void RsGenExchange::processGrpMetaChanges()
 
         mNotifications.push_back(new RsGxsGroupChange(RsGxsNotify::TYPE_PROCESSED,groupId, true));
     }
+
+    {
+        int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - prof_t0).count();
+        if(prof_ms >= GxsTickProfiler::slowThresholdMs())
+            RsWarn() << "GXS-PROF service 0x" << std::hex << mServType << std::dec
+                     << " processGrpMetaChanges applied " << metaMap.size()
+                     << " group meta updates in "
+                     << prof_ms << " ms" << std::endl;
+    }
 }
 
 bool RsGenExchange::processGrpMask(const RsGxsGroupId& grpId, ContentValue &grpCv)
@@ -2384,7 +2413,19 @@ void RsGenExchange::publishMsgs()
 {
 	bool atLeastOneMessageCreatedSuccessfully = false;
 
+	auto prof_t0 = std::chrono::steady_clock::now();
+
 	RS_STACK_MUTEX(mGenMtx);
+
+	{
+		int64_t prof_lock_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		            std::chrono::steady_clock::now() - prof_t0).count();
+		if(prof_lock_ms >= GxsTickProfiler::slowThresholdMs())
+			RsWarn() << "GXS-PROF service 0x" << std::hex << mServType << std::dec
+			         << " publishMsgs waited " << prof_lock_ms
+			         << " ms for mGenMtx (toPublish=" << mMsgsToPublish.size()
+			         << ", pendingSign=" << mMsgPendingSign.size() << ")" << std::endl;
+	}
 
 	rstime_t now = time(NULL);
 
@@ -3177,10 +3218,15 @@ void RsGenExchange::shareGroupPublishKey(const RsGxsGroupId& grpId,const std::se
 
 void RsGenExchange::processRecvdData()
 {
+    GxsTickProfiler prof(mServType, "RsGenExchange::processRecvdData()");
+
+    prof.step("processRecvdGroups");
     processRecvdGroups();
 
+    prof.step("processRecvdMessages");
     processRecvdMessages();
 
+    prof.step("performUpdateValidation");
     performUpdateValidation();
 
 }
@@ -3195,6 +3241,8 @@ void RsGenExchange::computeHash(const RsTlvBinaryData& data, RsFileHash& hash)
 
 void RsGenExchange::processRecvdMessages()
 {
+    GxsTickProfiler prof(mServType, "RsGenExchange::processRecvdMessages()");
+
     std::list<RsGxsMessageId> messages_to_reject ;
     std::set<RsGxsGroupId> grps_with_new_msgs ;	// groups that received new messages, to stamp their server update TS off-mutex below
 
@@ -3211,6 +3259,7 @@ void RsGenExchange::processRecvdMessages()
 #endif
 		// 1 - First, make sure items metadata is deserialised, clean old failed items, and collect the groups Ids we have to check
 
+		prof.step("collectPending");
 		RsGxsGrpMetaTemporaryMap grpMetas;
 
 	    for(NxsMsgPendingVect::iterator pend_it = mMsgPendingValidate.begin();pend_it != mMsgPendingValidate.end();)
@@ -3252,6 +3301,7 @@ void RsGenExchange::processRecvdMessages()
 		// 2 - Retrieve the metadata for the associated groups. The test is here to avoid the default behavior to
 		//     retrieve all groups when the list is empty
 
+		prof.step("retrieveGrpMeta");
 		if(!grpMetas.empty())
 			mDataStore->retrieveGxsGrpMetaData(grpMetas);
 
@@ -3264,6 +3314,10 @@ void RsGenExchange::processRecvdMessages()
 #endif
 
 		// 3 - Validate each message
+
+		prof.step("validateLoop");
+		auto prof_t0 = std::chrono::steady_clock::now();
+		uint32_t prof_n_validated = 0, prof_n_deferred = 0;
 
 	    for(NxsMsgPendingVect::iterator pend_it = mMsgPendingValidate.begin();pend_it != mMsgPendingValidate.end();)
 	    {
@@ -3303,7 +3357,20 @@ void RsGenExchange::processRecvdMessages()
 
 			GxsSecurity::createPublicKeysFromPrivateKeys(keys);	// make sure we have the public keys that correspond to the private ones, as it happens. Most of the time this call does nothing.
 
+			auto prof_msg_t0 = std::chrono::steady_clock::now();
 			int validateReturn = validateMsg(msg, grpMeta->mGroupFlags, grpMeta->mSignFlags, keys);
+			++prof_n_validated;
+
+			{
+				int64_t prof_msg_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+				            std::chrono::steady_clock::now() - prof_msg_t0).count();
+				if(prof_msg_ms >= GxsTickProfiler::slowThresholdMs())
+					RsWarn() << "GXS-PROF service 0x" << std::hex << mServType << std::dec
+					         << " validateMsg msg " << msg->msgId << " grp " << msg->grpId
+					         << " author " << msg->metaData->mAuthorId
+					         << " took " << prof_msg_ms << " ms (result " << validateReturn
+					         << ")" << std::endl;
+			}
 
 #ifdef GEN_EXCH_DEBUG
 			std::cerr << "    grpMeta.mSignFlags: " << std::hex << grpMeta->mSignFlags << std::dec << std::endl;
@@ -3351,6 +3418,7 @@ void RsGenExchange::processRecvdMessages()
 			}
 			else if(validateReturn == VALIDATE_FAIL_TRY_LATER)
 			{
+				++prof_n_deferred;
 				++pend_it ;
 				continue;
 			}
@@ -3363,6 +3431,18 @@ void RsGenExchange::processRecvdMessages()
 			pend_it = tmp ;
 	    }
 
+		{
+			int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+			            std::chrono::steady_clock::now() - prof_t0).count();
+			if(prof_ms >= GxsTickProfiler::slowThresholdMs())
+				RsWarn() << "GXS-PROF service 0x" << std::hex << mServType << std::dec
+				         << " validated " << prof_n_validated << " msgs ("
+				         << prof_n_deferred << " deferred, "
+				         << mMsgPendingValidate.size() << " still pending) in "
+				         << prof_ms << " ms" << std::endl;
+		}
+
+		prof.step("storeMessages");
 	    if(!msgIds.empty())
 	    {
 #ifdef GEN_EXCH_DEBUG
@@ -3413,6 +3493,7 @@ void RsGenExchange::processRecvdMessages()
 
     // Done off-mutex to avoid cross deadlocks in the netservice that might call the RsGenExchange as an observer..
 
+    prof.step("rejectAndStamp");
     if(mNetService != NULL)
     {
 	    for(std::list<RsGxsMessageId>::const_iterator it(messages_to_reject.begin());it!=messages_to_reject.end();++it)

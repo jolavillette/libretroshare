@@ -22,6 +22,11 @@
  *******************************************************************************/
 #pragma once
 
+/* TEMPORARY DIAGNOSTIC (GXS-PROF slow-tick hunt): trace any RS_STACK_MUTEX
+ * that is waited on or held for more than 1 second, reporting the holder's
+ * function/file/line on stderr. Remove once the investigation is over. */
+#define RS_MUTEX_DEBUG
+
 #include <pthread.h>
 #include <inttypes.h>
 #include <string>
