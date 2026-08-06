@@ -29,6 +29,7 @@
 #include "util/contentvalue.h"
 #include "util/rsprint.h"
 #include "util/rstime.h"
+#include "util/rsdebug.h"
 #include "retroshare/rsgxsflags.h"
 #include "retroshare/rsgxscircles.h"
 #include "retroshare/rsgrouter.h"
@@ -1061,9 +1062,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 
 		    if(haveKey)
 		    {
-#ifdef GEN_EXCH_DEBUG
-			    std::cerr << "  have ID key in cache: yes" << std::endl;
-#endif
+			    RsDbg() << "GXSSYNC: Author key " << metaData.mAuthorId << " found in GXS identity cache." ;
 
 			    RsTlvPublicRSAKey authorKey;
 			    bool auth_key_fetched = mGixs->getKey(metaData.mAuthorId, authorKey) ;
@@ -1078,6 +1077,11 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 				    std::cerr << "  key ID validation result: " << idValidate << std::endl;
 #endif
 					mGixs->timeStampKey(metaData.mAuthorId,RsIdentityUsage(RsServiceType(mServType),RsIdentityUsage::GROUP_AUTHOR_SIGNATURE_VALIDATION,metaData.mGroupId));
+					if (!idValidate) {
+						RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author signature validation failed." ;
+					} else {
+						RsDbg() << "GXSSYNC: Author signature successfully validated using key ID: " << metaData.mAuthorId ;
+					}
 			    }
 			    else
 			    {
@@ -1085,6 +1089,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 				    std::cerr << " ERROR Cannot Retrieve AUTHOR KEY for Group Sign Validation";
 				    std::cerr << std::endl;
 				    idValidate = false;
+				    RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " is in cache but could not be fetched." ;
 			    }
 
 		    }else
@@ -1096,6 +1101,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 			    std::list<RsPeerId> peers;
 			    peers.push_back(grp->PeerId());
 			    mGixs->requestKey(metaData.mAuthorId, peers,RsIdentityUsage(RsServiceType(mServType),RsIdentityUsage::GROUP_AUTHOR_SIGNATURE_VALIDATION,metaData.mGroupId));
+			    RsDbg() << "GXSSYNC: validateGrp returned VALIDATE_FAIL_TRY_LATER for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Author key " << metaData.mAuthorId << " not found in GXS identity cache. Requested key from peer " << grp->PeerId() ;
 			    return VALIDATE_FAIL_TRY_LATER;
 		    }
 	    }
@@ -1105,6 +1111,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 		    std::cerr << "  (EE) Gixs not enabled while request identity signature validation!" << std::endl;
 #endif
 		    idValidate = false;
+		    RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: GIXS (identity service) not enabled." ;
 	    }
     }
     else
@@ -1118,16 +1125,7 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 		RsTlvSecurityKeySet keys = metaData.keys;
 		GxsSecurity::createPublicKeysFromPrivateKeys(keys);
 		std::map<RsGxsId, RsTlvPublicRSAKey>& public_keys = keys.public_keys;
-		std::map<RsGxsId, RsTlvPublicRSAKey>::iterator keyMit = public_keys.find(RsGxsId(metaData.mGroupId));
-	
-		if(keyMit == public_keys.end())
-		{
-#ifdef GEN_EXCH_DEBUG
-			std::cerr << "RsGenExchange::validateGrp() admin key not found! " << std::endl;
-#endif
-			return VALIDATE_FAIL;
-		}
-	
+		
 		std::map<SignType, RsTlvKeySignature>& signSet = metaData.signSet.keySignSet;
 		std::map<SignType, RsTlvKeySignature>::iterator mit = signSet.find(INDEX_AUTHEN_ADMIN);
 		if(mit == signSet.end())
@@ -1136,17 +1134,76 @@ int RsGenExchange::validateGrp(RsNxsGrp* grp)
 			std::cerr << "RsGenExchange::validateGrp() admin sign not found! " << std::endl;
 			std::cerr << "RsGenExchange::validateGrp() grpId: " << metaData.mGroupId << std::endl;
 #endif
+			RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature not found in group metadata." ;
 			return VALIDATE_FAIL;
 		}
+		
 		RsTlvKeySignature adminSign = mit->second;
-		if (!GxsSecurity::validateNxsGrp(*grp, adminSign, keyMit->second))
+		bool admin_validated = false;
+		
+		std::map<RsGxsId, RsTlvPublicRSAKey>::iterator keyMit = public_keys.find(RsGxsId(metaData.mGroupId));
+		if (keyMit != public_keys.end())
 		{
+			admin_validated = GxsSecurity::validateNxsGrp(*grp, adminSign, keyMit->second);
+			if (admin_validated) {
+				RsDbg() << "GXSSYNC: Admin signature successfully validated using main key ID " << metaData.mGroupId ;
+			} else {
+				RsDbg() << "GXSSYNC: Main key " << metaData.mGroupId << " found but signature validation failed." ;
+			}
+		}
+		else
+		{
+			RsDbg() << "GXSSYNC: Main key " << metaData.mGroupId << " not found in group public_keys map." ;
+		}
+		
+		if (!admin_validated)
+		{
+			RsDbg() << "GXSSYNC: Trying fallback keys in public_keys map..." ;
+			for (const auto& pair : public_keys)
+			{
+				if (!(pair.second.keyFlags & RSTLV_KEY_DISTRIB_ADMIN))
+				{
+					RsDbg() << "GXSSYNC: Fallback key " << pair.first << " skipped (not an ADMIN key)." ;
+					continue;
+				}
+
+				RsDbg() << "GXSSYNC: Trying fallback key " << pair.first << "..." ;
+				if (GxsSecurity::validateNxsGrp(*grp, adminSign, pair.second))
+				{
+					RsDbg() << "GXSSYNC: Admin signature successfully validated using fallback key ID: " << pair.first ;
+					admin_validated = true;
+					break;
+				}
+				else
+				{
+					RsDbg() << "GXSSYNC: Fallback key " << pair.first << " failed signature validation." ;
+				}
+			}
+		}
+
+		if (!admin_validated)
+		{
+			std::ostringstream oss;
+			oss << "Keys in group: [";
+			for (const auto& pair : public_keys) {
+				oss << pair.first << " (flags=0x" << std::hex << pair.second.keyFlags << std::dec;
+				if (pair.second.keyFlags & RSTLV_KEY_DISTRIB_ADMIN)
+					oss << " ADMIN";
+				if (pair.second.keyFlags & RSTLV_KEY_DISTRIB_PUBLISH)
+					oss << " PUBLISH";
+				oss << "), ";
+			}
+			oss << "]";
+			RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: Admin signature validation failed for all keys. " << oss.str() ;
 			return VALIDATE_FAIL;
 		}
+		
+		RsDbg() << "GXSSYNC: validateGrp SUCCEEDED for group " << metaData.mGroupName << " (" << grp->grpId << "). Returning VALIDATE_SUCCESS." ;
 	    return VALIDATE_SUCCESS;
 	}
     else
 	{
+		RsDbg() << "GXSSYNC: validateGrp failed for group " << metaData.mGroupName << " (" << grp->grpId << "). Reason: idValidate was false." ;
 	    return VALIDATE_FAIL;
 	}
 }
@@ -1569,6 +1626,7 @@ bool RsGenExchange::getGroupData(const uint32_t &token, std::vector<RsGxsGrpItem
 bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 {
 	RS_STACK_MUTEX(mGenMtx) ;
+
 	NxsMsgDataResult msgResult;
 	bool ok = mDataAccess->getMsgData(token, msgResult);
 
@@ -1580,10 +1638,24 @@ bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 			const RsGxsGroupId& grpId = mit->first;
 			std::vector<RsGxsMsgItem*>& gxsMsgItems = msgItems[grpId];
 			std::vector<RsNxsMsg*>& nxsMsgsV = mit->second;
-			std::vector<RsNxsMsg*>::iterator vit = nxsMsgsV.begin();
-			for(; vit != nxsMsgsV.end(); ++vit)
+
+			// Deserialise in parallel: the database work is over (getMsgData
+			// above), what remains is pure in-memory decoding. Results land in
+			// a pre-sized array so the loop shares no mutable state; they are
+			// merged serially below, which also keeps the output order stable.
+			//
+			// THREAD-SAFETY NOTE: mSerialiser must remain stateless/re-entrant
+			// for this to be safe (see the comment on its declaration).
+			//
+			// Builds without OpenMP simply ignore the pragma and run the loop
+			// serially.
+			std::vector<RsGxsMsgItem*> tempItems(nxsMsgsV.size(), nullptr);
+			uint32_t deserialisation_errors = 0;
+
+			#pragma omp parallel for reduction(+:deserialisation_errors)
+			for(size_t i = 0; i < nxsMsgsV.size(); ++i)
 			{
-				RsNxsMsg*& msg = *vit;
+				RsNxsMsg* msg = nxsMsgsV[i];
 				RsItem* item = NULL;
 
 				if(msg->msg.bin_len != 0)
@@ -1594,25 +1666,34 @@ bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 					RsGxsMsgItem* mItem = dynamic_cast<RsGxsMsgItem*>(item);
 					if (mItem)
 					{
-						mItem->meta = *((*vit)->metaData); // get meta info from nxs msg
-						gxsMsgItems.push_back(mItem);
+						mItem->meta = *(msg->metaData); // get meta info from nxs msg
+						tempItems[i] = mItem;
 					}
 					else
 					{
-						std::cerr << "RsGenExchange::getMsgData() deserialisation/dynamic_cast ERROR";
-						std::cerr << std::endl;
+						++deserialisation_errors;
 						delete item;
 					}
 				}
 				else
-				{
-					std::cerr << "RsGenExchange::getMsgData() deserialisation ERROR";
-					std::cerr << std::endl;
-				}
+					++deserialisation_errors;
+
 				delete msg;
 			}
+
+			// Serial merge of the successful items. Errors are reported once,
+			// from a single thread, instead of interleaved lines from the
+			// parallel loop.
+			for(size_t i = 0; i < tempItems.size(); ++i)
+				if(tempItems[i])
+					gxsMsgItems.push_back(tempItems[i]);
+
+			if(deserialisation_errors > 0)
+				std::cerr << "RsGenExchange::getMsgData() " << deserialisation_errors
+				          << " deserialisation error(s) in group " << grpId << std::endl;
 		}
 	}
+
 	return ok;
 }
 
@@ -2093,6 +2174,18 @@ void RsGenExchange::processMsgMetaChanges()
 
     GxsMsgReq msgIds;
 
+    // First pass: resolve the status masks into absolute values (reads come from
+    // the in-memory meta cache, so this stays cheap even for thousands of
+    // messages) and collect every change so they can be persisted together in a
+    // single DB transaction below, instead of one fsync'd write per message.
+    std::vector<MsgLocMetaData> updates;
+    updates.reserve(metaMap.size());
+
+    std::vector<std::pair<uint32_t, RsGxsGrpMsgIdPair> > tokenIds;
+    tokenIds.reserve(metaMap.size());
+
+    std::set<uint32_t> failedTokens;
+
     std::map<uint32_t, MsgLocMetaData>::iterator mit;
     for (mit = metaMap.begin(); mit != metaMap.end(); ++mit)
     {
@@ -2133,27 +2226,37 @@ void RsGenExchange::processMsgMetaChanges()
             }
         }
 
-        ok &= mDataStore->updateMessageMetaData(m) == 1;
-        uint32_t token = mit->first;
+        // The actual DB write is deferred to the single batched transaction
+        // below. Collect the resolved change and remember its token.
+        updates.push_back(m);
+        tokenIds.push_back(std::make_pair(mit->first, m.msgId));
+
+        if(!ok)
+            failedTokens.insert(mit->first);
+        else if(changed)
+            msgIds[m.msgId.first].insert(m.msgId.second);
+    }
+
+    // Second pass: persist every collected change in a single transaction.
+    int updated = mDataStore->updateMessageMetaData(updates);
+    bool batchOk = (updated == static_cast<int>(updates.size()));
+
+    for(std::vector<std::pair<uint32_t, RsGxsGrpMsgIdPair> >::iterator it = tokenIds.begin(); it != tokenIds.end(); ++it)
+    {
+        bool ok = batchOk && (failedTokens.find(it->first) == failedTokens.end());
 
         if(ok)
-        {
-            mDataAccess->updatePublicRequestStatus(token, RsTokenService::COMPLETE);
-            if (changed)
-            {
-                msgIds[m.msgId.first].insert(m.msgId.second);
-            }
-        }
+            mDataAccess->updatePublicRequestStatus(it->first, RsTokenService::COMPLETE);
         else
-        {
-            mDataAccess->updatePublicRequestStatus(token, RsTokenService::FAILED);
-        }
+            mDataAccess->updatePublicRequestStatus(it->first, RsTokenService::FAILED);
 
-        {
-            RS_STACK_MUTEX(mGenMtx);
-            mMsgNotify.insert(std::make_pair(token, m.msgId));
-        }
+        RS_STACK_MUTEX(mGenMtx);
+        mMsgNotify.insert(std::make_pair(it->first, it->second));
     }
+
+    // If the whole batch failed, don't emit change notifications for it.
+    if(!batchOk)
+        msgIds.clear();
 
     if (!msgIds.empty())
     {
@@ -2181,6 +2284,13 @@ void RsGenExchange::processGrpMetaChanges()
 
     std::list<RsGxsGroupId> grpChanged;
 
+    // Phase 1: process the masks, and collect the entries to write.
+
+    std::vector<GrpLocMetaData> toWrite;
+    std::vector<uint32_t> writeTokens;
+    toWrite.reserve(metaMap.size());
+    writeTokens.reserve(metaMap.size());
+
     std::map<uint32_t, GrpLocMetaData>::iterator mit;
     for (mit = metaMap.begin(); mit != metaMap.end(); ++mit)
     {
@@ -2191,19 +2301,13 @@ void RsGenExchange::processGrpMetaChanges()
         RsDbg() << " Processing GrpMetaChange for token " << token << std::endl;
 #endif
         // process mask
-        bool ok = processGrpMask(g.grpId, g.val);
-
-        ok = ok && (mDataStore->updateGroupMetaData(g) == 1);
-
-        if(ok)
+        if(processGrpMask(g.grpId, g.val))
         {
-            mDataAccess->updatePublicRequestStatus(token, RsTokenService::COMPLETE);
-            grpChanged.push_back(g.grpId);
+            toWrite.push_back(g);
+            writeTokens.push_back(token);
         }
         else
-        {
             mDataAccess->updatePublicRequestStatus(token, RsTokenService::FAILED);
-        }
 
         {
             RS_STACK_MUTEX(mGenMtx);
@@ -2212,6 +2316,27 @@ void RsGenExchange::processGrpMetaChanges()
             RsDbg() << " Processing GrpMetaChange Adding token " << token << " to mGrpNotify" << std::endl;
 #endif
         }
+    }
+
+    // Phase 2: write the whole batch in a single DB transaction. One call per
+    // entry means one fsync per entry, which was measured at ~1 s each and
+    // freezes the service tick for minutes when a backlog accumulates.
+
+    if(!toWrite.empty())
+    {
+        bool all_ok = mDataStore->updateGroupMetaData(toWrite) == (int)toWrite.size();
+
+        if(!all_ok)
+            RsErr() << __PRETTY_FUNCTION__ << " some group meta updates failed in a batch of " << toWrite.size() << " entries." << std::endl;
+
+        for(uint32_t i=0;i<toWrite.size();++i)
+            if(all_ok)
+            {
+                mDataAccess->updatePublicRequestStatus(writeTokens[i], RsTokenService::COMPLETE);
+                grpChanged.push_back(toWrite[i].grpId);
+            }
+            else
+                mDataAccess->updatePublicRequestStatus(writeTokens[i], RsTokenService::FAILED);
     }
 
     for(auto& groupId:grpChanged)

@@ -25,6 +25,7 @@
 
 #include "retroshare/rstypes.h"
 #include "retroshare/rsevents.h"
+#include "retroshare/rsgxscommon.h"
 
 #define RS_CHAT_LOBBY_EVENT_PEER_LEFT   			0x01
 #define RS_CHAT_LOBBY_EVENT_PEER_STATUS 			0x02
@@ -92,6 +93,25 @@ struct DistantChatPeerInfo : RsSerializable
         RS_SERIAL_PROCESS(status);
         RS_SERIAL_PROCESS(pending_items);
     }
+};
+
+/// A single message entry transmitted as part of lobby history
+struct LobbyHistoryMsgEntry : RsSerializable
+{
+	RsGxsId  author_id;     // GXS identity of the message author
+	std::string nick;       // nickname of the author at time of sending
+	uint32_t send_time;     // original send timestamp
+	std::string message;    // message text content
+	bool     incoming;      // true if the message was received (not sent by us)
+
+	void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx) override
+	{
+		RS_SERIAL_PROCESS(author_id);
+		RS_SERIAL_PROCESS(nick);
+		RS_SERIAL_PROCESS(send_time);
+		RS_SERIAL_PROCESS(message);
+		RS_SERIAL_PROCESS(incoming);
+	}
 };
 
 enum class RsChatHistoryChangeFlags: uint8_t
@@ -240,6 +260,8 @@ enum class RsChatLobbyEventCode: uint8_t
     CHAT_LOBBY_EVENT_PEER_JOINED          = 0x07,	 // RS_CHAT_LOBBY_EVENT_PEER_JOINED
     CHAT_LOBBY_EVENT_PEER_CHANGE_NICKNAME = 0x08,	 // RS_CHAT_LOBBY_EVENT_PEER_CHANGE_NICKNAME
     CHAT_LOBBY_EVENT_KEEP_ALIVE           = 0x09,	 // RS_CHAT_LOBBY_EVENT_KEEP_ALIVE
+    CHAT_LOBBY_EVENT_HISTORY_PROBE_RESPONSE = 0x0a,
+    CHAT_LOBBY_EVENT_HISTORY_DATA         = 0x0b,
 };
 
 enum class RsDistantChatEventCode: uint8_t
@@ -253,16 +275,20 @@ enum class RsDistantChatEventCode: uint8_t
 
 struct RsChatLobbyEvent : RsEvent // This event handles events internal to the distributed chat system
 {
-    RsChatLobbyEvent() : RsEvent(RsEventType::CHAT_SERVICE),mEventCode(RsChatLobbyEventCode::UNKNOWN),mLobbyId(0),mTimeShift(0) {}
+    RsChatLobbyEvent() : RsEvent(RsEventType::CHAT_SERVICE),mEventCode(RsChatLobbyEventCode::UNKNOWN),mLobbyId(0),mTimeShift(0),mGenericCount(0) {}
     virtual ~RsChatLobbyEvent() override = default;
 
     RsChatLobbyEventCode mEventCode;
 
     uint64_t mLobbyId;
     RsGxsId mGxsId;
+    RsPeerId mPeerId;
     std::string mStr;
     ChatMessage mMsg;
     int mTimeShift;
+    uint32_t mGenericCount; // Used for returning probe counts/timestamps
+
+    std::vector<LobbyHistoryMsgEntry> mHistoryMsgs; // Passing history messages
 
     void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) override {
 
@@ -271,9 +297,12 @@ struct RsChatLobbyEvent : RsEvent // This event handles events internal to the d
         RS_SERIAL_PROCESS(mEventCode);
         RS_SERIAL_PROCESS(mLobbyId);
         RS_SERIAL_PROCESS(mGxsId);
+        RS_SERIAL_PROCESS(mPeerId);
         RS_SERIAL_PROCESS(mStr);
         RS_SERIAL_PROCESS(mMsg);
         RS_SERIAL_PROCESS(mTimeShift);
+        RS_SERIAL_PROCESS(mGenericCount);
+        RS_SERIAL_PROCESS(mHistoryMsgs);
     }
 };
 
@@ -463,6 +492,25 @@ public:
     virtual void setOwnNodeAvatarData(const unsigned char *data,int size) = 0 ;
     virtual void getOwnNodeAvatarData(unsigned char *& data,int& size) = 0 ;
 
+    /**
+     * @brief getAvatar get the avatar of the given peer, in JPEG format
+     * @jsonapi{development}
+     * When the avatar of the peer is not known yet, this returns false and
+     * asks the peer to send it, so calling this again a bit later may succeed.
+     * @param[in] pid peer id
+     * @param[out] avatar peer avatar, left empty when not available
+     * @return true if an avatar was available, false otherwise
+     */
+    virtual bool getAvatar(const RsPeerId& pid, RsGxsImage& avatar) = 0;
+
+    /**
+     * @brief getOwnAvatar get the avatar of our own node, in JPEG format
+     * @jsonapi{development}
+     * @param[out] avatar own avatar, left empty when none has been set
+     * @return true if an avatar was set, false otherwise
+     */
+    virtual bool getOwnAvatar(RsGxsImage& avatar) = 0;
+
     /****************************************/
     /*            Chat lobbies              */
     /****************************************/
@@ -585,13 +633,39 @@ public:
      */
     virtual void setLobbyAutoSubscribe(const ChatLobbyId &lobby_id, const bool autoSubscribe) = 0 ;
 
-    /**
-     * @brief getLobbyAutoSubscribe get current value of auto subscribe
-     * @jsonapi{development}
-     * @param[in] lobby_id lobby to get value from
-     * @return wether lobby has auto subscribe enabled or disabled
-     */
     virtual bool getLobbyAutoSubscribe(const ChatLobbyId &lobby_id) = 0 ;
+
+    /**
+     * @brief requestLobbyHistory send a probe to all participating friends of a lobby to check available chat history
+     * @jsonapi{development}
+     * @param[in] lobby_id lobby to check
+     * @return true if probe was sent
+     */
+    virtual bool requestLobbyHistory(const ChatLobbyId& lobby_id) = 0 ;
+
+    /**
+     * @brief requestLobbyHistoryFromPeer request chat history from a specific peer in a lobby
+     * @jsonapi{development}
+     * @param[in] lobby_id lobby for which to request history
+     * @param[in] peer_id peer to request history from
+     * @param[in] max_count maximum number of messages to fetch
+     * @param[in] oldest_ts maximum age (timestamp) of the oldest message
+     * @return true if request was sent
+     */
+    virtual bool requestLobbyHistoryFromPeer(const ChatLobbyId& lobby_id, const RsPeerId& peer_id, uint32_t max_count, uint32_t oldest_ts) = 0 ;
+
+    /**
+     * @brief allowHistorySharing enable or disable sharing of chat history with friends
+     * @param[in] allow set to true to allow sharing, false to disallow
+     * @return true on success
+     */
+    virtual bool allowHistorySharing(bool allow) = 0 ;
+
+    /**
+     * @brief isHistorySharingAllowed check if history sharing is allowed
+     * @return true if sharing is allowed, false otherwise
+     */
+    virtual bool isHistorySharingAllowed() const = 0 ;
 
     /**
      * @brief createChatLobby create a new chat lobby

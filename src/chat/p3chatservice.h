@@ -138,6 +138,11 @@ public:
     virtual void getDefaultIdentityForChatLobby(RsGxsId& nick_name) override;
     virtual void setLobbyAutoSubscribe(const ChatLobbyId& lobby_id, const bool autoSubscribe) override;
     virtual bool getLobbyAutoSubscribe(const ChatLobbyId& lobby_id) override;
+    virtual bool requestLobbyHistory(const ChatLobbyId& lobby_id) override;
+    virtual bool requestLobbyHistoryFromPeer(const ChatLobbyId& lobby_id, const RsPeerId& peer_id, uint32_t max_count, uint32_t oldest_ts) override;
+
+    virtual bool allowHistorySharing(bool allow) override;
+    virtual bool isHistorySharingAllowed() const override;
 
     /** methods that will call the DistantChatService parent
      */
@@ -173,6 +178,12 @@ public:
 		* responsibility to delete this ones used.
 		*/
     void getAvatarData(const RsPeerId& peer_id,unsigned char *& data,int& size) override;
+
+	/// @see RsChats
+	bool getAvatar(const RsPeerId& pid, RsGxsImage& avatar) override;
+
+	/// @see RsChats
+	bool getOwnAvatar(RsGxsImage& avatar) override;
 
 	/*!
 		 * Sets the avatar data and size for client's account
@@ -275,6 +286,11 @@ private:
 
 	/// Sends a request for an avatar to the peer of given id
 	void sendAvatarRequest(const RsPeerId& peer_id) ;
+
+	/*! Create the avatar bookkeeping entry for the given peer if needed, then
+	 * ask the peer for its avatar, at most once per minute.
+	 * The caller MUST hold mChatMtx before calling this. */
+	void locked_requestAvatar(const RsPeerId& peer_id) ;
 
 	/// Send a request for custom status string
 	void sendCustomStateRequest(const RsPeerId& peer_id);
