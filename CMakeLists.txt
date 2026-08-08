@@ -430,11 +430,14 @@ endif()
 if(RS_RNPLIB)
 	find_package(rnp REQUIRED)
 
-	target_link_libraries(${PROJECT_NAME} PRIVATE rnp::librnp)
+	## PUBLIC: pqi/authgpg.h includes pgp/rnppgphandler.h which includes
+	## rnp/rnp.h, so consumers of libretroshare need rnp include dirs too.
+	target_link_libraries(${PROJECT_NAME} PUBLIC rnp::librnp)
 else()
 	find_package(openpgpsdk REQUIRED)
 
-	target_link_libraries(${PROJECT_NAME} PRIVATE openpgpsdk::openpgpsdk)
+	## PUBLIC for the same reason as rnp above, via pgp/openpgpsdkhandler.h
+	target_link_libraries(${PROJECT_NAME} PUBLIC openpgpsdk::openpgpsdk)
 
 	target_compile_definitions(${PROJECT_NAME} PUBLIC USE_OPENPGPSDK)
 endif(RS_RNPLIB)
