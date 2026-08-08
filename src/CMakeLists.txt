@@ -725,7 +725,6 @@ list(APPEND RS_IMPLEMENTATION_HEADERS
 	util/rsfile.h
 	util/rsinitedptr.h
 	util/rsjson.h
-	util/rskbdinput.cc
 	util/rskbdinput.h
 	util/rslikelyunlikely.h
 	util/rsmacrosugar.hpp
@@ -737,7 +736,6 @@ list(APPEND RS_IMPLEMENTATION_HEADERS
 	util/rsrecogn.h
 	util/rsstd.h
 	util/rsstring.h
-	util/rsthreads.cc
 	util/rsthreads.h
 	util/rstickevent.h
 	util/rstime.h
