@@ -631,12 +631,14 @@ endif(RS_BITDHT_STUNNER)
 list(
 	APPEND RS_SOURCES
 	turtle/rsturtleitem.cc
+	turtle/turtlejournal.cc
 	turtle/p3turtle.cc )
 
 list(
 	APPEND RS_IMPLEMENTATION_HEADERS
 	turtle/p3turtle.h
 	turtle/rsturtleitem.h
+	turtle/turtlejournal.h
 	turtle/turtleclientservice.h
 	turtle/turtlestatistics.h
 	turtle/turtletypes.h )
