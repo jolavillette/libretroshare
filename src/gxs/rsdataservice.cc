@@ -2082,3 +2082,8 @@ void RsDataService::debug_printCacheSize()
 
 
 
+
+std::string RsDataService::getEncryptionKey() const
+{
+	return mDb ? mDb->getKey() : "";
+}
