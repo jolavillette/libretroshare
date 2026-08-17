@@ -30,6 +30,11 @@ import android.content.Intent;
 import android.util.Log;
 import android.app.ActivityManager;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.security.SecureRandom;
 
 
@@ -75,6 +80,65 @@ public class RetroShareServiceAndroid extends Service
      * it to the user, as it is generated per installation.
      */
     public static String getWebUiPasswd() { return sWebUiPasswd; }
+
+    /**
+     * The passwd has to survive service restarts, or the one the user was given
+     * stops working the next time the service comes up — which happens on its
+     * own, the service being START_STICKY and restarted after task removal. So
+     * it is generated once and kept in the private data directory.
+     */
+    private String loadOrCreateWebUiPasswd()
+    {
+        File passwdFile = new File(getFilesDir(), WEBUI_PASSWD_FILE_NAME);
+
+        if(passwdFile.isFile())
+        {
+            InputStream in = null;
+            try
+            {
+                in = new FileInputStream(passwdFile);
+                byte[] buf = new byte[64];
+                int len = in.read(buf);
+                if(len > 0)
+                {
+                    String stored = new String(buf, 0, len, "UTF-8").trim();
+                    if(!stored.isEmpty()) return stored;
+                }
+            }
+            catch(IOException e)
+            {
+                Log.e(TAG, "Failure reading " + passwdFile + " " + e.getMessage());
+            }
+            finally
+            {
+                try { if(in != null) in.close(); }
+                catch(IOException e) { /* nothing useful to do about it */ }
+            }
+        }
+
+        String generated = generateWebUiPasswd();
+
+        OutputStream out = null;
+        try
+        {
+            out = new FileOutputStream(passwdFile);
+            out.write(generated.getBytes("UTF-8"));
+        }
+        catch(IOException e)
+        {
+            Log.e(
+                TAG,
+                "Failure storing the web interface passwd in " + passwdFile +
+                ", it will change at the next start: " + e.getMessage() );
+        }
+        finally
+        {
+            try { if(out != null) out.close(); }
+            catch(IOException e) { /* nothing useful to do about it */ }
+        }
+
+        return generated;
+    }
 
     private static String generateWebUiPasswd()
     {
@@ -130,18 +194,10 @@ public class RetroShareServiceAndroid extends Service
 
             if(args.containsKey(WEBUI_PASSWD_KEY))
                 webUiPasswd = args.getString(WEBUI_PASSWD_KEY);
-            else
-            {
-                /* Never a hardcoded default: generate one per installation and
-                 * keep it available, so the embedding application can show it
-                 * to the user instead of making them dig through the log. */
-                if(sWebUiPasswd.isEmpty())
-                    sWebUiPasswd = generateWebUiPasswd();
-                webUiPasswd = sWebUiPasswd;
-                Log.i(TAG, "Generated web interface passwd: " + webUiPasswd);
-            }
+            else webUiPasswd = loadOrCreateWebUiPasswd();
 
             sWebUiPasswd = webUiPasswd;
+            Log.i(TAG, "Web interface passwd: " + webUiPasswd);
             Log.i(
                 TAG,
                 "Web interface enabled, files at " + webUiDirectory +
@@ -192,6 +248,8 @@ public class RetroShareServiceAndroid extends Service
      *  directory of the application, which is the only place a service can
      *  count on being able to write to. */
     private static final String WEBUI_DIR_NAME = "webui";
+
+    private static final String WEBUI_PASSWD_FILE_NAME = "webui_passwd";
 
     private static final String TAG = "RetroShareServiceAndroid.java";
 
