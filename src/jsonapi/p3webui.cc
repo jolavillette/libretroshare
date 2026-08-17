@@ -61,7 +61,24 @@ static const constexpr char* const mime_types[] =
 };
 
 const std::string RsWebUi::DEFAULT_BASE_DIRECTORY =
+#ifdef __ANDROID__
+        /* Beware: this runs during static initialisation, which on Android
+         * happens inside System.loadLibrary(), before JNI_OnLoad. There
+         * PathDataDirectory() reaches the application context through the JVM
+         * and RsJni::getVM() aborts the process with
+         *   Attempt to access JVM before JNI_OnLoad_retroshare
+         * so it cannot be called from here. No default is lost: on Android the
+         * web interface files are extracted from the assets and the directory
+         * is handed over with setHtmlFilesDirectory() before the JSON API
+         * server reads it.
+         *
+         * The general fix would be turning this constant into a lazy accessor,
+         * which also means touching its only other user,
+         * retroshare-service.cc. */
+        std::string();
+#else // def __ANDROID__
         RsAccountsDetail::PathDataDirectory(false) + "/webui/";
+#endif
 
 static std::string _base_directory = RsWebUi::DEFAULT_BASE_DIRECTORY;
 
