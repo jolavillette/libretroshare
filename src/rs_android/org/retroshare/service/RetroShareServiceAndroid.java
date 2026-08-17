@@ -29,6 +29,8 @@ import android.content.Context;
 import android.content.Intent;
 import android.util.Log;
 import android.app.ActivityManager;
+import java.io.File;
+import java.security.SecureRandom;
 
 
 public class RetroShareServiceAndroid extends Service
@@ -67,6 +69,22 @@ public class RetroShareServiceAndroid extends Service
         return false;
     }
 
+    /**
+     * @return the passwd the web interface is reachable with, empty when the
+     * web interface is not running. Meant for the embedding application to show
+     * it to the user, as it is generated per installation.
+     */
+    public static String getWebUiPasswd() { return sWebUiPasswd; }
+
+    private static String generateWebUiPasswd()
+    {
+        byte[] raw = new byte[9];
+        new SecureRandom().nextBytes(raw);
+        StringBuilder sb = new StringBuilder(raw.length * 2);
+        for(byte b : raw) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
     public static Context getServiceContext()
     {
         if(sServiceContext == null)
@@ -97,7 +115,43 @@ public class RetroShareServiceAndroid extends Service
             jsonApiBindAddress =
                 args.getString(JSON_API_BIND_ADDRESS_KEY);
 
-        ErrorConditionWrap ec = nativeStart(jsonApiPort, jsonApiBindAddress);
+        /* The web interface is served by the JSON API server out of a plain
+         * directory, so the assets have to be on the filesystem first. When they
+         * are not shipped — a build without the retroshare-webui sibling
+         * repository — webUiDirectory stays empty and the core starts the JSON
+         * API alone, exactly as before. */
+        String webUiDirectory = "";
+        String webUiPasswd = "";
+        File webUiDir = new File(getFilesDir(), WEBUI_DIR_NAME);
+        if(AssetHelper.copyAssetDir(
+               this, WEBUI_DIR_NAME, webUiDir.getAbsolutePath() ))
+        {
+            webUiDirectory = webUiDir.getAbsolutePath();
+
+            if(args.containsKey(WEBUI_PASSWD_KEY))
+                webUiPasswd = args.getString(WEBUI_PASSWD_KEY);
+            else
+            {
+                /* Never a hardcoded default: generate one per installation and
+                 * keep it available, so the embedding application can show it
+                 * to the user instead of making them dig through the log. */
+                if(sWebUiPasswd.isEmpty())
+                    sWebUiPasswd = generateWebUiPasswd();
+                webUiPasswd = sWebUiPasswd;
+                Log.i(TAG, "Generated web interface passwd: " + webUiPasswd);
+            }
+
+            sWebUiPasswd = webUiPasswd;
+            Log.i(
+                TAG,
+                "Web interface enabled, files at " + webUiDirectory +
+                ", reachable on http://" + jsonApiBindAddress + ":" +
+                jsonApiPort );
+        }
+        else Log.i(TAG, "No web interface assets, starting the JSON API alone");
+
+        ErrorConditionWrap ec = nativeStart(
+            jsonApiPort, jsonApiBindAddress, webUiDirectory, webUiPasswd );
         if(ec.toBool()) Log.e(TAG, "onStartCommand(...) " + ec.toString());
 
         return super.onStartCommand(intent, flags, startId);
@@ -130,12 +184,24 @@ public class RetroShareServiceAndroid extends Service
         RetroShareServiceAndroid.class.getCanonicalName() +
         "/JSON_API_BIND_ADDRESS_KEY" ;
 
+    private static final String WEBUI_PASSWD_KEY =
+        RetroShareServiceAndroid.class.getCanonicalName() +
+        "/WEBUI_PASSWD_KEY" ;
+
+    /** Where the web interface assets get extracted, under the private data
+     *  directory of the application, which is the only place a service can
+     *  count on being able to write to. */
+    private static final String WEBUI_DIR_NAME = "webui";
+
     private static final String TAG = "RetroShareServiceAndroid.java";
 
     private static Context sServiceContext;
 
+    private static String sWebUiPasswd = "";
+
     protected static native ErrorConditionWrap nativeStart(
-        int jsonApiPort, String jsonApiBindAddress );
+        int jsonApiPort, String jsonApiBindAddress,
+        String webUiDirectory, String webUiPasswd );
 
     protected static native ErrorConditionWrap nativeStop();
 }
