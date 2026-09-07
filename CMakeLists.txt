@@ -61,6 +61,16 @@ option(
 	"Enable use RNP lib for PGP"
 	ON )
 
+cmake_dependent_option(
+	RS_SYSTEM_LIBRNP
+	"Use the system-installed librnp instead of building the vendored copy. \
+	Meant for distribution builds (e.g. Debian): when ON, a missing system \
+	librnp is a fatal error instead of silently falling back to the vendored \
+	sources."
+	OFF
+	"RS_RNPLIB"
+	OFF )
+
 option(
 	RS_JSON_API
 	"Use restbed to expose libretroshare as JSON API via HTTP"
@@ -394,6 +404,29 @@ if(RS_RNPLIB)
 	if(RS_ANDROID)
 		find_library(RS_PREBUILT_RNP_LIBRARY NAMES rnp)
 	endif(RS_ANDROID)
+
+	## Distribution builds (e.g. Debian) must link the system librnp instead of
+	## the vendored copy (Debian Policy 4.13 forbids embedded code copies when
+	## the library is packaged). This reuses the same pre-built code path as
+	## Android, but a missing system library is then a hard error: silently
+	## falling back to the vendored sources would defeat the point.
+	if(RS_SYSTEM_LIBRNP)
+		find_library(RS_PREBUILT_RNP_LIBRARY NAMES rnp)
+		if(NOT RS_PREBUILT_RNP_LIBRARY)
+			message(FATAL_ERROR "RS_SYSTEM_LIBRNP is ON but no system librnp was found. Install the librnp development package (e.g. librnp-dev) or turn RS_SYSTEM_LIBRNP OFF.")
+		endif()
+		## The pre-built code path below adds no include directory (on Android
+		## the sysroot provides it); resolve the headers here so non-standard
+		## prefixes (CMAKE_PREFIX_PATH) work too. Not fatal when unset: the
+		## default system include path usually covers it. PUBLIC because
+		## rnppgphandler.h (reached from the public authgpg.h) includes
+		## rnp/rnp.h, so consumers need the headers too — the vendored code
+		## path exports its include directory PUBLIC for the same reason.
+		find_path(RS_SYSTEM_RNP_INCLUDE "rnp/rnp.h")
+		if(RS_SYSTEM_RNP_INCLUDE)
+			target_include_directories(${PROJECT_NAME} PUBLIC "${RS_SYSTEM_RNP_INCLUDE}")
+		endif()
+	endif(RS_SYSTEM_LIBRNP)
 
 	if(NOT RS_PREBUILT_RNP_LIBRARY AND EXISTS "${RNPLIB_DEVEL_DIR}/CMakeLists.txt")
 		message(STATUS "librnp source found at ${RNPLIB_DEVEL_DIR} using it")
