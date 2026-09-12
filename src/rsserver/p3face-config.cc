@@ -84,6 +84,21 @@ void RsServer::rsGlobalShutDown()
 	bool wasReady = coreReady;
 	coreReady = false;
 
+#ifdef RS_JSONAPI
+	/* Stop the JSON API before anything else. Plugins delete their
+	 * JsonApiResourceProvider in stopPlugins() below, while the restbed service
+	 * still holds the resources that provider handed out -- their handlers
+	 * capture it, so serving a request in that window dereferences freed
+	 * memory. The window is not small: everything between stopPlugins() and the
+	 * end of this function can take tens of seconds, and a web interface polls
+	 * throughout. Stopping first also keeps an API client from touching the
+	 * configuration after ConfigFinalSave().
+	 *
+	 * Not inside the wasReady branch: retroshare-service and Android start the
+	 * JSON API before login, so a shutdown from that state must stop it too. */
+	if(rsJsonApi) rsJsonApi->fullstop();
+#endif
+
 	if(wasReady)
 	{
 		/* Close the incoming-connection listener FIRST, before anything else.
@@ -123,9 +138,14 @@ void RsServer::rsGlobalShutDown()
 	 * iterating the peer list concurrently. */
 	if(pqih) pqih->fullstopAllThreads();
 
-#ifdef RS_JSONAPI
-	if(rsJsonApi) rsJsonApi->fullstop();
-#endif
+	/* Stop the file transfer / file sharing threads (data multiplexer,
+	 * controller, extra list, directory watcher, hash cache). Nothing ever
+	 * stopped them before, they ran until process exit. Everything they work
+	 * on reaches them through the RsServer tick thread (turtle, ftServer::tick)
+	 * or the per-peer streamer threads (p3Service::recv() runs on the streamer
+	 * thread), both stopped above, so by now they are idle and stop within a
+	 * second. */
+	if(mFtServer) mFtServer->StopThreads();
 
 	AuthPGP::exit();
 

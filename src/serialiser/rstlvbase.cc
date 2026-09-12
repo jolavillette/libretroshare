@@ -136,22 +136,33 @@ bool SkipUnknownTlv(void *data, uint32_t size, uint32_t *offset)
 	//uint16_t tlvtype = GetTlvType(tlvstart);
 	uint32_t tlvsize = GetTlvSize(tlvstart);
 
-	/* check that there is size */
-	uint32_t tlvend = *offset + tlvsize;
-	if (size < tlvend)
+	/* A TLV must be at least as large as its own header. Rejecting smaller
+	 * (including zero) sizes is mandatory: it guarantees forward progress for
+	 * the callers that loop over sub-TLVs, otherwise a crafted sub-TLV with
+	 * size 0 makes *offset stand still and the caller spins forever. */
+	if (tlvsize < TLV_HEADER_SIZE)
+	{
+#ifdef TLV_BASE_DEBUG
+		std::cerr << "SkipUnknownTlv() FAILED - tlvsize smaller than header." << std::endl;
+#endif
+		return false;
+	}
+
+	/* check that there is size - overflow safe (mirrors GetTlvUInt32 & co.),
+	 * never compute *offset + tlvsize directly as it may wrap around. */
+	if (tlvsize > size || *offset > size - tlvsize)
 	{
 #ifdef TLV_BASE_DEBUG
 		std::cerr << "SkipUnknownTlv() FAILED - not enough space." << std::endl;
 		std::cerr << "SkipUnknownTlv() size: " << size << std::endl;
 		std::cerr << "SkipUnknownTlv() tlvsize: " << tlvsize << std::endl;
-		std::cerr << "SkipUnknownTlv() tlvend: " << tlvend << std::endl;
 #endif
 		return false;
 	}
 
 	bool ok = true;
 	/* step past this tlv item */
-	*offset = tlvend;
+	*offset += tlvsize;
 	return ok;
 }
 
@@ -563,7 +574,12 @@ bool GetTlvString(const void *data, uint32_t size, uint32_t *offset,
     if (!data)
         return false;
 
-    if (size < *offset)
+    /* We are about to read a full TLV header (TLV_HEADER_SIZE bytes) below, so
+     * we must ensure that many bytes are available BEFORE dereferencing them.
+     * The previous "size < *offset" check only guaranteed *offset <= size and
+     * let GetTlvType()/GetTlvSize() read up to TLV_HEADER_SIZE bytes past the
+     * buffer end. Written overflow-safe (never compute *offset + N directly). */
+    if (*offset > size || size - *offset < TLV_HEADER_SIZE)
     {
 #ifdef TLV_BASE_DEBUG
         std::cerr << "GetTlvString() FAILED - not enough space" << std::endl;
@@ -589,6 +605,14 @@ bool GetTlvString(const void *data, uint32_t size, uint32_t *offset,
 #endif
         return false;
     }
+    /* A string TLV must be at least as large as its own header. Without this
+     * guard the unsigned subtraction "tlvsize - TLV_HEADER_SIZE" below
+     * underflows (e.g. tlvsize=3 -> strsize=0xFFFFFFFD), and the subsequent
+     * std::string(strdata, strsize) attempts a ~4GB read past the buffer ->
+     * remote OOB read / crash. Mirrors the guard in RsTlvBinaryData::GetTlv. */
+    if (tlvsize < TLV_HEADER_SIZE)
+        return false;
+
     uint32_t tlvend = *offset + tlvsize;
 
     if (type != tlvtype)

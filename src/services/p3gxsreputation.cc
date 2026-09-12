@@ -966,7 +966,9 @@ void p3GxsReputation::banNode(const RsPgpId& id,bool b)
     {
         if(mBannedPgpIds.find(id) == mBannedPgpIds.end())
         {
-            mBannedPgpIds[id] = BannedNodeInfo() ;
+            BannedNodeInfo info;
+            info.last_activity_TS = time(nullptr);
+            mBannedPgpIds[id] = info;
             IndicateConfigChanged();
         }
     }

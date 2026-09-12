@@ -329,6 +329,58 @@ bool PGPKeyManagement::parsePGPPublicKey(const unsigned char *keydata, size_t ke
 
     return true ;
 }
+// Scans a bounded region of signature sub-packets [region, region+region_size) for an issuer.
+// Recognizes the legacy Issuer Key ID (type 16, an 8-byte key-id) and the RFC 9580 Issuer
+// Fingerprint (type 33): for a v4 signing key the fingerprint is 20 bytes whose low 8 bytes
+// are the key-id. On success fills info.issuer and returns true. 'end' bounds every access so
+// a malformed or truncated packet cannot read past the signature buffer.
+static bool findIssuerInSubpackets(unsigned char *region, uint32_t region_size,
+                                   const unsigned char *end, PGPSignatureInfo& info)
+{
+    unsigned char *data = region ;
+    const unsigned char *region_end = region + region_size ;
+
+    if(region_end > end)                            // declared size runs past the real buffer
+        region_end = end ;
+
+    while(data < region_end)
+    {
+        uint32_t subpacket_size = PGPKeyParser::read_125Size(data) ; // advances data past length
+
+        if(subpacket_size < 1 || data >= region_end)                // no room for the type octet
+            return false ;
+
+        uint8_t subpacket_type = data[0] ; data += 1 ;
+        uint32_t body_size = subpacket_size - 1 ;
+
+        if(body_size > (uint32_t)(region_end - data))               // truncated body
+            return false ;
+
+        unsigned char *body = data ;
+
+        // Legacy Issuer Key ID (type 16): body is the 8-byte key-id.
+        if(subpacket_type == PGPKeyParser::PGP_PACKET_TAG_ISSUER && subpacket_size == 9)
+        {
+            info.issuer = PGPKeyParser::read_KeyID(body) ;
+            return true ;
+        }
+
+        // RFC 9580 Issuer Fingerprint (type 33): body is [key-version][fingerprint].
+        // 22 == 1(type) + 1(version) + 20(v4 fingerprint); the v4 key-id is the low 8 fpr bytes.
+        if(subpacket_type == PGPKeyParser::PGP_PACKET_TAG_SUBPACKET_SIGNATURE_ISSUER_FINGERPRINT
+           && subpacket_size == 22 && body[0] == 4)
+        {
+            unsigned char *keyid = body + 1 + 12 ;
+            info.issuer = PGPKeyParser::read_KeyID(keyid) ;
+            return true ;
+        }
+
+        data = body + body_size ;                                   // next sub-packet
+    }
+
+    return false ;
+}
+
 bool PGPKeyManagement::parseSignature(const unsigned char *signature, size_t sign_len, PGPSignatureInfo& info)
 {
     unsigned char *data = (unsigned char *)signature ;
@@ -348,8 +400,7 @@ bool PGPKeyManagement::parseSignature(const unsigned char *signature, size_t sig
     
     // 2 - parse key data, only keep public key data, user id and self-signature.
 
-    bool issuer_found=false ;
-    
+
     if(sign_len < 12)	// conservative check to allow the explicit reads below, until header of first sub-packet
         return false ;
     
@@ -366,37 +417,42 @@ bool PGPKeyManagement::parseSignature(const unsigned char *signature, size_t sig
     uint32_t hashed_size = 256u*data[0] + data[1] ;
     data += 2 ;
     
-    // now read hashed sub-packets
-    
+    // Look for the signer's key-id, first in the hashed sub-packets then in the unhashed ones.
+    // An issuer can appear as the legacy Issuer Key ID (type 16) or, on modern rnp / RFC 9580
+    // signatures, as the Issuer Fingerprint (type 33).
+
     uint8_t *start_hashed_data = data ;
-   
-    while(true) 
+    const unsigned char *end = signature + sign_len ;
+
+    try
     {
-	    int subpacket_size = PGPKeyParser::read_125Size(data) ; // following RFC4880
-	    uint8_t subpacket_type = data[0] ; data+=1 ;
+        // 1. Hashed area: covered by the signature, so a found issuer is authenticated. This
+        //    is where rnp places the RFC 9580 type-33 issuer fingerprint.
+        if(findIssuerInSubpackets(start_hashed_data, hashed_size, end, info))
+            return true ;
 
-#ifdef DEBUG_PGPUTIL
-	    std::cerr << "  SubPacket tag: " << (int)subpacket_type << std::endl;
-	    std::cerr << "  SubPacket length: " << subpacket_size << std::endl;
-#endif
+        // 2. Unhashed area: the GnuPG-default location for the type-16 Issuer Key ID. It is
+        //    NOT covered by the signature, so the issuer is only a hint: the caller must still
+        //    verify it (p3IdService::checkId re-checks the PGP hash and brute-forces on
+        //    mismatch instead of trusting a possibly-spoofed hint).
+        unsigned char *unhashed = start_hashed_data + hashed_size ;
 
-	    if(subpacket_type == PGPKeyParser::PGP_PACKET_TAG_ISSUER && subpacket_size == 9)
-	    {
-		    issuer_found = true ;
-		    info.issuer = PGPKeyParser::read_KeyID(data) ;
-	    }
-	    else
-		    data += subpacket_size-1 ;	// we remove the size of subpacket type
+        if(unhashed + 2 <= end)
+        {
+            uint32_t unhashed_size = 256u*unhashed[0] + unhashed[1] ;
 
-	    if(issuer_found)
-		    break ;
-
-	    if( (uint64_t)data - (uint64_t)start_hashed_data >= hashed_size )
-		    break ;
+            if(findIssuerInSubpackets(unhashed + 2, unhashed_size, end, info))
+                return true ;
+        }
     }
-    // non hashed sub-packets are ignored for now. 
-    
-    return issuer_found ;
+    catch(...)
+    {
+        // Malformed sub-packet lengths (read_125Size throws). Give up parsing; the caller will
+        // fall back to brute-forcing the signer against the known PGP keys.
+        return false ;
+    }
+
+    return false ;
 }
 
 uint64_t PGPKeyParser::read_KeyID(unsigned char *& data)

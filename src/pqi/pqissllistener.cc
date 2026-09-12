@@ -386,9 +386,12 @@ int	pqissllistenbase::acceptconnection()
 /********************************** WINDOWS/UNIX SPECIFIC PART ******************/
 
     std::cerr << "(II) Checking incoming connection address: " << sockaddr_storage_iptostring(remote_addr) ;
-        if(rsBanList != NULL && !rsBanList->isAddressAccepted(remote_addr, RSBANLIST_CHECKING_FLAGS_BLACKLIST))
+        uint32_t check_result = RSBANLIST_CHECK_RESULT_UNKNOWN;
+        uint32_t ban_reason = RSBANLIST_REASON_UNKNOWN;
+        if(rsBanList != NULL && !rsBanList->isAddressAccepted(remote_addr, RSBANLIST_CHECKING_FLAGS_BLACKLIST, check_result, ban_reason)
+                && ban_reason == RSBANLIST_REASON_USER)
         {
-            std::cerr << " => early rejected at this point, because of blacklist." << std::endl;
+            std::cerr << " => early rejected at this point, because of user-set blacklist." << std::endl;
 #ifndef WINDOWS_SYS
             close(fd);
 #else
@@ -396,6 +399,14 @@ int	pqissllistenbase::acceptconnection()
 #endif
             return false ;
         }
+        else if(check_result == RSBANLIST_CHECK_RESULT_BLACKLISTED)
+            // Automatically gathered bans (DHT-flagged masquerading IPs,
+            // auto-banned /24 ranges) catch the shared exit addresses of
+            // CGNAT users (mobile/4G) wholesale. Let the SSL handshake run:
+            // authenticated friends are accepted in pqissl::accept_locked(),
+            // anyone else fails certificate validation anyway.
+            std::cerr << " => blacklisted address (automatic ban, reason " << ban_reason
+                      << "). Deferring decision to certificate authentication." << std::endl;
         else
             std::cerr << " => Accepted (i.e. whitelisted, or not blacklisted)." << std::endl;
         
@@ -493,10 +504,33 @@ int	pqissllistenbase::continueSSL(IncomingSSLInfo& incoming_connexion_info, bool
 
 		if(vres == X509_V_OK && nullptr != rsEvents)
 		{
-			auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
-			ev->mLocator = RsUrl(incoming_connexion_info.addr);
-			ev->mErrorCode = RsAuthSslError::MISSING_AUTHENTICATION_INFO;
-			rsEvents->postEvent(ev);
+            // Check if denied before posting event
+            bool denied = false;
+            X509 *x509_check = SSL_get_peer_certificate(incoming_connexion_info.ssl);
+            RsPgpId checkedPgpId; // Default 0
+            if(x509_check) {
+                checkedPgpId = RsX509Cert::getCertIssuer(*x509_check);
+                X509_free(x509_check);
+            }
+            
+            if(AuthSSL::instance().isNotifyDenied(checkedPgpId)) {
+                    denied = true;
+                }
+
+            if(!denied) {
+			    auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
+			    ev->mLocator = RsUrl(incoming_connexion_info.addr);
+                // Try to fill in more info if available
+                if((x509_check = SSL_get_peer_certificate(incoming_connexion_info.ssl))) {
+                     ev->mPgpId = RsX509Cert::getCertIssuer(*x509_check);
+                     ev->mSslId = RsX509Cert::getCertSslId(*x509_check);
+                     ev->mSslCn = RsX509Cert::getCertName(*x509_check);
+                     X509_free(x509_check);
+                }
+
+			    ev->mErrorCode = RsAuthSslError::MISSING_AUTHENTICATION_INFO;
+			    rsEvents->postEvent(ev);
+            }
 		}
 		closeConnection(fd, incoming_connexion_info.ssl);
 

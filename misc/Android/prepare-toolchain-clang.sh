@@ -749,11 +749,21 @@ build_tiff()
 
 	pushd $B_dir
 	#TODO: build dependecies to support more formats
+	# tiff cmake/FindCMath.cmake looks for pow(3) first without any library
+	# then with whatever find_library(NAMES m) returned. On Android pow lives
+	# in libm, and libm is under the API level directory of the NDK sysroot,
+	# which andro_cmake does not put in CMAKE_LIBRARY_PATH, so find_library
+	# comes back empty, the second check links without -lm just like the first
+	# one and configure aborts with
+	#   Could NOT find CMath (missing: CMath_pow)
+	# Give it the library explicitly instead of widening the search path for
+	# every dependency.
 	andro_cmake \
 		-DBUILD_SHARED_LIBS=OFF \
 		-Dlibdeflate=OFF -Djbig=OFF -Dlzma=OFF -Dzstd=OFF -Dwebp=OFF \
 		-Djpeg12=OFF \
 		-Dcxx=OFF \
+		-DCMath_LIBRARY="${SYSROOT}/usr/lib/${compilerTriple}/${ANDROID_PLATFORM_VER}/libm.so" \
 		-B. -S../$S_dir    || return $?
 	make -j${HOST_NUM_CPU} || return $?
 	make install           || return $?
@@ -859,8 +869,18 @@ build_librnp()
 	# 3. Add -static linking via MKF so the binary doesn't need the Android
 	#    dynamic linker which is unavailable on the host even via qemu
 	# 4. Remove quotes around FOF so CMake expands the list correctly
-	# TODO: remove when upstream patches are accepted
 	#
+	# Skip the patch when the checkout already handles the emulator on its own:
+	# rnp got this upstream (rnpgp/rnp 0a0672af, merged 2026-07-31) and
+	# LIBRNP_SOURCE_VERSION tracks origin/main, so patching on top of it
+	# prepends the emulator twice and the probe becomes
+	# "qemu-aarch64 /usr/bin/qemu-aarch64 build/findopensslfeatures", which
+	# fails with "Invalid ELF image for this architecture".
+	# TODO: drop the whole block once no supported rnp version needs it
+	#
+	grep -q CMAKE_CROSSCOMPILING_EMULATOR \
+		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake" ||
+	{
 	sed -i '/foreach(feature "hashes"/i\
 if(CMAKE_CROSSCOMPILING_EMULATOR)\
   set(FOF ${CMAKE_CROSSCOMPILING_EMULATOR} ${FOF})\
@@ -876,6 +896,25 @@ endif(CMAKE_CROSSCOMPILING_EMULATOR)' \
 		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
 
 	sed -i 's|COMMAND "${FOF}" "${feature}"|COMMAND ${FOF} "${feature}"|' \
+		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
+	}
+
+	# The feature probe is linked statically, and OpenSSL 1.1.1 libcrypto.a
+	# pulls in dso_dlfcn.o which references dlopen/dlsym/dlclose/dlerror.
+	# CMake's FindOpenSSL does not put ${CMAKE_DL_LIBS} in the OpenSSL::Crypto
+	# interface here, so nothing provides them and the link dies with
+	#
+	#   ld.lld: error: undefined symbol: dlopen
+	#   >>> referenced by dso_dlfcn.c
+	#   >>>               dso_dlfcn.o:(dlfcn_load) in archive .../libcrypto.a
+	#
+	# The NDK ships a static libdl.a defining those symbols, so link it
+	# explicitly, as a linked library rather than CMAKE_EXE_LINKER_FLAGS so
+	# it is ordered after libcrypto.a for linkers that resolve archives in a
+	# single pass (lld does not care, GNU ld does).
+	# Submitted upstream as rnpgp/rnp#2473; drop this sed once it is in.
+	sed -i \
+		's|(findopensslfeatures PRIVATE OpenSSL::Crypto)|(findopensslfeatures PRIVATE OpenSSL::Crypto dl)|' \
 		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
 
 	rm -rf "$B_dir"; mkdir "$B_dir"
@@ -924,6 +963,7 @@ build_libretroshare()
 		-D RS_BRODCAST_DISCOVERY=ON -D RS_EXPORT_JNI_ONLOAD=ON \
 		-D RS_SQLCIPHER=OFF -D RS_DH_PRIME_INIT_CHECK=OFF \
 		-D RS_FORUM_DEEP_INDEX=ON -D RS_JSON_API=ON \
+		-D RS_WEBUI=ON \
 		-D RS_LIBRETROSHARE_STANDALONE_INSTALL=ON \
 		$RS_EXTRA_CMAKE_OPTS || return $?
 	make -j${HOST_NUM_CPU} || return $?

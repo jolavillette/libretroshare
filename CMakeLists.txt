@@ -13,6 +13,24 @@ include(GNUInstallDirs)
 set(FETCHCONTENT_QUIET OFF)
 include(FetchContent)
 
+################################################################################
+## Offline build guard. Several dependencies fall back to FetchContent (network
+## download at configure time) when their local sources are absent. For
+## offline/distribution builds (e.g. a Debian source package) that fallback must
+## be a hard error: it would silently build against an unpinned upstream tip.
+option(
+	RS_FETCH_MISSING_DEPS
+	"Allow downloading missing dependencies at configure time via FetchContent. Turn OFF for offline/distribution builds: a missing dependency then stops the configure with an explicit error instead of a silent network download." ON )
+
+macro(rs_fetch_fallback_guard RS_FFG_DEP_NAME)
+	if(RS_FETCH_MISSING_DEPS)
+		message(STATUS "${RS_FFG_DEP_NAME} not found locally, downloading it via FetchContent (pass -DRS_FETCH_MISSING_DEPS=OFF to make this an error)")
+	else()
+		message(FATAL_ERROR "${RS_FFG_DEP_NAME} not found locally and RS_FETCH_MISSING_DEPS is OFF: refusing to download it at configure time. Provide its sources (git submodule / complete source tarball) or the system library." )
+	endif()
+endmacro()
+################################################################################
+
 if(WIN32)
 	# Force Unicode mappings for Windows API (fixes MoveFileEx and similar errors)
 	add_definitions(-DUNICODE -D_UNICODE)
@@ -60,6 +78,16 @@ option(
 	RS_RNPLIB
 	"Enable use RNP lib for PGP"
 	ON )
+
+cmake_dependent_option(
+	RS_SYSTEM_LIBRNP
+	"Use the system-installed librnp instead of building the vendored copy. \
+	Meant for distribution builds (e.g. Debian): when ON, a missing system \
+	librnp is a fatal error instead of silently falling back to the vendored \
+	sources."
+	OFF
+	"RS_RNPLIB"
+	OFF )
 
 option(
 	RS_JSON_API
@@ -221,7 +249,10 @@ set(
 
 ################################################################################
 
-find_package(Git REQUIRED)
+# Git is optional: it is only used to stamp versions (git describe, with a
+# Source_Version file fallback for source tarballs) and by the FetchContent
+# network fallbacks, which are guarded by RS_FETCH_MISSING_DEPS.
+find_package(Git)
 
 ################################################################################
 
@@ -379,7 +410,46 @@ if(RS_RNPLIB)
 
 	set(RNPLIB_DEVEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../supportlibs/librnp/")
 
-	if(EXISTS "${RNPLIB_DEVEL_DIR}/CMakeLists.txt")
+	## On Android prefer an already built and installed librnp, which
+	## prepare-toolchain-clang.sh puts in the sysroot before configuring us.
+	## Building it inline instead cannot work: librnp's CMake runs a freshly
+	## compiled findopensslfeatures to enumerate the OpenSSL features, and that
+	## binary is an Android executable the build host cannot run -- either not
+	## at all, or through binfmt/qemu which then fails on the missing Android
+	## dynamic linker:
+	##   qemu-aarch64: Could not open '/system/bin/linker64': No such file or
+	##   directory
+	## The inline build is only reached when libretroshare is checked out
+	## inside the RetroShare super-project, which is why building from a
+	## standalone clone has always worked.
+	if(RS_ANDROID)
+		find_library(RS_PREBUILT_RNP_LIBRARY NAMES rnp)
+	endif(RS_ANDROID)
+
+	## Distribution builds (e.g. Debian) must link the system librnp instead of
+	## the vendored copy (Debian Policy 4.13 forbids embedded code copies when
+	## the library is packaged). This reuses the same pre-built code path as
+	## Android, but a missing system library is then a hard error: silently
+	## falling back to the vendored sources would defeat the point.
+	if(RS_SYSTEM_LIBRNP)
+		find_library(RS_PREBUILT_RNP_LIBRARY NAMES rnp)
+		if(NOT RS_PREBUILT_RNP_LIBRARY)
+			message(FATAL_ERROR "RS_SYSTEM_LIBRNP is ON but no system librnp was found. Install the librnp development package (e.g. librnp-dev) or turn RS_SYSTEM_LIBRNP OFF.")
+		endif()
+		## The pre-built code path below adds no include directory (on Android
+		## the sysroot provides it); resolve the headers here so non-standard
+		## prefixes (CMAKE_PREFIX_PATH) work too. Not fatal when unset: the
+		## default system include path usually covers it. PUBLIC because
+		## rnppgphandler.h (reached from the public authgpg.h) includes
+		## rnp/rnp.h, so consumers need the headers too — the vendored code
+		## path exports its include directory PUBLIC for the same reason.
+		find_path(RS_SYSTEM_RNP_INCLUDE "rnp/rnp.h")
+		if(RS_SYSTEM_RNP_INCLUDE)
+			target_include_directories(${PROJECT_NAME} PUBLIC "${RS_SYSTEM_RNP_INCLUDE}")
+		endif()
+	endif(RS_SYSTEM_LIBRNP)
+
+	if(NOT RS_PREBUILT_RNP_LIBRARY AND EXISTS "${RNPLIB_DEVEL_DIR}/CMakeLists.txt")
 		message(STATUS "librnp source found at ${RNPLIB_DEVEL_DIR} using it")
 		rnplib_set_inline_build_options()
 		add_subdirectory("${RNPLIB_DEVEL_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/librnp")
@@ -401,6 +471,7 @@ if(RS_RNPLIB)
 		else()
 			message(STATUS "librnp not found locally, using FetchContent")
 			rnplib_set_inline_build_options()
+			rs_fetch_fallback_guard(librnp)
 			FetchContent_Declare(
 				librnp
 				GIT_REPOSITORY "https://github.com/rnpgp/rnp.git"
@@ -438,6 +509,7 @@ else()
 			"openpgpsdk source found at ${OPENPGPSDK_DEVEL_DIR} using it" )
 		add_subdirectory("${OPENPGPSDK_DEVEL_DIR}" "${CMAKE_BINARY_DIR}/openpgpsdk")
 	else()
+		rs_fetch_fallback_guard(openpgpsdk)
 		FetchContent_Declare(
 			openpgpsdk
 			GIT_REPOSITORY "https://github.com/RetroShare/OpenPGP-SDK.git"
@@ -466,6 +538,7 @@ if(RS_BITDHT)
 		add_subdirectory(${BITDHT_DEVEL_DIR} ${CMAKE_BINARY_DIR}/bitdht)
 		set(RS_BITDHT_DIR "${BITDHT_DEVEL_DIR}")
 	else()
+		rs_fetch_fallback_guard(bitdht)
 		FetchContent_Declare(
 			bitdht
 			GIT_REPOSITORY "https://github.com/RetroShare/BitDHT.git"
@@ -513,6 +586,7 @@ elseif(EXISTS "${RAPIDJSON_DEVEL_DIR}/CMakeLists.txt")
 		${PROJECT_NAME}
 		PUBLIC "${RAPIDJSON_DEVEL_DIR}/include" )
 else()
+	rs_fetch_fallback_guard(rapidjson)
 	FetchContent_Declare(
 		rapidjson
 		GIT_REPOSITORY "https://github.com/Tencent/rapidjson.git"
@@ -560,10 +634,27 @@ if(RS_JSON_API)
 	)
 	file(WRITE "${JSON_API_GENERATOR_DOXYFILE}" "${DOXYFILE_CONTENT}")
 
+	# Doxygen never purges its output directory, and the generator emits one
+	# #include per *_8h.xml file it finds there. Without removing them first, the
+	# XML of a public header that has been removed or renamed survives forever and
+	# keeps being turned into an #include of a file that no longer exists.
+	# cmake -E rm does not expand wildcards, so the glob is done by a generated
+	# script run at build time.
+	set(
+		JSON_API_PURGE_XML_SCRIPT
+		"${JSON_API_GENERATOR_WORK_DIR}/purge-stale-header-xml.cmake" )
+	file(WRITE "${JSON_API_PURGE_XML_SCRIPT}"
+		"file(GLOB stale_header_xml \"${JSONAPI_GENERATOR_OUTPUT_DIR}/xml/*_8h.xml\")\n"
+		"if(stale_header_xml)\n"
+		"\tfile(REMOVE \${stale_header_xml})\n"
+		"endif()\n"
+	)
+
 	add_custom_command(
 		OUTPUT
 			"${JSONAPI_GENERATOR_OUTPUT_DIR}/jsonapi-includes.inl"
 			"${JSONAPI_GENERATOR_OUTPUT_DIR}/jsonapi-wrappers.inl"
+		COMMAND ${CMAKE_COMMAND} -P "${JSON_API_PURGE_XML_SCRIPT}"
 		COMMAND ${DOXYGEN_EXECUTABLE} ${JSON_API_GENERATOR_DOXYFILE}
 		COMMAND
 			${Python3_EXECUTABLE} ${JSONAPI_GENERATOR_EXECUTABLE}
@@ -615,6 +706,7 @@ if(RS_JSON_API)
 	else()
 		message( WARNING
 		         "FetchContent restbed, will be installed if you run make install")
+		rs_fetch_fallback_guard(restbed)
 		FetchContent_Declare(
 			restbed
 			GIT_REPOSITORY "https://github.com/Corvusoft/restbed.git"
@@ -655,9 +747,6 @@ endif(RS_JSON_API)
 ################################################################################
 
 if(RS_FORUM_DEEP_INDEX)
-	find_package(Xapian REQUIRED)
-	target_link_libraries(${PROJECT_NAME} PRIVATE ${XAPIAN_LIBRARIES})
-
 	target_compile_definitions(${PROJECT_NAME} PUBLIC RS_DEEP_FORUMS_INDEX)
 endif(RS_FORUM_DEEP_INDEX)
 
@@ -759,6 +848,7 @@ if(RS_BRODCAST_DISCOVERY)
 		target_include_directories(
 			${PROJECT_NAME} PRIVATE "${UDP_DISCOVERY_DEVEL_DIR}" )
 	else()
+		rs_fetch_fallback_guard(udp-discovery-cpp)
 		FetchContent_Declare(
 			udp-discovery-cpp
 			GIT_REPOSITORY "https://github.com/truvorskameikin/udp-discovery-cpp.git"
@@ -822,6 +912,7 @@ endif(RS_EXPORT_JNI_ONLOAD)
 ################################################################################
 
 if(RS_ANDROID)
+	rs_fetch_fallback_guard(jni-hpp)
 	FetchContent_Declare(
 		jni-hpp
 		GIT_REPOSITORY "https://github.com/RetroShare/jni.hpp.git"
@@ -870,7 +961,33 @@ else()
 		message("libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} determined via git")
 		set(V_VERSION_SET ON)
 	else()
-		message(WARNING "Determining libRetroShare version via git failed please specify it through CMake command line arguments!")
+		# Source tarball fallback: an unpacked source tarball carries no git
+		# metadata, so the tarball preparation script stores the output of
+		# `git describe --tags --long --match v*.*.*` in a Source_Version file
+		# next to this CMakeLists.txt. The trailing newline is re-appended so
+		# the same regexp as the git path applies.
+		set(V_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
+		set(V_FILE_DESCRIBE_OUTPUT "")
+		if(EXISTS "${V_VERSION_FILE}")
+			file(READ "${V_VERSION_FILE}" V_FILE_DESCRIBE_OUTPUT)
+			string(STRIP "${V_FILE_DESCRIBE_OUTPUT}" V_FILE_DESCRIBE_OUTPUT)
+			set(V_FILE_DESCRIBE_OUTPUT "${V_FILE_DESCRIBE_OUTPUT}\n")
+		endif()
+		if(V_FILE_DESCRIBE_OUTPUT MATCHES "${V_GIT_DESCRIBE_REGEXP}")
+			string(
+				REGEX REPLACE
+				"${V_GIT_DESCRIBE_REGEXP}" "\\1;\\2;\\3;\\4"
+				V_GIT_DESCRIBE_LIST ${V_FILE_DESCRIBE_OUTPUT} )
+			list(GET V_GIT_DESCRIBE_LIST 0 RS_MAJOR_VERSION)
+			list(GET V_GIT_DESCRIBE_LIST 1 RS_MINOR_VERSION)
+			list(GET V_GIT_DESCRIBE_LIST 2 RS_MINI_VERSION)
+			list(GET V_GIT_DESCRIBE_LIST 3 RS_EXTRA_VERSION)
+
+			message("libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} determined via Source_Version file")
+			set(V_VERSION_SET ON)
+		else()
+			message(WARNING "Determining libRetroShare version via git or Source_Version failed please specify it through CMake command line arguments!")
+		endif()
 	endif()
 endif()
 
@@ -895,6 +1012,16 @@ execute_process(
 	OUTPUT_VARIABLE RS_LIB_VERSION_HASH
 	OUTPUT_STRIP_TRAILING_WHITESPACE
 	RESULT_VARIABLE V_GIT_HASH_RESULT ) # Avoid CMake failure if git fails
+
+# Source tarball fallback: reuse the Source_Version file (see the version
+# detection above) when git metadata is absent.
+if(NOT V_GIT_HASH_RESULT EQUAL 0 OR RS_LIB_VERSION_HASH STREQUAL "")
+	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
+		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version" RS_LIB_VERSION_HASH)
+		string(STRIP "${RS_LIB_VERSION_HASH}" RS_LIB_VERSION_HASH)
+		set(V_GIT_HASH_RESULT 0)
+	endif()
+endif()
 
 if(V_GIT_HASH_RESULT EQUAL 0 AND NOT RS_LIB_VERSION_HASH STREQUAL "")
 	string(REGEX REPLACE "^v" "" RS_LIB_VERSION_HASH "${RS_LIB_VERSION_HASH}")
@@ -934,6 +1061,7 @@ endif()
 ################################################################################
 
 if(RS_CPPTRACE_STACKTRACE)
+    rs_fetch_fallback_guard(cpptrace)
     FetchContent_Declare(
       cpptrace
       GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
@@ -945,7 +1073,7 @@ if(RS_CPPTRACE_STACKTRACE)
     FetchContent_MakeAvailable(cpptrace)
     target_link_libraries(${PROJECT_NAME} PRIVATE cpptrace::cpptrace)
     target_compile_definitions(
-        ${LIBRARY_NAME} PRIVATE RS_JEREMY_RIFKIN_CPPTRACE )
+        ${PROJECT_NAME} PRIVATE RS_JEREMY_RIFKIN_CPPTRACE )
 endif(RS_CPPTRACE_STACKTRACE)
 
 if(RS_USE_I2P_SAM3)
