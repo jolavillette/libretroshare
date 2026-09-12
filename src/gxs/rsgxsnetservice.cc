@@ -247,6 +247,7 @@
 
 #include "rsgxsnetservice.h"
 #include "gxssecurity.h"
+#include "gxsprofiler.h"
 #include "retroshare/rsconfig.h"
 #include "retroshare/rsgxsflags.h"
 #include "retroshare/rsgxscircles.h"
@@ -751,6 +752,11 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 
 void RsGxsNetService::generic_sendItem(rs_owner_ptr<RsItem> si)
 {
+	auto prof_t0 = std::chrono::steady_clock::now();
+	uint32_t prof_pktid = si->PacketId();
+	RsPeerId prof_peer = si->PeerId();
+	bool prof_distant = false;
+
 	// check if the item is to be sent to a distant peer or not
 
 	RsGxsGroupId tmp_grpId;
@@ -771,11 +777,22 @@ void RsGxsNetService::generic_sendItem(rs_owner_ptr<RsItem> si)
 #endif
 		ser.serialise(si,mem,&size) ;
 
+		prof_distant = true;
 		mGxsNetTunnel->sendTunnelData(mServType,mem,size,static_cast<RsGxsNetTunnelVirtualPeerId>(si->PeerId()));
         delete si;
 	}
 	else
 		sendItem(si) ;
+
+	{
+		int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		            std::chrono::steady_clock::now() - prof_t0).count();
+		if(prof_ms >= GxsTickProfiler::slowThresholdMs()/2)
+			RsWarn() << "GXS-PROF service 0x" << std::hex << mServType
+			         << " generic_sendItem pktId 0x" << prof_pktid << std::dec
+			         << " to peer " << prof_peer << (prof_distant?" (distant tunnel)":" (direct)")
+			         << " took " << prof_ms << " ms" << std::endl;
+	}
 }
 
 void RsGxsNetService::checkDistantSyncState()
@@ -2288,6 +2305,19 @@ void RsGxsNetService::processTransactions()
     // blocks every other user of the service (tick, item reception, API).
     std::list<NxsTransaction*> completed_incoming;
 
+    auto prof_t0 = std::chrono::steady_clock::now();
+    struct timespec prof_cpu0;
+    clock_gettime(CLOCK_THREAD_CPUTIME_ID, &prof_cpu0);
+    uint32_t prof_n_trans = 0, prof_n_items_sent = 0, prof_n_incoming = 0;
+    int64_t prof_send_ms = 0, prof_decrypt_ms = 0;
+    auto prof_timed_send = [&](RsItem* item)
+    {
+        auto t = std::chrono::steady_clock::now();
+        generic_sendItem(item);
+        prof_send_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - t).count();
+    };
+
     { // scope for mNxsMutex
 
     RS_STACK_MUTEX(mNxsMutex) ;
@@ -2354,11 +2384,14 @@ void RsGxsNetService::processTransactions()
 #ifdef NXS_NET_DEBUG_1
                     GXSNETDEBUG_P_(mit->first)<< "     Sending Transaction content, transN: " << transN << " with peer: " << tr->mTransaction->PeerId() << std::endl;
 #endif
+                    ++prof_n_trans;
+                    prof_n_items_sent += tr->mItems.size();
+
                     lit = tr->mItems.begin();
                     lit_end = tr->mItems.end();
 
                     for(; lit != lit_end; ++lit){
-                        generic_sendItem(*lit);
+                        prof_timed_send(*lit);
                     }
 
                     tr->mItems.clear(); // clear so they don't get deleted in trans cleaning
@@ -2414,6 +2447,7 @@ void RsGxsNetService::processTransactions()
                 NxsTransaction* tr = mmit->second;
                 uint16_t flag = tr->mFlag;
                 uint32_t transN = tr->mTransaction->transactionNumber;
+                ++prof_n_incoming;
 
 #ifdef NXS_NET_DEBUG_1
                 GXSNETDEBUG_P_(mit->first) << "    type: incoming " << std::endl;
@@ -2467,7 +2501,7 @@ void RsGxsNetService::processTransactions()
                     trans->transactFlag = RsNxsTransacItem::FLAG_END_SUCCESS;
                     trans->transactionNumber = transN;
                     trans->PeerId(tr->mTransaction->PeerId());
-                    generic_sendItem(trans);
+                    prof_timed_send(trans);
 
                     // move to completed transactions
 
@@ -2495,7 +2529,7 @@ void RsGxsNetService::processTransactions()
                                     (tr->mTransaction->transactFlag & RsNxsTransacItem::FLAG_TYPE_MASK);
                     trans->transactionNumber = transN;
                     trans->PeerId(tr->mTransaction->PeerId());
-                    generic_sendItem(trans);
+                    prof_timed_send(trans);
                     tr->mFlag = NxsTransaction::FLAG_STATE_RECEIVING;
 
                 }
@@ -2524,9 +2558,6 @@ void RsGxsNetService::processTransactions()
 
     } // end of scope for mNxsMutex
 
-    if(completed_incoming.empty())
-        return;
-
     // Decrypt the completed incoming transactions outside the mutex. They were
     // removed from mTransactions above, so this thread is their only owner.
     // processTransactionForDecryption() replaces the encrypted items in place;
@@ -2534,12 +2565,41 @@ void RsGxsNetService::processTransactions()
     // at validation, as before.
 
     for(auto tr : completed_incoming)
+    {
+        auto prof_dec_t = std::chrono::steady_clock::now();
         processTransactionForDecryption(tr);
+        prof_decrypt_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - prof_dec_t).count();
+    }
 
-    RS_STACK_MUTEX(mNxsMutex) ;
+    if(!completed_incoming.empty())
+    {
+        RS_STACK_MUTEX(mNxsMutex) ;
 
-    for(auto tr : completed_incoming)
-        mComplTransactions.push_back(tr);
+        for(auto tr : completed_incoming)
+            mComplTransactions.push_back(tr);
+    }
+
+    {
+        int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - prof_t0).count();
+        if(prof_ms >= GxsTickProfiler::slowThresholdMs())
+        {
+            struct timespec prof_cpu1;
+            clock_gettime(CLOCK_THREAD_CPUTIME_ID, &prof_cpu1);
+            int64_t prof_cpu_ms = (prof_cpu1.tv_sec - prof_cpu0.tv_sec)*1000
+                    + (prof_cpu1.tv_nsec - prof_cpu0.tv_nsec)/1000000;
+
+            RsWarn() << "GXS-PROF service 0x" << std::hex << mServType << std::dec
+                     << " processTransactions sent " << prof_n_items_sent
+                     << " items over " << prof_n_trans << " sending transactions, "
+                     << prof_n_incoming << " incoming, in "
+                     << prof_ms << " ms wall / " << prof_cpu_ms
+                     << " ms thread-cpu, " << prof_send_ms
+                     << " ms in generic_sendItem, " << prof_decrypt_ms
+                     << " ms in transaction decryption (decryption now OUTSIDE mNxsMutex)" << std::endl;
+        }
+    }
 }
 
 bool RsGxsNetService::getGroupNetworkStats(const RsGxsGroupId& gid,RsGroupNetworkStats& stats)
