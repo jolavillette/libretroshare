@@ -554,6 +554,27 @@ ChatLobbyId p3ChatService::createChatLobby(const std::string& lobby_name,const R
     return DistributedChatService::createChatLobby(lobby_name,lobby_identity,lobby_topic,invited_friends,privacy_type) ;
 }
 
+bool p3ChatService::requestLobbyHistory(const ChatLobbyId& lobby_id)
+{
+    return DistributedChatService::requestLobbyHistory(lobby_id) ;
+}
+
+bool p3ChatService::requestLobbyHistoryFromPeer(const ChatLobbyId& lobby_id, const RsPeerId& peer_id, uint32_t max_count, uint32_t oldest_ts)
+{
+    return DistributedChatService::requestLobbyHistoryFromPeer(lobby_id, peer_id, max_count, oldest_ts) ;
+}
+
+bool p3ChatService::allowHistorySharing(bool allow)
+{
+    DistributedChatService::allowHistorySharing(allow) ;
+    return true ;
+}
+
+bool p3ChatService::isHistorySharingAllowed() const
+{
+    return DistributedChatService::isHistorySharingAllowed() ;
+}
+
 
 void p3ChatService::sendChatItem(RsChatItem *item)
 {
@@ -1501,6 +1522,27 @@ std::string p3ChatService::getCustomStateString(const RsPeerId& peer_id)
 	return std::string() ;
 }
 
+void p3ChatService::locked_requestAvatar(const RsPeerId& peer_id)
+{
+	/* Create placeholder to store request time */
+	std::map<RsPeerId,AvatarInfo *>::const_iterator it = _avatars.find(peer_id) ;
+
+	if(it == _avatars.end())
+	{
+		_avatars[peer_id] = new AvatarInfo();
+		it = _avatars.find(peer_id);
+	}
+
+	time_t now = time(NULL);
+	if (now - it->second->_last_request_time > 60) {
+#ifdef AVATAR_DEBUG
+		RsDbg() << "AVATAR p3ChatService::locked_requestAvatar: No avatar for peer " << peer_id << ". Requesting it (throttled).";
+#endif
+		it->second->_last_request_time = now;
+		sendAvatarRequest(peer_id);
+	}
+}
+
 void p3ChatService::getAvatarData(const RsPeerId& peer_id,unsigned char *& data,int& size)
 {
 	{
@@ -1525,22 +1567,58 @@ void p3ChatService::getAvatarData(const RsPeerId& peer_id,unsigned char *& data,
 #endif
 			return ;
 		} else {
-            /* Create placeholder to store request time */
-            if (it == _avatars.end()) {
-                 _avatars[peer_id] = new AvatarInfo();
-                 it = _avatars.find(peer_id);
-            }
+			data = NULL ;
+			size = 0 ;
 
-            time_t now = time(NULL);
-            if (now - it->second->_last_request_time > 60) {
-#ifdef AVATAR_DEBUG
-			    RsDbg() << "AVATAR p3ChatService::getAvatarData: No avatar for peer " << peer_id << ". Requesting it (throttled).";
-#endif
-                it->second->_last_request_time = now;
-                sendAvatarRequest(peer_id);
-            }
+			locked_requestAvatar(peer_id);
 		}
 	}
+}
+
+bool p3ChatService::getAvatar(const RsPeerId& pid, RsGxsImage& avatar)
+{
+	RS_STACK_MUTEX(mChatMtx);
+
+	avatar.clear();
+
+	std::map<RsPeerId,AvatarInfo *>::const_iterator it = _avatars.find(pid) ;
+
+	if(it != _avatars.end() && it->second->_image_size > 0)
+	{
+		unsigned char* data = NULL ;
+		uint32_t size = 0 ;
+		it->second->toUnsignedChar(data,size) ;
+
+		/* AvatarInfo::toUnsignedChar allocates with rs_malloc, and RsGxsImage
+		 * releases with free, so the buffer ownership can be handed over
+		 * without an extra copy. */
+		avatar.take(data,size);
+
+		it->second->_peer_is_new = false ;
+		return true;
+	}
+
+	/* Not available (yet): ask the peer for it, so that a later call may
+	 * succeed. */
+	locked_requestAvatar(pid);
+	return false;
+}
+
+bool p3ChatService::getOwnAvatar(RsGxsImage& avatar)
+{
+	RS_STACK_MUTEX(mChatMtx);
+
+	avatar.clear();
+
+	if(_own_avatar == NULL || _own_avatar->_image_size == 0)
+		return false;
+
+	unsigned char* data = NULL ;
+	uint32_t size = 0 ;
+	_own_avatar->toUnsignedChar(data,size) ;
+	avatar.take(data,size);
+
+	return true;
 }
 
 void p3ChatService::sendAvatarRequest(const RsPeerId& peer_id)

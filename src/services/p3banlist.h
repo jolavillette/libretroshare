@@ -59,7 +59,8 @@ public:
 	/// @see RsBanList
 	virtual bool isAddressAccepted(
 	        const sockaddr_storage& addr, uint32_t checking_flags,
-	        uint32_t& check_result = RS_DEFAULT_STORAGE_PARAM(uint32_t)
+	        uint32_t& check_result = RS_DEFAULT_STORAGE_PARAM(uint32_t),
+	        uint32_t& ban_reason = RS_DEFAULT_STORAGE_PARAM(uint32_t)
 	        ) override;
 
     virtual void getBannedIps(std::list<BanListPeer>& list) ;
