@@ -2934,7 +2934,15 @@ void RsGenExchange::publishGrps()
 					    // Place back private keys for publisher and database storage
 					    grp->metaData->keys.private_keys = fullKeySet.private_keys;
 
-					    if(mDataStore->validSize(grp) && serialOk)
+					    const uint32_t grpNetSize = grp->grp.TlvSize() + grp->meta.TlvSize();
+
+					    if(grpNetSize > RS_GXS_MAX_GROUP_SIZE)
+					    {
+						    RsErr() << "Refusing to " << (ggps.mIsUpdate ? "update" : "create") << " group " << grp->grpId << " of service 0x" << std::hex << mServType << std::dec
+						            << ": " << grpNetSize << " bytes, more than the " << RS_GXS_MAX_GROUP_SIZE << " bytes that can be sent to friends. Reduce the image or description." << std::endl;
+						    create = CREATE_FAIL;
+					    }
+					    else if(mDataStore->validSize(grp) && serialOk)
 					    {
 						    grpId = grp->grpId;
 						    computeHash(grp->grp, grp->metaData->mHash);
