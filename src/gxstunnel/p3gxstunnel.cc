@@ -648,6 +648,16 @@ void p3GxsTunnelService::removeVirtualPeer(const TurtleFileHash& hash,const Turt
         
         _gxs_tunnel_virtual_peer_ids.erase(it) ;
 
+        // tunnel_id is only set once the DH handshake completes. A null id means the
+        // turtle tunnel died before that: no contact was ever bound to it, nothing to notify.
+        if(tunnel_id.isNull())
+        {
+#ifdef DEBUG_GXS_TUNNEL
+            std::cerr << "  virtual peer " << virtual_peer_id << " removed before DH handshake completed. Nothing to do." << std::endl;
+#endif
+            return ;
+        }
+
         std::map<RsGxsTunnelId,GxsTunnelPeerInfo>::iterator it2 = _gxs_tunnel_contacts.find(tunnel_id) ;
 
         if(it2 == _gxs_tunnel_contacts.end())
@@ -985,7 +995,11 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
 
     if(it->second.dh == NULL)
     {
-        std::cerr << "  (EE) no DH information for that peer. This is an error." << std::endl;
+        // addVirtualPeer() keeps the entry but starts no DH session when the contact
+        // already CAN_TALK: this is a redundant tunnel for a live session, ignore it.
+#ifdef DEBUG_GXS_TUNNEL
+        std::cerr << "  no DH session for virtual peer " << vpid << ": redundant tunnel for an already established session. Ignoring." << std::endl;
+#endif
         return ;
     }
     if(it->second.status == RS_GXS_TUNNEL_DH_STATUS_KEY_AVAILABLE)
