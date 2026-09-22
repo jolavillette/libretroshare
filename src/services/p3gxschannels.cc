@@ -1840,6 +1840,12 @@ bool p3GxsChannels::createChannelV2(
 	channel.mDescription = description;
 	channel.mImage = thumbnail;
 
+	RsGenericSerializer::SerializeContext ctx;
+	channel.serial_process(RsGenericSerializer::SIZE_ESTIMATE, ctx);
+
+	if(ctx.mSize > RS_GXS_MAX_GROUP_SIZE)
+		return failure("Maximum size of " + std::to_string(RS_GXS_MAX_GROUP_SIZE) + " bytes exceeded for channel.");
+
 	uint32_t token;
 	if(!createGroup(token, channel))
 		return failure("Failure creating GXS group");
