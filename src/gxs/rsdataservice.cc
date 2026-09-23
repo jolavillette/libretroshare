@@ -37,6 +37,31 @@
 #include "rsdataservice.h"
 #include "retroshare/rsgxsflags.h"
 #include "util/rsstring.h"
+#include "util/rsgxswriteprobe.h"
+
+// Write-probe helpers (debug build): compact descriptions of write payloads.
+static std::string probeDescribeMsgReq(const GxsMsgReq& req)
+{
+	std::ostringstream oss;
+	size_t total = 0;
+	for(const auto& g : req)
+	{
+		total += g.second.size();
+		oss << " " << GxsWriteProbe::shortId(g.first) << ":" << g.second.size();
+		int shown = 0;
+		for(const auto& m : g.second) { if(shown++ >= 3) break; oss << (shown==1?"[":",") << GxsWriteProbe::shortId(m); }
+		if(shown) oss << "]";
+	}
+	return "total=" + std::to_string(total) + oss.str();
+}
+static std::string probeDescribeKeys(const ContentValue& cv)
+{
+	std::map<std::string, uint8_t> keys;
+	cv.getKeyTypeMap(keys);
+	std::string r;
+	for(const auto& k : keys) r += (r.empty() ? "" : ",") + k.first;
+	return r;
+}
 
 #define MSG_TABLE_NAME std::string("MESSAGES")
 #define GRP_TABLE_NAME std::string("GROUPS")
@@ -300,6 +325,8 @@ void RsDataService::initialise(bool isNewDatabase)
     int currentDatabaseRelease = 0;
     bool ok = true;
 
+    GxsWriteProbe::ScopedTag probeTag("initialise");
+    GXS_PROBE("DS", "initialise db=" << mDbName << " new=" << isNewDatabase);
     RsStackMutex stack(mDbMutex);
 
     // initialise database
@@ -761,6 +788,12 @@ RsNxsMsg* RsDataService::locked_getMessage(RetroCursor &c)
 
 int RsDataService::storeMessage(const std::list<RsNxsMsg*>& msg)
 {
+    GxsWriteProbe::ScopedTag probeTag("storeMessage");
+    {
+        GxsMsgReq req;
+        for(const auto* m : msg) req[m->grpId].insert(m->msgId);
+        GXS_PROBE("DS", "storeMessage db=" << mDbName << " n=" << msg.size() << " " << probeDescribeMsgReq(req));
+    }
 
     RsStackMutex stack(mDbMutex);
 
@@ -863,6 +896,11 @@ bool RsDataService::validSize(RsNxsMsg* msg) const
 
 int RsDataService::storeGroup(const std::list<RsNxsGrp*>& grp)
 {
+    GxsWriteProbe::ScopedTag probeTag("storeGroup");
+    {
+        std::ostringstream ids; for(const auto* g : grp) ids << " " << GxsWriteProbe::shortId(g->grpId);
+        GXS_PROBE("DS", "storeGroup db=" << mDbName << " n=" << grp.size() << " grps:" << ids.str());
+    }
 
     RsStackMutex stack(mDbMutex);
 
@@ -956,6 +994,11 @@ int RsDataService::storeGroup(const std::list<RsNxsGrp*>& grp)
 
 int RsDataService::updateGroup(const std::list<RsNxsGrp *> &grp)
 {
+    GxsWriteProbe::ScopedTag probeTag("updateGroup");
+    {
+        std::ostringstream ids; for(const auto* g : grp) ids << " " << GxsWriteProbe::shortId(g->grpId);
+        GXS_PROBE("DS", "updateGroup db=" << mDbName << " n=" << grp.size() << " grps:" << ids.str());
+    }
 
     RsStackMutex stack(mDbMutex);
 
@@ -1034,6 +1077,8 @@ int RsDataService::updateGroup(const std::list<RsNxsGrp *> &grp)
 
 int RsDataService::updateGroupKeys(const RsGxsGroupId& grpId,const RsTlvSecurityKeySet& keys,uint32_t subscribe_flags)
 {
+    GxsWriteProbe::ScopedTag probeTag("updateGroupKeys");
+    GXS_PROBE("DS", "updateGroupKeys db=" << mDbName << " grp=" << GxsWriteProbe::shortId(grpId) << " subscribe_flags=" << std::hex << subscribe_flags << std::dec);
     RsStackMutex stack(mDbMutex);
 
     // begin transaction
@@ -1523,6 +1568,8 @@ int RsDataService::retrieveGxsGrpMetaData(std::map<RsGxsGroupId,std::shared_ptr<
 
 int RsDataService::resetDataStore()
 {
+    GxsWriteProbe::ScopedTag probeTag("resetDataStore");
+    GXS_PROBE("DS", "resetDataStore db=" << mDbName);
 
 #ifdef RS_DATA_SERVICE_DEBUG
     std::cerr << "resetDataStore() " << std::endl;
@@ -1549,6 +1596,8 @@ int RsDataService::updateGroupMetaData(const GrpLocMetaData& meta)
 #ifdef RS_DATA_SERVICE_DEBUG_CACHE
     std::cerr << (void*)this << ": Updating Grp Meta data: grpId = " << meta.grpId << std::endl;
 #endif
+    GxsWriteProbe::ScopedTag probeTag("updateGroupMetaData1");
+    GXS_PROBE("DS", "updateGroupMetaData(single) db=" << mDbName << " grp=" << GxsWriteProbe::shortId(meta.grpId) << " keys=" << probeDescribeKeys(meta.val));
 
     RsStackMutex stack(mDbMutex);
     const RsGxsGroupId& grpId = meta.grpId;
@@ -1587,6 +1636,13 @@ int RsDataService::updateGroupMetaData(const std::vector<GrpLocMetaData>& metaLi
 {
     if(metaList.empty())
         return 0;
+
+    GxsWriteProbe::ScopedTag probeTag("updateGroupMetaData");
+    {
+        std::ostringstream d; int shown = 0;
+        for(const auto& m : metaList) { if(shown++ >= 5) { d << " ..."; break; } d << " " << GxsWriteProbe::shortId(m.grpId) << "(" << probeDescribeKeys(m.val) << ")"; }
+        GXS_PROBE("DS", "updateGroupMetaData(batch) db=" << mDbName << " n=" << metaList.size() << d.str());
+    }
 
     RsStackMutex stack(mDbMutex);
 
@@ -1638,6 +1694,8 @@ int RsDataService::updateMessageMetaData(const MsgLocMetaData& metaData)
 #ifdef RS_DATA_SERVICE_DEBUG_CACHE
     std::cerr << (void*)this << ": Updating Msg Meta data: grpId = " << metaData.msgId.first << " msgId = " << metaData.msgId.second << std::endl;
 #endif
+    GxsWriteProbe::ScopedTag probeTag("updateMessageMetaData1");
+    GXS_PROBE("DS", "updateMessageMetaData(single) db=" << mDbName << " grp=" << GxsWriteProbe::shortId(metaData.msgId.first) << " msg=" << GxsWriteProbe::shortId(metaData.msgId.second) << " keys=" << probeDescribeKeys(metaData.val));
 
     RsStackMutex stack(mDbMutex);
     const RsGxsGroupId& grpId = metaData.msgId.first;
@@ -1673,6 +1731,13 @@ int RsDataService::updateMessageMetaData(const std::vector<MsgLocMetaData>& meta
 {
     if(metaList.empty())
         return 0;
+
+    GxsWriteProbe::ScopedTag probeTag("updateMessageMetaData");
+    {
+        std::ostringstream d; int shown = 0;
+        for(const auto& m : metaList) { if(shown++ >= 5) { d << " ..."; break; } d << " " << GxsWriteProbe::shortId(m.msgId.first) << "/" << GxsWriteProbe::shortId(m.msgId.second) << "(" << probeDescribeKeys(m.val) << ")"; }
+        GXS_PROBE("DS", "updateMessageMetaData(batch) db=" << mDbName << " n=" << metaList.size() << d.str());
+    }
 
     RsStackMutex stack(mDbMutex);
 
@@ -1721,6 +1786,8 @@ int RsDataService::updateMessageMetaData(const std::vector<MsgLocMetaData>& meta
 
 int RsDataService::removeMsgs(const GxsMsgReq& msgIds)
 {
+    GxsWriteProbe::ScopedTag probeTag("removeMsgs");
+    GXS_PROBE("DS", "removeMsgs db=" << mDbName << " groups=" << msgIds.size() << " " << probeDescribeMsgReq(msgIds));
     RsStackMutex stack(mDbMutex);
 
     GxsMsgReq::const_iterator mit = msgIds.begin();
@@ -1741,6 +1808,11 @@ int RsDataService::removeMsgs(const GxsMsgReq& msgIds)
 
 int RsDataService::removeGroups(const std::vector<RsGxsGroupId> &grpIds)
 {
+    GxsWriteProbe::ScopedTag probeTag("removeGroups");
+    {
+        std::ostringstream ids; for(const auto& g : grpIds) ids << " " << GxsWriteProbe::shortId(g);
+        GXS_PROBE("DS", "removeGroups db=" << mDbName << " n=" << grpIds.size() << " grps:" << ids.str());
+    }
 
     RsStackMutex stack(mDbMutex);
 

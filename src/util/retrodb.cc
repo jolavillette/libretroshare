@@ -29,6 +29,7 @@
 
 #include "util/rstime.h"
 #include "util/retrodb.h"
+#include "util/rsgxswriteprobe.h"
 #include "util/rsdbbind.h"
 #include "util/stacktrace.h"
 #include "util/rsdir.h"
@@ -148,6 +149,8 @@ RetroDb::RetroDb(const std::string& dbPath, int flags, const std::string& key):
 		}
 	}
 #endif // ndef NO_SQLCIPHER
+
+	probeOpen();
 }
 
 RetroDb::~RetroDb() { closeDb(); }
@@ -160,7 +163,10 @@ void RetroDb::closeDb()
     if(mDbNeedsCleaning)
     {
         RsDbg() << "Cleaning the Db \"" << mPath << "\" using the VACUUM command." ;
+        const auto vacuumStart = std::chrono::steady_clock::now();
         execSQL("VACUUM;");
+        GXS_PROBE("DB", "VACUUM db=" << mProbeName << " took "
+                  << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - vacuumStart).count() << " ms");
         mDbNeedsCleaning = false;
     }
 
@@ -196,6 +202,7 @@ bool RetroDb::execSQL(const std::string &query){
 
     rstime_t stamp = time(NULL);
     bool timeOut = false, ok = false;
+    const auto probeStart = std::chrono::steady_clock::now();
 
     while(!timeOut){
 
@@ -219,6 +226,8 @@ bool RetroDb::execSQL(const std::string &query){
         // TODO add sleep so not to waste
         // precious cycles
     }
+
+    probeStatement(query, ok, rc, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - probeStart).count());
 
     if(!ok){
 
@@ -395,6 +404,7 @@ bool RetroDb::execSQL_bind(const std::string &query, std::list<RetroBind*> &para
     uint32_t delta = 3;
     rstime_t stamp = time(NULL), now = 0;
     bool timeOut = false, ok = false;
+    const auto probeStart = std::chrono::steady_clock::now();
 
     while(!timeOut){
 
@@ -420,6 +430,8 @@ bool RetroDb::execSQL_bind(const std::string &query, std::list<RetroBind*> &para
         // TODO add sleep so not to waste
         // precious cycles
     }
+
+    probeStatement(query, ok, rc, std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - probeStart).count());
 
     if(!ok){
 
@@ -881,3 +893,124 @@ const void* RetroCursor::getData(int columnIndex, uint32_t &datSize){
     return val;
 }
 
+
+
+/* ---------------------------------------------------------------------------
+ * Write probe (debug build). One TX line per explicit transaction, one
+ * AUTOCOMMIT line per write statement issued outside BEGIN/COMMIT. A write
+ * with changes > 0 is what makes sqlite create and delete the rollback journal.
+ * ------------------------------------------------------------------------ */
+
+std::string RetroDb::probePragma(const char* pragma)
+{
+	std::string result = "?";
+	if(!mDb) return result;
+
+	sqlite3_stmt* stm = nullptr;
+	const std::string q = std::string("PRAGMA ") + pragma + ";";
+	if(sqlite3_prepare_v2(mDb, q.c_str(), q.length(), &stm, nullptr) != SQLITE_OK)
+		return result;
+	if(sqlite3_step(stm) == SQLITE_ROW)
+	{
+		const unsigned char* txt = sqlite3_column_text(stm, 0);
+		result = txt ? reinterpret_cast<const char*>(txt) : "null";
+	}
+	sqlite3_finalize(stm);
+	return result;
+}
+
+void RetroDb::probeOpen()
+{
+	const size_t slash = mPath.find_last_of("/\\");
+	mProbeName = (slash == std::string::npos) ? mPath : mPath.substr(slash + 1);
+	const std::string dir = (slash == std::string::npos) ? "." : mPath.substr(0, slash);
+
+	GxsWriteProbe::init(dir);
+
+	if(!mDb) { GXS_PROBE("DB", "OPEN db=" << mProbeName << " FAILED (null handle)"); return; }
+
+	GXS_PROBE("DB", "OPEN db=" << mProbeName
+	          << " sqlite=" << sqlite3_libversion()
+	          << " cipher_version=" << probePragma("cipher_version")
+	          << " journal_mode=" << probePragma("journal_mode")
+	          << " synchronous=" << probePragma("synchronous")
+	          << " page_size=" << probePragma("page_size")
+	          << " page_count=" << probePragma("page_count")
+	          << " freelist_count=" << probePragma("freelist_count")
+	          << " auto_vacuum=" << probePragma("auto_vacuum"));
+}
+
+void RetroDb::probeStatement(const std::string& query, bool ok, int rc, long ms)
+{
+	if(!GxsWriteProbe::enabled()) return;
+
+	// statement kind = first keyword
+	size_t b = 0;
+	while(b < query.size() && (query[b] == ' ' || query[b] == '\t' || query[b] == '\n')) ++b;
+	size_t e = b;
+	while(e < query.size() && ((query[e] >= 'A' && query[e] <= 'Z') || (query[e] >= 'a' && query[e] <= 'z'))) ++e;
+	std::string kind = query.substr(b, e - b);
+	for(auto& c : kind) c = toupper(c);
+
+	const std::string tag = GxsWriteProbe::currentTag();
+	const std::string head = query.substr(b, std::min<size_t>(70, query.size() - b));
+
+	if(kind == "BEGIN")
+	{
+		mProbeInTx = true;
+		mProbeIns = mProbeUpd = mProbeDel = mProbeChanges = mProbeErr = 0;
+		mProbeStmtMs = 0;
+		mProbeTxStart = std::chrono::steady_clock::now();
+		return;
+	}
+
+	if(kind == "COMMIT" || kind == "ROLLBACK")
+	{
+		const long totalMs = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - mProbeTxStart).count();
+		GXS_PROBE("DB", "TX " << kind << " db=" << mProbeName << " tag=" << (tag.empty() ? "untagged" : tag)
+		          << " ins=" << mProbeIns << " upd=" << mProbeUpd << " del=" << mProbeDel
+		          << " changes=" << mProbeChanges << " errors=" << mProbeErr
+		          << " stmt_ms=" << mProbeStmtMs << " commit_ms=" << ms << " total_ms=" << totalMs
+		          << (ok ? "" : " COMMIT-FAILED") << (mProbeChanges > 0 ? " (journal)" : " (no page written)"));
+		GxsWriteProbe::countTx(mProbeName, tag, mProbeChanges, ok && mProbeErr == 0);
+		mProbeInTx = false;
+		return;
+	}
+
+	const bool isWrite = (kind == "INSERT" || kind == "UPDATE" || kind == "DELETE" || kind == "REPLACE");
+
+	if(isWrite)
+	{
+		const int changes = ok ? sqlite3_changes(mDb) : 0;
+
+		if(mProbeInTx)
+		{
+			if(kind == "INSERT" || kind == "REPLACE") ++mProbeIns;
+			else if(kind == "UPDATE") ++mProbeUpd;
+			else ++mProbeDel;
+			mProbeChanges += changes;
+			mProbeStmtMs += ms;
+			if(!ok) ++mProbeErr;
+		}
+		else
+		{
+			GXS_PROBE("DB", "AUTOCOMMIT " << kind << " db=" << mProbeName << " tag=" << (tag.empty() ? "untagged" : tag)
+			          << " changes=" << changes << " ms=" << ms << (ok ? "" : " FAILED") << " q=" << head);
+			GxsWriteProbe::countTx(mProbeName, "autocommit:" + (tag.empty() ? std::string("untagged") : tag), changes, ok);
+		}
+
+		static int untaggedTraces = 0;
+		if(tag.empty() && untaggedTraces < 20 && GxsWriteProbe::file())
+		{
+			++untaggedTraces;
+			GXS_PROBE("DB", "untagged write, stack follows: q=" << head);
+			print_stacktrace(true, GxsWriteProbe::file(), 40);
+		}
+	}
+	else if(kind == "VACUUM" || kind == "CREATE" || kind == "DROP" || kind == "ALTER")
+		GXS_PROBE("DB", kind << " db=" << mProbeName << " tag=" << (tag.empty() ? "untagged" : tag) << " ms=" << ms << (ok ? "" : " FAILED"));
+
+	if(!ok)
+		GXS_PROBE("DB", "ERROR db=" << mProbeName << " tag=" << (tag.empty() ? "untagged" : tag) << " rc=" << rc
+		          << " msg=" << (mDb ? sqlite3_errmsg(mDb) : "no handle") << " q=" << head);
+}

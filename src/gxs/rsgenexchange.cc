@@ -41,6 +41,10 @@
 #include "retroshare/rsevents.h"
 #include "util/radix64.h"
 #include "util/cxx17retrocompat.h"
+#include "util/rsgxswriteprobe.h"
+
+// Write probe (debug build): one line per producer of DB writes, prefixed with the service type.
+#define GX_PROBE(expr) GXS_PROBE("GX", "svc=" << std::hex << mServType << std::dec << " " << expr)
 
 #include <iostream>
 #include <sstream>
@@ -301,6 +305,11 @@ void RsGenExchange::tick()
 
         RsGxsCleanUp(mDataStore,this,1).clean(mNextGroupToCheck,grps_to_delete,msgs_to_delete);	// no need to lock here, because all access below (RsGenExchange, RsDataStore) are properly mutexed
 
+        {
+            size_t nmsgs = 0; for(const auto& g : msgs_to_delete) nmsgs += g.second.size();
+            GX_PROBE("hourly RsGxsCleanUp groups_to_delete=" << grps_to_delete.size() << " msgs_to_delete=" << nmsgs << " in_groups=" << msgs_to_delete.size() << " next_group=" << GxsWriteProbe::shortId(mNextGroupToCheck));
+        }
+
         uint32_t token1=0;
         deleteMsgs(token1,msgs_to_delete);
 
@@ -339,6 +348,11 @@ void RsGenExchange::tick()
             {
                 RS_STACK_MUTEX(mGenMtx) ;
                 mIntegrityCheck->getDeletedIds(grpIds, msgIds);
+            }
+
+            {
+                size_t nmsgs = 0; for(const auto& g : msgIds) nmsgs += g.second.size();
+                GX_PROBE("integrity check done groups_to_delete=" << grpIds.size() << " msgs_to_delete=" << nmsgs);
             }
 
             if(!msgIds.empty())
@@ -1736,12 +1750,18 @@ void RsGenExchange::receiveNewGroups(const std::vector<RsNxsGrp *> &groups)
     	}
     }
 
+    GX_PROBE("receiveNewGroups n=" << groups.size() << " pending_now=" << mGrpPendingValidate.size());
 }
 
 
 void RsGenExchange::receiveNewMessages(const std::vector<RsNxsMsg *>& messages)
 {
 	RS_STACK_MUTEX(mGenMtx) ;
+
+	if(!messages.empty())
+		GX_PROBE("receiveNewMessages n=" << messages.size() << " pending_before=" << mMsgPendingValidate.size()
+		         << " first=" << GxsWriteProbe::shortId(messages[0]->grpId) << "/" << GxsWriteProbe::shortId(messages[0]->msgId)
+		         << " peer=" << GxsWriteProbe::shortId(messages[0]->PeerId()));
 
 	// store these for tick() to pick them up
 
@@ -2159,6 +2179,7 @@ void RsGenExchange::processMsgMetaChanges()
     }
 
     // Second pass: persist every collected change in a single transaction.
+    GX_PROBE("processMsgMetaChanges requested=" << metaMap.size() << " to_write=" << updates.size());
     int updated = mDataStore->updateMessageMetaData(updates);
     bool batchOk = (updated == static_cast<int>(updates.size()));
 
@@ -2242,6 +2263,8 @@ void RsGenExchange::processGrpMetaChanges()
     // Phase 2: write the whole batch in a single DB transaction. One call per
     // entry means one fsync per entry, which was measured at ~1 s each and
     // freezes the service tick for minutes when a backlog accumulates.
+
+    GX_PROBE("processGrpMetaChanges requested=" << metaMap.size() << " to_write=" << toWrite.size());
 
     if(!toWrite.empty())
     {
@@ -2494,6 +2517,7 @@ void RsGenExchange::publishMsgs()
                 }
                 msg_item->meta = *msg->metaData;
 
+                GX_PROBE("publishMsgs CREATED token=" << token << " grp=" << GxsWriteProbe::shortId(grpId) << " msg=" << GxsWriteProbe::shortId(msgId));
                 mDataAccess->addMsgData(msg);   // msg is deleted by addMsgData()
 
 				msgChangeMap[grpId].push_back(msg_item);
@@ -2516,6 +2540,7 @@ void RsGenExchange::publishMsgs()
                     mDataAccess->updatePublicRequestStatus(mit->first, RsTokenService::FAILED);
 
 				std::cerr << "RsGenExchange::publishMsgs() failed to publish msg " << std::endl;
+				GX_PROBE("publishMsgs " << (tryLater ? "TRY_LATER" : "FAILED") << " token=" << token << " grp=" << GxsWriteProbe::shortId(grpId) << " createOk=" << createOk << " validSize=" << validSize);
 			}
 		}
 		else
@@ -2675,6 +2700,7 @@ void RsGenExchange::processGroupDelete()
 	{
 		std::vector<RsGxsGroupId> gprIds;
 		gprIds.push_back(vit->mGroupId);
+		GX_PROBE("processGroupDelete grp=" << GxsWriteProbe::shortId(vit->mGroupId));
 		mDataStore->removeGroups(gprIds);
 		toNotify.insert(std::make_pair( vit->mToken, GrpNote(true, vit->mGroupId)));
 	}
@@ -2719,6 +2745,7 @@ void RsGenExchange::processMessageDelete()
     {
         uint32_t token = (*vit).mToken;
         bool res = mDataStore->removeMsgs( (*vit).mMsgs );
+        GX_PROBE("processMessageDelete token=" << token << " groups=" << (*vit).mMsgs.size() << " ok=" << res);
 
 #ifdef GEN_EXCH_DEBUG
         for(auto mit: (*vit).mMsgs)
@@ -3003,6 +3030,7 @@ void RsGenExchange::publishGrps()
 #ifdef GEN_EXCH_DEBUG
 			    std::cerr << "RsGenExchange::publishGrps() failed to publish grp " << std::endl;
 #endif
+			    GX_PROBE("publishGrps FAILED token=" << token << " update=" << ggps.mIsUpdate << " grp=" << GxsWriteProbe::shortId(grpId));
 			    delete grp;
 			    delete grpItem;
 			    vit = mGrpsToPublish.erase(vit);
@@ -3014,6 +3042,7 @@ void RsGenExchange::publishGrps()
 #ifdef GEN_EXCH_DEBUG
 			    std::cerr << "RsGenExchange::publishGrps() failed grp, trying again " << std::endl;
 #endif
+			    GX_PROBE("publishGrps TRY_LATER token=" << token << " update=" << ggps.mIsUpdate);
 			    delete grp;
 			    ggps.mLastAttemptTS = time(NULL);
 			    ++vit;
@@ -3027,6 +3056,7 @@ void RsGenExchange::publishGrps()
 			    std::cerr << "RsGenExchange::publishGrps() ok -> pushing to notifies"
 			              << std::endl;
 #endif
+			    GX_PROBE("publishGrps CREATED token=" << token << " update=" << ggps.mIsUpdate << " grp=" << GxsWriteProbe::shortId(grpId));
 
 			    // add to published to allow acknowledgement
                 toNotify.insert(std::make_pair(token, GrpNote(true,ggps.mIsUpdate,grpId)));
@@ -3152,6 +3182,8 @@ void RsGenExchange::processRecvdMessages()
 		else
 		    std::cerr << "processing received messages" << std::endl;
 #endif
+		const size_t probePending = mMsgPendingValidate.size();
+		int probeDropped = 0, probeValidated = 0, probeFail = 0, probeLater = 0;
 		// 1 - First, make sure items metadata is deserialised, clean old failed items, and collect the groups Ids we have to check
 
 		RsGxsGrpMetaTemporaryMap grpMetas;
@@ -3184,6 +3216,7 @@ void RsGenExchange::processRecvdMessages()
 
 			    delete gpsi.mItem;
 			    pend_it = mMsgPendingValidate.erase(pend_it);
+			    ++probeDropped;
 		    }
 		    else
 		    {
@@ -3256,6 +3289,7 @@ void RsGenExchange::processRecvdMessages()
 
 			if(validateReturn == VALIDATE_SUCCESS)
 			{
+				++probeValidated;
 				msg->metaData->mMsgStatus = GXS_SERV::GXS_MSG_STATUS_UNPROCESSED | GXS_SERV::GXS_MSG_STATUS_GUI_NEW | GXS_SERV::GXS_MSG_STATUS_GUI_UNREAD;
 				msgs_to_store.push_back(msg);
 
@@ -3291,10 +3325,12 @@ void RsGenExchange::processRecvdMessages()
 #endif
 				messages_to_reject.push_back(msg->msgId) ;
 				delete msg ;
+				++probeFail;
 			}
 			else if(validateReturn == VALIDATE_FAIL_TRY_LATER)
 			{
 				++pend_it ;
+				++probeLater;
 				continue;
 			}
 
@@ -3341,6 +3377,11 @@ void RsGenExchange::processRecvdMessages()
             mDataStore->storeMessage(msgs_to_store);	// All items will be destroyed later on, since msgs_to_store is a temporary map
 	    }
 
+        GX_PROBE("processRecvdMessages pending=" << probePending << " dropped_quota_or_expired=" << probeDropped
+                 << " validated=" << probeValidated << " sig_fail=" << probeFail << " try_later=" << probeLater
+                 << " stored_after_dedup=" << msgs_to_store.size() << " lastpost_updates=" << groups_last_post_update.size()
+                 << " still_pending=" << mMsgPendingValidate.size());
+
         // Update last post for each group
 
         for(auto grp_it: groups_last_post_update)
@@ -3384,6 +3425,8 @@ void RsGenExchange::processRecvdGroups()
 #ifdef GEN_EXCH_DEBUG
     std::cerr << "RsGenExchange::Processing received groups" << std::endl;
 #endif
+	const size_t probePending = mGrpPendingValidate.size();
+	int probeDropped = 0, probeUpdates = 0, probeFail = 0, probeLater = 0;
 	std::list<RsGxsGroupId> grpIds;
     std::list<RsNxsGrp*> grps_to_store;
 
@@ -3420,6 +3463,7 @@ void RsGenExchange::processRecvdGroups()
 			delete grp ;
 			mGrpPendingValidate.erase(vit) ;
 			vit = tmp ;
+			++probeDropped;
 			continue;
 		}
 
@@ -3463,6 +3507,7 @@ void RsGenExchange::processRecvdGroups()
 				GroupUpdate update;
 				update.newGrp = grp;
 				mGroupUpdates.push_back(update);
+				++probeUpdates;
 			}
 		}
 		else if(ret == VALIDATE_FAIL)
@@ -3478,6 +3523,7 @@ void RsGenExchange::processRecvdGroups()
             mNotifications.push_back(c);
 
 			delete grp;
+			++probeFail;
 		}
 		else  if(ret == VALIDATE_FAIL_TRY_LATER)
 		{
@@ -3485,6 +3531,7 @@ void RsGenExchange::processRecvdGroups()
 			std::cerr << "  failed to validate incoming grp, trying again later. grpId: " << grp->grpId << std::endl;
 #endif
 			++vit ;
+			++probeLater;
 			continue;
 		}
 
@@ -3495,6 +3542,9 @@ void RsGenExchange::processRecvdGroups()
 		mGrpPendingValidate.erase(vit) ;
 		vit = tmp ;
 	}
+
+	GX_PROBE("processRecvdGroups pending=" << probePending << " dropped=" << probeDropped << " new=" << grps_to_store.size()
+	         << " updates=" << probeUpdates << " sig_fail=" << probeFail << " try_later=" << probeLater << " still_pending=" << mGrpPendingValidate.size());
 
 	if(!grps_to_store.empty())
 	{
@@ -3610,6 +3660,7 @@ void RsGenExchange::performUpdateValidation()
 		}
 	}
 
+    GX_PROBE("performUpdateValidation updates=" << mGroupUpdates.size() << " accepted=" << grps.size());
     mDataStore->updateGroup(grps);
 
 #ifdef GEN_EXCH_DEBUG

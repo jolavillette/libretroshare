@@ -23,6 +23,11 @@
 #include "gxstrans/p3gxstrans.h"
 #include "util/stacktrace.h"
 #include "util/rsdebug.h"
+#include "util/rsgxswriteprobe.h"
+#include "gxs/rsgxsprofiler.h"
+
+// Write probe (debug build): GxsTrans decisions that produce DB writes.
+#define GT_PROBE(expr) GXS_PROBE("GT", expr)
 
 //#define DEBUG_GXSTRANS 1
 
@@ -157,6 +162,7 @@ void p3GxsTrans::handleResponse(uint32_t token, uint32_t req_type
 #endif
 		std::vector<RsGxsGrpItem*> groups;
 		getGroupData(token, groups);
+		GT_PROBE("GROUPS_LIST token=" << token << " groups=" << groups.size());
 
 		// First recompute the prefered group Id.
 
@@ -170,6 +176,7 @@ void p3GxsTrans::handleResponse(uint32_t token, uint32_t req_type
 				if(RsGenExchange::getStoragePeriod(grp->meta.mGroupId) != GXS_STORAGE_PERIOD)
 				{
 					std::cerr << "(WW) forcing storage period in GxsTrans group " << grp->meta.mGroupId << " to " << GXS_STORAGE_PERIOD << " seconds. Value was " <<  RsGenExchange::getStoragePeriod(grp->meta.mGroupId) << std::endl;
+					GT_PROBE("GROUPS_LIST forcing storage period grp=" << GxsWriteProbe::shortId(grp->meta.mGroupId) << " was=" << RsGenExchange::getStoragePeriod(grp->meta.mGroupId));
 
 					RsGenExchange::setStoragePeriod(grp->meta.mGroupId,GXS_STORAGE_PERIOD) ;
 				}
@@ -200,12 +207,17 @@ void p3GxsTrans::handleResponse(uint32_t token, uint32_t req_type
 
 			bool shouldSubscribe   = false ;
 			bool shouldUnSubscribe = false ;
+			bool isPreferred       = false ;
 			{
 				RS_STACK_MUTEX(mDataMutex);
 
 				shouldSubscribe   = (!subscribed) && ((!old)|| meta.mGroupId == mPreferredGroupId );
 				shouldUnSubscribe = ( subscribed) &&    old && meta.mGroupId != mPreferredGroupId;
+				isPreferred       = (meta.mGroupId == mPreferredGroupId);
 			}
+			GT_PROBE("GROUPS_LIST grp=" << GxsWriteProbe::shortId(meta.mGroupId) << " subscribed=" << subscribed << " preferred=" << isPreferred
+			         << " lastPost_age_d=" << (meta.mLastPost ? (time(NULL) - meta.mLastPost) / 86400 : -1) << " old=" << old
+			         << " msgs_visible=" << meta.mVisibleMsgCount << " -> subscribe=" << shouldSubscribe << " unsubscribe=" << shouldUnSubscribe);
 
 #ifdef DEBUG_GXSTRANS
 			std::cout << "  group " << grp->meta.mGroupId << ", subscribed: " << subscribed << " last post: " << meta.mLastPost << " should subscribe: "<< shouldSubscribe
@@ -254,6 +266,7 @@ void p3GxsTrans::handleResponse(uint32_t token, uint32_t req_type
 			uint32_t token;
 			publishGroup(token, new RsGxsTransGroupItem());
 			queueRequest(token, GROUP_CREATE);
+			GT_PROBE("GROUPS_LIST no preferred group -> publishGroup token=" << token);
 		}
 
 		break;
@@ -265,6 +278,7 @@ void p3GxsTrans::handleResponse(uint32_t token, uint32_t req_type
 #endif
 		RsGxsGroupId grpId;
 		acknowledgeTokenGrp(token, grpId);
+		GT_PROBE("GROUP_CREATE token=" << token << " grp=" << GxsWriteProbe::shortId(grpId));
 
 		RS_STACK_MUTEX(mDataMutex);
 		locked_supersedePreferredGroup(grpId);
@@ -278,6 +292,10 @@ void p3GxsTrans::handleResponse(uint32_t token, uint32_t req_type
 		typedef std::map<RsGxsGroupId, std::vector<RsGxsMsgItem*> > GxsMsgDataMap;
 		GxsMsgDataMap gpMsgMap;
 		getMsgData(token, gpMsgMap);
+		{
+			size_t n = 0; for(const auto& g : gpMsgMap) n += g.second.size();
+			GT_PROBE("MAILS_UPDATE token=" << token << " items=" << n << " groups=" << gpMsgMap.size());
+		}
 		for ( GxsMsgDataMap::iterator gIt = gpMsgMap.begin();
 		      gIt != gpMsgMap.end(); ++gIt )
 		{
@@ -362,6 +380,7 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::getMessagesToDelete(GxsMsgReq& 
 
 void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 {
+    RsGxsProfiler::Timer probeTimer;
     // first take out all the groups
 
     std::map<RsGxsGroupId, RsNxsGrp*> grp;
@@ -468,6 +487,12 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
         }
     }
 
+	{
+		size_t ndel = 0; for(const auto& g : msgsToDel) ndel += g.second.size();
+		GT_PROBE("cleanup thread done groups=" << grps.size() << " mails=" << stored_msgs.size() << " receipts=" << received_msgs.size()
+		         << " authors=" << totalMessageSizeAndCount.size() << " mails_with_receipt_to_delete=" << ndel << " took " << probeTimer.ms() << " ms");
+	}
+
 	RS_STACK_MUTEX(mMtx) ;
 	mMsgToDel = msgsToDel ;
 	total_message_size_and_count = totalMessageSizeAndCount;
@@ -502,6 +527,7 @@ void p3GxsTrans::service_tick()
 
 	    mCleanupThread->start("gxs trans clean") ;
             mLastMsgCleanup = now ;
+            GT_PROBE("cleanup thread started");
         }
 
 		// This forces to review all groups, and decide to subscribe or not to each of them.
@@ -525,6 +551,7 @@ void p3GxsTrans::service_tick()
 #endif
             uint32_t token ;
             deleteMsgs(token,msgToDel);
+            { size_t n = 0; for(const auto& g : msgToDel) n += g.second.size(); GT_PROBE("cleanup -> deleteMsgs token=" << token << " msgs=" << n << " groups=" << msgToDel.size()); }
 		}
 
 		mCleanupThread->getPerUserStatistics(per_user_statistics) ;
@@ -555,6 +582,10 @@ void p3GxsTrans::service_tick()
 			GxsTransSendStatus oldStatus = pr.status;
 
 			locked_processOutgoingRecord(pr);
+
+			if (oldStatus != pr.status)
+				GT_PROBE("outgoing mail=" << std::hex << pr.mailItem.mailId << std::dec << " status " << static_cast<uint>(oldStatus) << " -> " << static_cast<uint>(pr.status)
+				         << " grp=" << GxsWriteProbe::shortId(pr.group_id) << " age=" << (pr.sent_ts ? time(NULL) - pr.sent_ts : 0) << "s");
 
 			if (oldStatus != pr.status) notifyClientService(pr);
 			if( pr.status >= GxsTransSendStatus::RECEIPT_RECEIVED )
@@ -597,7 +628,9 @@ void p3GxsTrans::service_tick()
 					          << " payload.size(): " << msg->payload.size()
 					          << std::endl;
 #endif
-					handleEncryptedMail(msg);
+					const bool handled = handleEncryptedMail(msg);
+					GT_PROBE("incoming MAIL msg=" << GxsWriteProbe::shortId(msg->meta.mMsgId) << " mailId=" << std::hex << msg->mailId << std::dec
+					         << " from=" << GxsWriteProbe::shortId(msg->meta.mAuthorId) << " size=" << msg->payload.size() << " handled=" << handled);
 				}
 				break;
 			}
@@ -622,6 +655,7 @@ void p3GxsTrans::service_tick()
 				}
 				else
 				{
+					GT_PROBE("incoming RECEIPT (other's) msg=" << GxsWriteProbe::shortId(rcpt->meta.mMsgId) << " mailId=" << std::hex << rcpt->mailId << std::dec << " dropped from queue");
 					/* It is a receipt for a message sent by someone else
 					 * we can delete original mail from our GXS DB without
 					 * waiting for GXS_STORAGE_PERIOD, this has been implemented
@@ -703,6 +737,11 @@ void p3GxsTrans::notifyChanges(std::vector<RsGxsNotify*>& changes)
         delete *it;
 	}
 
+	{
+		size_t n = 0; for(const auto& g : msgs_to_request) n += g.second.size();
+		GT_PROBE("notifyChanges grp_changes=" << grps_to_request.size() << " msg_changes=" << n);
+	}
+
     if(!msgs_to_request.empty())
 	{
 		uint32_t token;
@@ -752,6 +791,7 @@ bool p3GxsTrans::requestGroupsData(const std::list<RsGxsGroupId>* groupIds)
 	//	std::cout << "p3GxsTrans::requestGroupsList()" << std::endl;
 	uint32_t token=0;
 	RsTokReqOptions opts; opts.mReqType = GXS_REQUEST_TYPE_GROUP_DATA;
+	GT_PROBE("requestGroupsData " << (groupIds ? "n=" + std::to_string(groupIds->size()) : std::string("all")));
 	if(!groupIds)
 		RsGenExchange::getTokenService()->requestGroupInfo(token, 0xcaca, opts);
 	else
@@ -772,6 +812,9 @@ bool p3GxsTrans::handleEncryptedMail(const RsGxsTransMailItem* mail)
 	mIdService.getOwnIds(ownIds);
 	for(auto it = ownIds.begin(); it != ownIds.end(); ++it)
 		if(mail->maybeRecipient(*it)) decryptIds.insert(*it);
+
+	GT_PROBE("handleEncryptedMail msg=" << GxsWriteProbe::shortId(mail->meta.mMsgId) << " own_ids=" << ownIds.size() << " hint_candidates=" << decryptIds.size()
+	         << " crypto=" << static_cast<uint32_t>(mail->cryptoType));
 
 	// Hint match none of our own ids
 	if(decryptIds.empty())
@@ -809,10 +852,13 @@ bool p3GxsTrans::handleEncryptedMail(const RsGxsTransMailItem* mail)
 			uint8_t* decrypted_data = NULL;
 			uint32_t decrypted_data_size = 0;
 			uint32_t decryption_error;
-			if( mIdService.decryptData( &mail->payload[0],
+			const bool decrypted = mIdService.decryptData( &mail->payload[0],
 			                            mail->payload.size(), decrypted_data,
 			                            decrypted_data_size, decryptId,
-			                            decryption_error ) )
+			                            decryption_error );
+			GT_PROBE("handleEncryptedMail msg=" << GxsWriteProbe::shortId(mail->meta.mMsgId) << " try own id=" << GxsWriteProbe::shortId(decryptId)
+			         << " decrypted=" << decrypted << " err=" << decryption_error);
+			if(decrypted)
 				ok = ok && dispatchDecryptedMail( mail->meta.mAuthorId,
 				                                  decryptId, decrypted_data,
 				                                  decrypted_data_size );
@@ -866,6 +912,8 @@ bool p3GxsTrans::dispatchDecryptedMail( const RsGxsId& authorId,
 	          << "with: msgId: " << receipt->msgId << std::endl;
 #endif
 
+	GT_PROBE("dispatchDecryptedMail service=" << csri << " injecting presigned receipt msg=" << GxsWriteProbe::shortId(receipt->msgId)
+	         << " grp=" << GxsWriteProbe::shortId(receipt->grpId) << " from=" << GxsWriteProbe::shortId(authorId));
 	std::vector<RsNxsMsg*> rcct; rcct.push_back(receipt);
 	RsGenExchange::receiveNewMessages(rcct);
 
@@ -1337,6 +1385,8 @@ bool p3GxsTrans::acceptNewMessage(const RsGxsMsgMetaData *msgMeta,uint32_t msg_s
 #ifdef DEBUG_GXSTRANS
 		std::cerr << "=> rejected." << std::endl;
 #endif
+		GT_PROBE("acceptNewMessage REJECTED msg=" << GxsWriteProbe::shortId(msgMeta->mMsgId) << " author=" << GxsWriteProbe::shortId(msgMeta->mAuthorId)
+		         << " size=" << msg_size << " stored=(" << s.size << "," << s.count << ") limits=(" << max_size << "," << max_count << ") rep=" << static_cast<int>(rep_lev) << " pgp=" << pgp_linked);
 		return false ;
 	}
 	else

@@ -27,6 +27,7 @@
 #include <sqlcipher/sqlite3.h>
 #endif
 
+#include <chrono>
 #include <string>
 #include <set>
 #include <list>
@@ -204,6 +205,16 @@ private:
     const std::string mKey;
     bool mDbNeedsCleaning;
     std::string mPath;
+
+    // Write probe (debug build): per-statement accounting, see util/rsgxswriteprobe.h
+    void probeOpen();
+    void probeStatement(const std::string& query, bool ok, int rc, long ms);
+    std::string probePragma(const char* pragma);
+    std::string mProbeName;
+    bool mProbeInTx = false;
+    int mProbeIns = 0, mProbeUpd = 0, mProbeDel = 0, mProbeChanges = 0, mProbeErr = 0;
+    long mProbeStmtMs = 0;
+    std::chrono::steady_clock::time_point mProbeTxStart;
 
 	RS_SET_CONTEXT_DEBUG_LEVEL(3)
 };

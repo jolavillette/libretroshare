@@ -259,6 +259,10 @@
 #include "util/stacktrace.h"
 #include "util/rsdebug.h"
 #include "util/cxx17retrocompat.h"
+#include "util/rsgxswriteprobe.h"
+
+// Write probe (debug build): sync traffic that feeds the GXS databases.
+#define NS_PROBE(expr) GXS_PROBE("NS", "svc=" << std::hex << mServType << std::dec << " " << expr)
 
 /***
  * Use the following defines to debug:
@@ -530,6 +534,7 @@ void RsGxsNetService::rejectMessage(const RsGxsMessageId& msg_id)
     GXSNETDEBUG___ << "adding message " << msg_id << " to rejection list for 24hrs." << std::endl;
 #endif
     mRejectedMessages[msg_id] = time(NULL) ;
+    NS_PROBE("rejectMessage msg=" << GxsWriteProbe::shortId(msg_id) << " rejected_total=" << mRejectedMessages.size());
 }
 void RsGxsNetService::cleanRejectedMessages()
 {
@@ -598,6 +603,7 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 	// Still empty? Reports there are no available peers
 	if (peers.empty()) return std::errc::network_down;
 
+	NS_PROBE("checkUpdatesFromPeers peers=" << peers.size());
 
 	RS_STACK_MUTEX(mNxsMutex);
 
@@ -654,6 +660,8 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
     // recent modification the peer has sent. If the peer has more recent messages he will send them, because its latest
     // modifications will be more recent. This ensures that we always compare timestamps all taken in the same
     // computer (the peer's computer in this case)
+
+    int probeMsgReqs = 0;
 
     for(auto sit = peers.begin(); sit != peers.end(); ++sit)
     {
@@ -737,12 +745,15 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 	    GXSNETDEBUG_PG(*sit,grpId) << "    Service " << std::hex << ((mServiceInfo.mServiceType >> 8)& 0xffff) << std::dec << "  sending message TS of peer id: " << *sit << " ts=" << nice_time_stamp(time(NULL),updateTS) << " (secs ago) for group " << grpId << " to himself - in clear " << std::endl;
 #endif
 		generic_sendItem(msg);
+		++probeMsgReqs;
 
 #ifdef NXS_NET_DEBUG_5
 		GXSNETDEBUG_PG(*sit,grpId) << "Service "<< std::hex << ((mServiceInfo.mServiceType >> 8)& 0xffff) << std::dec << "  sending global message TS of peer id: " << *sit << " ts=" << nice_time_stamp(time(NULL),updateTS) << " (secs ago) for group " << grpId << " to himself" << std::endl;
 #endif
         }
     }
+
+    NS_PROBE("syncMsgs subscribed_groups=" << toRequest.size() << " msg_sync_requests_sent=" << probeMsgReqs);
 
 #endif // ndef GXS_DISABLE_SYNC_MSGS
 
@@ -2659,6 +2670,8 @@ void RsGxsNetService::locked_processCompletedIncomingTrans(NxsTransaction* tr)
             for(uint32_t i=0;i<grps.size();++i)
                 mNewGroupsToNotify.push_back(grps[i]) ;
 
+            NS_PROBE("completedIncomingTrans GRPS peer=" << GxsWriteProbe::shortId(tr->mTransaction->PeerId()) << " n=" << grps.size());
+
             // now note this as the latest you've received from this peer
             RsPeerId peerFrom = tr->mTransaction->PeerId();
             uint32_t updateTS = tr->mTransaction->updateTS;
@@ -2740,6 +2753,9 @@ void RsGxsNetService::locked_processCompletedIncomingTrans(NxsTransaction* tr)
             for(uint32_t i=0;i<msgs.size();++i)
                 mNewMessagesToNotify.push_back(msgs[i]) ;
 
+            NS_PROBE("completedIncomingTrans MSGS peer=" << GxsWriteProbe::shortId(tr->mTransaction->PeerId()) << " grp=" << GxsWriteProbe::shortId(grpId)
+                     << " n=" << msgs.size() << " partial=" << (mPartialMsgUpdates[tr->mTransaction->PeerId()].count(grpId) > 0));
+
             // now note that this is the latest you've received from this peer
             // for the grp id
             locked_doMsgUpdateWork(tr->mTransaction, grpId);
@@ -2750,6 +2766,7 @@ void RsGxsNetService::locked_processCompletedIncomingTrans(NxsTransaction* tr)
     }
     else if(tr->mFlag == NxsTransaction::FLAG_STATE_FAILED)
     {
+        NS_PROBE("transaction FAILED peer=" << GxsWriteProbe::shortId(tr->mTransaction->PeerId()) << " flag=" << std::hex << flag << std::dec << " items=" << tr->mTransaction->nItems);
 #ifdef NXS_NET_DEBUG_0
         GXSNETDEBUG_P_(tr->mTransaction->PeerId()) << "  transaction has failed. Wasting it." << std::endl;
 #endif
@@ -3018,6 +3035,7 @@ void RsGxsNetService::locked_genReqMsgTransaction(NxsTransaction* tr)
     std::list<RsPeerId> peers;
     peers.push_back(tr->mTransaction->PeerId());
     bool reqListSizeExceeded = false ;
+    int probeBanned = 0, probeRejected = 0;
 
 #ifdef NXS_NET_DEBUG_1
     GXSNETDEBUG_PG(item->PeerId(),grpId) << "  sorting items..." << std::endl;
@@ -3069,6 +3087,7 @@ void RsGxsNetService::locked_genReqMsgTransaction(NxsTransaction* tr)
 #ifdef NXS_NET_DEBUG_1
                 GXSNETDEBUG_PG(item->PeerId(),grpId) << ", Identity " << syncItem->authorId << " is banned. Not requesting message!" << std::endl;
 #endif
+                ++probeBanned;
                 continue ;
             }
 
@@ -3077,6 +3096,7 @@ void RsGxsNetService::locked_genReqMsgTransaction(NxsTransaction* tr)
 #ifdef NXS_NET_DEBUG_1
                 GXSNETDEBUG_PG(item->PeerId(),grpId) << ", message has been recently rejected. Not requesting message!" << std::endl;
 #endif
+                ++probeRejected;
                 continue ;
             }
 
@@ -3097,6 +3117,10 @@ void RsGxsNetService::locked_genReqMsgTransaction(NxsTransaction* tr)
             GXSNETDEBUG_PG(item->PeerId(),grpId) << ". already here." << std::endl;
 #endif
     }
+
+    NS_PROBE("genReqMsgTransaction peer=" << GxsWriteProbe::shortId(peerFrom) << " grp=" << GxsWriteProbe::shortId(grpId)
+             << " offered=" << msgItemL.size() << " have_locally=" << msgIdSet.size() << " banned=" << probeBanned << " rejected=" << probeRejected
+             << " requested=" << reqList.size() << " partial=" << reqListSizeExceeded);
 
     if(!reqList.empty())
     {
@@ -3285,6 +3309,8 @@ void RsGxsNetService::locked_genReqGrpTransaction(NxsTransaction* tr)
 			addGroupItemToList(tr, grpId, transN, reqList);
         }
     }
+
+    NS_PROBE("genReqGrpTransaction peer=" << GxsWriteProbe::shortId(tr->mTransaction->PeerId()) << " groups_requested=" << reqList.size());
 
     if(!reqList.empty())
         locked_pushGrpTransactionFromList(reqList, tr->mTransaction->PeerId(), transN);
@@ -4566,6 +4592,8 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 #ifdef NXS_NET_DEBUG_0
 	    GXSNETDEBUG_PG(item->PeerId(),item->grpId) << "  sending final msg info list of " << itemL.size() << " items." << std::endl;
 #endif
+	    NS_PROBE("handleRecvSyncMsg(server) peer=" << GxsWriteProbe::shortId(peer) << " grp=" << GxsWriteProbe::shortId(item->grpId)
+	             << " msg_metas_sent=" << itemL.size() << " created_since=" << (item->createdSinceTS ? (time(NULL) - (rstime_t)item->createdSinceTS) / 86400 : -1) << "d");
 	    locked_pushMsgRespFromList(itemL, peer, item->grpId,transN);
     }
 #ifdef NXS_NET_DEBUG_0
@@ -5244,6 +5272,7 @@ bool RsGxsNetService::isDistantPeer(const RsPeerId& pid)
 
 bool RsGxsNetService::stampMsgServerUpdateTS(const RsGxsGroupId& gid)
 {
+    NS_PROBE("stampMsgServerUpdateTS(external) grp=" << GxsWriteProbe::shortId(gid));
     RS_STACK_MUTEX(mNxsMutex) ;
 
     return locked_stampMsgServerUpdateTS(gid) ;

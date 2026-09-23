@@ -653,6 +653,7 @@ list(
 	util/rstime.cc
 	util/smallobject.cc
 	util/retrodb.cc
+	util/rsgxswriteprobe.cc
 	util/rsbase64.cc
 	util/rsjson.cc
 	util/rskbdinput.cc
@@ -688,6 +689,7 @@ list(
 	util/radix32.h
 	util/radix64.h
 	util/retrodb.h
+	util/rsgxswriteprobe.h
 	util/rsbase64.h
 	util/rsdbbind.h
 	util/rsdebug.h
