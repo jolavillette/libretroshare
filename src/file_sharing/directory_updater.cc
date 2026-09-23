@@ -55,8 +55,9 @@ bool LocalDirectoryUpdater::isEnabled() const
 void LocalDirectoryUpdater::setEnabled(bool b)
 {
 	if(mIsEnabled == b) return;
-	if(!b) RsThread::askForStop();
-	else if(!RsThread::isRunning()) start("fs dir updater");
+	/* Only the periodic sweep is switched off: the thread keeps running so
+	 * that a forced check ("Check files") is still served by threadTick(). */
+	if(b && !RsThread::isRunning()) start("fs dir updater");
 	mIsEnabled = b ;
 }
 
