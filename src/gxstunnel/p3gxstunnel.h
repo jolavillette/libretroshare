@@ -207,6 +207,8 @@ private:
     // List of items to be sent asap. Used to store items that we cannot pass directly to
     // sendTurtleData(), because of Mutex protection.
 
+    void locked_dropPendingItems(const RsGxsTunnelId& tunnel_id) ;
+
     std::map<uint64_t,GxsTunnelData> 		pendingGxsTunnelDataItems ;	// items that need provable transport and encryption
     std::list<RsGxsTunnelItem*> 		pendingGxsTunnelItems ;		// items that do not need provable transport, yet need encryption
     std::list<RsGxsTunnelDHPublicKeyItem*> 	pendingDHItems ;		

@@ -206,6 +206,7 @@ void p3GxsTunnelService::flush()
 	{
 		std::map<RsGxsTunnelId,GxsTunnelPeerInfo>::iterator tmp = it ;
 		++tmp ;
+		locked_dropPendingItems(it->first) ;
 		_gxs_tunnel_contacts.erase(it) ;
 		it=tmp ;
 		continue ;
@@ -1612,6 +1613,32 @@ bool p3GxsTunnelService::getTunnelInfo(const RsGxsTunnelId& tunnel_id,GxsTunnelI
     return true ;
 }
 
+// Only an ACK removes an entry from pendingGxsTunnelDataItems, and only a
+// successful send removes one from pendingGxsTunnelItems. Once the tunnel is
+// gone neither can happen, so the items would be retried forever.
+void p3GxsTunnelService::locked_dropPendingItems(const RsGxsTunnelId& tunnel_id)
+{
+    const RsPeerId vpid(tunnel_id) ;
+
+    for(auto it = pendingGxsTunnelDataItems.begin(); it != pendingGxsTunnelDataItems.end();)
+        if(it->second.data_item->PeerId() == vpid)
+        {
+            delete it->second.data_item ;
+            it = pendingGxsTunnelDataItems.erase(it) ;
+        }
+        else
+            ++it ;
+
+    for(auto it = pendingGxsTunnelItems.begin(); it != pendingGxsTunnelItems.end();)
+        if((*it)->PeerId() == vpid)
+        {
+            delete *it ;
+            it = pendingGxsTunnelItems.erase(it) ;
+        }
+        else
+            ++it ;
+}
+
 bool p3GxsTunnelService::closeExistingTunnel(const RsGxsTunnelId& tunnel_id, uint32_t service_id)
 {
     // two cases: 
@@ -1674,6 +1701,7 @@ bool p3GxsTunnelService::closeExistingTunnel(const RsGxsTunnelId& tunnel_id, uin
 	    cs->PeerId(RsPeerId(tunnel_id)) ;
 
 	    locked_sendEncryptedTunnelData(cs) ;	// that needs to be done off-mutex and before we close the tunnel also ignoring failure.
+	    delete cs ;
 
 	    if(direction == RsTurtleGenericTunnelItem::DIRECTION_SERVER) 	// nothing more to do for server side.
 	    {
@@ -1693,6 +1721,7 @@ bool p3GxsTunnelService::closeExistingTunnel(const RsGxsTunnelId& tunnel_id, uin
 	    }
 
 	    _gxs_tunnel_contacts.erase(it) ;
+	    locked_dropPendingItems(tunnel_id) ;
 
 	    // GxsTunnelService::removeVirtualPeerId() will be called by the turtle service.
     }
