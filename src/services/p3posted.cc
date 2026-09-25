@@ -545,8 +545,8 @@ bool p3Posted::createBoardV2(
     RsGenericSerializer::SerializeContext ctx;
     board.serial_process(RsGenericSerializer::SIZE_ESTIMATE,ctx);
 
-    if(ctx.mSize > 200000)
-        return failure("Maximum size of 200000 bytes exceeded for board.");
+    if(ctx.mSize > RS_GXS_MAX_GROUP_SIZE)
+        return failure("Maximum size of " + std::to_string(RS_GXS_MAX_GROUP_SIZE) + " bytes exceeded for board.");
 
     bool res = createBoard(board);
 

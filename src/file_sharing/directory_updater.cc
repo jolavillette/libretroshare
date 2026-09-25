@@ -55,8 +55,9 @@ bool LocalDirectoryUpdater::isEnabled() const
 void LocalDirectoryUpdater::setEnabled(bool b)
 {
 	if(mIsEnabled == b) return;
-	if(!b) RsThread::askForStop();
-	else if(!RsThread::isRunning()) start("fs dir updater");
+	/* Only the periodic sweep is switched off: the thread keeps running so
+	 * that a forced check ("Check files") is still served by threadTick(). */
+	if(b && !RsThread::isRunning()) start("fs dir updater");
 	mIsEnabled = b ;
 }
 
@@ -91,12 +92,15 @@ void LocalDirectoryUpdater::threadTick()
             else
                 std::cerr << "(WW) sweepSharedDirectories() failed. Will do it again in a short time." << std::endl;
         }
+    }
 
-        if(now > DELAY_BETWEEN_LOCAL_DIRECTORIES_TS_UPDATE + mLastTSUpdateTime)
-        {
-            mSharedDirectories->updateTimeStamps() ;
-            mLastTSUpdateTime = now ;
-        }
+    /* Not gated by mIsEnabled: hashes requested by a forced sweep land later
+     * through hash_callback(), and the recursive timestamps friends sync on
+     * must follow even when the periodic check is disabled. */
+    if(now > DELAY_BETWEEN_LOCAL_DIRECTORIES_TS_UPDATE + mLastTSUpdateTime)
+    {
+        mSharedDirectories->updateTimeStamps() ;
+        mLastTSUpdateTime = now ;
     }
 
 	for(uint32_t i=0;i<10;++i)
@@ -355,15 +359,18 @@ void LocalDirectoryUpdater::recursUpdateSharedDir(
 				}
 			}
 
-		/* update folder modificatoin time, which is the only way to detect
-		 * e.g. removed or renamed files. */
-		mSharedDirectories->setDirectoryLocalModTime(indx,dirIt.dir_modtime());
-
-		// update file and dir lists for current directory.
+		/* update file and dir lists for current directory. This is done
+		 * before storing the folder modification time on purpose: a still
+		 * null one tells the storage that the directory is being populated
+		 * for the first time. */
 		mSharedDirectories->updateSubDirectoryList(indx,subdirs,mHashSalt);
 
 		std::map<std::string, DirectoryStorage::FileTS> new_files;
 		mSharedDirectories->updateSubFilesList(indx, subfiles, new_files);
+
+		/* update folder modificatoin time, which is the only way to detect
+		 * e.g. removed or renamed files. */
+		mSharedDirectories->setDirectoryLocalModTime(indx,dirIt.dir_modtime());
 
 		// now go through list of subfiles and request the hash to hashcache
 		for( DirectoryStorage::FileIterator dit(mSharedDirectories,indx);

@@ -63,8 +63,17 @@ rs_rnplib {
         # Windows msys2
         LIBRNP_LIBS *= -lbotan-3
     } else {
-        # This is the case for macOS and other Unix-like systems
-        LIBRNP_LIBS *= -lbotan-2
+        # macOS and other Unix-like systems: prefer botan-3 when available,
+        # since botan-2 reached end of life in 2024 and has since been
+        # dropped by some distributions (e.g. Gentoo). Fall back to botan-2
+        # for systems that don't have botan-3 packaged yet (e.g. Ubuntu
+        # 24.04), matching what librnp's own CMake build already detects.
+        BOTAN3_OK = $$system(pkg-config --exists botan-3 && echo yes)
+        isEmpty(BOTAN3_OK) {
+            LIBRNP_LIBS *= -lbotan-2
+        } else {
+            LIBRNP_LIBS *= -lbotan-3
+        }
     }
 
     win32-g++|win32-clang-g++ {
@@ -106,9 +115,11 @@ rs_jsonapi {
 
 linux-* {
     mLibs += dl
+    # OpenMP runtime needed for parallel deserialization in rsgenexchange.cc
+    LIBS += -fopenmp
 }
 
-rs_deep_channels_index | rs_deep_files_index | rs_deep_forums_index {
+rs_deep_channels_index | rs_deep_files_index {
     mLibs += xapian
     win32-g++|win32-clang-g++:mLibs += rpcrt4
 }

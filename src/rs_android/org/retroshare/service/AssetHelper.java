@@ -23,6 +23,7 @@ package org.retroshare.service;
 
 import android.util.Log;
 import android.content.Context;
+import java.io.File;
 import java.io.OutputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
@@ -31,6 +32,48 @@ import java.io.IOException;
 
 public class AssetHelper
 {
+    /**
+     * Copy a whole asset directory, recursively, creating the destination as
+     * needed. Used for the web interface, which is a tree of a few dozen files.
+     *
+     * AssetManager has no way to tell a directory from a file: list() returns
+     * an empty array for both a file and an empty directory, so a leaf is
+     * recognised by having no children and copied as a file. That is why a file
+     * whose copy fails is reported, but an empty directory is not.
+     *
+     * @return false as soon as one file fails to copy, leaving the rest undone
+     */
+    public static boolean copyAssetDir(
+        Context ctx, String assetPath, String destinationDirPath )
+    {
+        String[] children;
+        try { children = ctx.getAssets().list(assetPath); }
+        catch(IOException e)
+        {
+            Log.e(TAG, "Failure listing asset dir: " + assetPath + " " +
+                       e.getMessage() );
+            return false;
+        }
+
+        if(children == null || children.length == 0)
+            return copyAsset(ctx, assetPath, destinationDirPath);
+
+        File destinationDir = new File(destinationDirPath);
+        if(!destinationDir.isDirectory() && !destinationDir.mkdirs())
+        {
+            Log.e(TAG, "Failure creating directory: " + destinationDirPath);
+            return false;
+        }
+
+        for(String child : children)
+            if(!copyAssetDir(
+                   ctx, assetPath + "/" + child,
+                   destinationDirPath + "/" + child ))
+                return false;
+
+        return true;
+    }
+
     public static boolean copyAsset(
         Context ctx, String assetPath, String destinationFilePath )
     {

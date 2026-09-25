@@ -309,9 +309,10 @@ bool p3BanList::acceptedBanRanges_locked(const BanListPeer& blp)
 
 bool p3BanList::isAddressAccepted(
         const sockaddr_storage& dAddr, uint32_t checking_flags,
-        uint32_t& check_result )
+        uint32_t& check_result, uint32_t& ban_reason )
 {
 	check_result = RSBANLIST_CHECK_RESULT_NOCHECK;
+	ban_reason = RSBANLIST_REASON_UNKNOWN;
 
 	sockaddr_storage addr; sockaddr_storage_copy(dAddr, addr);
 
@@ -371,6 +372,8 @@ bool p3BanList::isAddressAccepted(
     if(((it=mBanRanges.find(addr_16)) != mBanRanges.end()) && acceptedBanRanges_locked(it->second))
     {
         ++it->second.connect_attempts;
+        ban_reason = it->second.reason;
+      ban_reason = it->second.reason;
 #ifdef DEBUG_BANLIST
       std::cerr << " found in blacklisted range " << sockaddr_storage_iptostring(it->first) << "/16. returning false. attempts=" << it->second.connect_attempts << std::endl;
 #endif
@@ -381,6 +384,7 @@ bool p3BanList::isAddressAccepted(
   if(((it=mBanRanges.find(addr_24)) != mBanRanges.end()) && acceptedBanRanges_locked(it->second))
   {
       ++it->second.connect_attempts;
+      ban_reason = it->second.reason;
 #ifdef DEBUG_BANLIST
       std::cerr << " found in blacklisted range " << sockaddr_storage_iptostring(it->first) << "/24.  returning false. attempts=" << it->second.connect_attempts << std::endl;
 #endif
@@ -391,6 +395,7 @@ bool p3BanList::isAddressAccepted(
   if(((it=mBanRanges.find(addr_32)) != mBanRanges.end()) && acceptedBanRanges_locked(it->second))
   {
       ++it->second.connect_attempts;
+      ban_reason = it->second.reason;
 #ifdef DEBUG_BANLIST
       std::cerr << " found in blacklisted range " << sockaddr_storage_iptostring(it->first) << "/32.  returning false. attempts=" << it->second.connect_attempts << std::endl;
 #endif
@@ -401,6 +406,8 @@ bool p3BanList::isAddressAccepted(
     if((it=mBanSet.find(addr_32)) != mBanSet.end() && acceptedBanSet_locked(it->second))
     {
         ++it->second.connect_attempts;
+        ban_reason = it->second.reason;
+      ban_reason = it->second.reason;
 #ifdef DEBUG_BANLIST
       std::cerr << "found as blacklisted address " << sockaddr_storage_iptostring(it->first) << ".  returning false. attempts=" << it->second.connect_attempts << std::endl;
 #endif
