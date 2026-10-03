@@ -308,5 +308,17 @@ CrashStackTrace::CrashStackTrace()
 
 	print_stacktrace(false);
 
-	exit(-signum);
+	/* Do NOT call exit() here: it runs atexit handlers and static destructors
+	 * from inside a signal handler, on a process whose state is already
+	 * corrupted and whose locks may be held by the crashing thread. Seen in
+	 * practice: a SIGSEGV inside QCoreApplicationPrivate::cleanupThreadData()
+	 * (main thread holding the posted-event list mutex) followed by exit() ->
+	 * QtDBus static destructor -> QThread::wait() on a thread blocked on that
+	 * very mutex, leaving a zombie process that never dies and a debugger
+	 * stack with the crash context buried under the exit machinery.
+	 * Restoring the default disposition and re-raising terminates immediately,
+	 * yields the true exit status and lets the kernel write a core dump. */
+	signal(signum, SIG_DFL);
+	raise(signum);
+	_Exit(128 + signum);
 }

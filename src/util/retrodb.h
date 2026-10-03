@@ -171,6 +171,7 @@ public:
      * @return true/false
      */
     bool tableExists(const std::string& tableName);
+    sqlite3* getSqlHandle() const { return mDb; }
 
 public:
 
@@ -197,6 +198,12 @@ private:
      */
     void buildUpdateQueryValue(const std::map<std::string, uint8_t> keyMap, const ContentValue& cv,
             std::string& parameter, std::list<RetroBind*>& paramBindings);
+
+    /*!
+     * Checks if auto_vacuum is enabled.
+     * If not (mode 0), enables FULL mode and triggers a migration VACUUM.
+     */
+    void checkAndMigrateAutoVacuum();
 
 private:
 

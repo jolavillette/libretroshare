@@ -22,6 +22,7 @@
  ******************************************************************************/
 #include <sstream>
 #include <algorithm>
+#include <functional>
 
 #include "util/rstime.h"
 #include "util/rsdir.h"
@@ -163,6 +164,20 @@ bool InternalFileHierarchyStorage::isIndexValid(DirectoryStorage::EntryIndex e) 
     return e < mNodes.size() && mNodes[e] != NULL ;
 }
 
+/* Friends only re-sync a directory when its recursive timestamp moves, and that
+ * timestamp is a maximum of mtimes: removing a file that is not the newest, or
+ * adding a file with an old mtime, leaves it unchanged whenever the directory's
+ * own mtime does not move (rsync -a, tar, cp -a, exFAT, network or cloud
+ * drives...). So stamp the time of the last content change and let
+ * recursUpdateLastModfTime() account for it. A directory that has never been
+ * scanned (dir_modtime == 0) is not stamped: its first population is not a
+ * change, and stamping it would make freshly shared directories look new. */
+static void stampContentChange(InternalFileHierarchyStorage::DirEntry& d)
+{
+    if(d.dir_modtime != 0)
+        d.dir_update_time = time(NULL);
+}
+
 bool InternalFileHierarchyStorage::updateSubDirectoryList(
         const DirectoryStorage::EntryIndex& indx,
         const std::set<std::string>& subdirs,
@@ -174,6 +189,7 @@ bool InternalFileHierarchyStorage::updateSubDirectoryList(
     DirEntry& d(*static_cast<DirEntry*>(mNodes[indx])) ;
 
     std::set<std::string> should_create(subdirs);
+    bool changed = false;
 
     for(uint32_t i=0;i<d.subdirs.size();)
         if(subdirs.find(static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_name) == subdirs.end())
@@ -184,6 +200,8 @@ bool InternalFileHierarchyStorage::updateSubDirectoryList(
 
             if( !removeDirectory(d.subdirs[i]))
                 i++ ;
+            else
+                changed = true;
         }
         else
         {
@@ -213,7 +231,11 @@ bool InternalFileHierarchyStorage::updateSubDirectoryList(
 
         d.subdirs.push_back(mNodes.size()) ;
         mNodes.push_back(de) ;
+        changed = true;
     }
+
+    if(changed)
+        stampContentChange(d);
 
     return true;
 }
@@ -309,6 +331,7 @@ bool InternalFileHierarchyStorage::updateSubFilesList(
 
     DirEntry& d(*static_cast<DirEntry*>(mNodes[indx])) ;
     new_files = subfiles ;
+    bool changed = false;
 
     // remove from new_files the ones that already exist and have a modf time that is not older.
 
@@ -327,6 +350,7 @@ bool InternalFileHierarchyStorage::updateSubFilesList(
 
             d.subfiles[i] = d.subfiles[d.subfiles.size()-1] ;
             d.subfiles.pop_back();
+            changed = true;
             continue;
         }
 
@@ -335,6 +359,7 @@ bool InternalFileHierarchyStorage::updateSubFilesList(
         {
 			// hash needs recomputing
 			f.file_hash.clear();
+            changed = true;
             f.file_modtime = it->second.modtime;
             f.file_size = it->second.size;
 
@@ -359,7 +384,12 @@ bool InternalFileHierarchyStorage::updateSubFilesList(
 
         mTotalSize  += it->second.size;
         mTotalFiles += 1;
+        changed = true;
     }
+
+    if(changed)
+        stampContentChange(d);
+
     return true;
 }
 bool InternalFileHierarchyStorage::updateHash(
@@ -669,26 +699,36 @@ bool InternalFileHierarchyStorage::setTS(const DirectoryStorage::EntryIndex& ind
 
 // Do a complete recursive sweep of directory hierarchy and update cumulative size of directories
 
-uint64_t InternalFileHierarchyStorage::recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index)
+uint64_t InternalFileHierarchyStorage::recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index, std::function<uint64_t(const RsFileHash&)> get_uploads)
 {
     DirEntry& d(*static_cast<DirEntry*>(mNodes[dir_index])) ;
 
     uint64_t local_cumulative_size = 0;
     uint32_t local_cumulative_files = 0;
+    uint64_t local_cumulative_uploads = 0;
 
     for(uint32_t i=0;i<d.subfiles.size();++i)
         if(mNodes[d.subfiles[i]]) {		// normally not needed, but an extra-security
-            local_cumulative_size += static_cast<FileEntry*>(mNodes[d.subfiles[i]])->file_size;
+            FileEntry *f = static_cast<FileEntry*>(mNodes[d.subfiles[i]]);
+            local_cumulative_size += f->file_size;
             local_cumulative_files++;
+
+            if(get_uploads)
+                local_cumulative_uploads += get_uploads(f->file_hash);
         }
 
     for(uint32_t i=0;i<d.subdirs.size();++i) {
-        local_cumulative_size += recursUpdateCumulatedSize(d.subdirs[i]);
+        local_cumulative_size += recursUpdateCumulatedSize(d.subdirs[i], get_uploads);
         local_cumulative_files += static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_cumulated_files;
+        local_cumulative_uploads += static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_cumulated_uploads;
     }
 
     d.dir_cumulated_size = local_cumulative_size;
     d.dir_cumulated_files = local_cumulative_files;
+    d.dir_cumulated_uploads = local_cumulative_uploads;
+
+
+
     return local_cumulative_size;
 }
 // Do a complete recursive sweep over sub-directories and files, and update the lst modf TS. This could be also performed by a cleanup method.
@@ -697,7 +737,8 @@ rstime_t InternalFileHierarchyStorage::recursUpdateLastModfTime(const DirectoryS
 {
     DirEntry& d(*static_cast<DirEntry*>(mNodes[dir_index])) ;
 
-    rstime_t largest_modf_time = d.dir_modtime ;
+    // dir_update_time: last content change seen by the sweep, see stampContentChange()
+    rstime_t largest_modf_time = std::max(d.dir_modtime, d.dir_update_time) ;
     unfinished_files_present = false ;
 
     for(uint32_t i=0;i<d.subfiles.size();++i)

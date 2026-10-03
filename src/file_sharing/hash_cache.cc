@@ -230,7 +230,21 @@ void HashStorage::threadTick()
 				mChanged = true ;
 				mTotalHashedSize += size ;
 			}
-			else RS_ERR("Failure hashing file: ", job.full_path);
+			else
+			{
+				RS_ERR("Failure hashing file: ", job.full_path);
+
+				/* The file stays without a hash in the local directory
+				 * hierarchy and will be retried at the next sweep; still tell
+				 * the world, so the UI can show the file was skipped. */
+				if(rsEvents)
+				{
+					auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+					ev->mEventCode = RsSharedDirectoriesEventCode::FILE_HASHING_FAILED;
+					ev->mFilePath = job.full_path;
+					rsEvents->postEvent(ev);
+				}
+			}
 
 			mHashingTime += rstime::RsScopeTimer::currentTime() - seconds_origin ;
 			mHashedBytes += size ;

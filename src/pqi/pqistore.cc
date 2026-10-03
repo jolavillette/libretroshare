@@ -418,6 +418,15 @@ bool pqiSSLstore::encryptedSendItems(const std::list<RsItem*>& rsItemList)
         return false;
     }
 
+    // An empty item list is legitimate: a p3Config service (e.g. p3GxsTrans
+    // with empty incoming/outgoing queues) may have nothing to persist. There
+    // is nothing to encrypt in that case; an empty payload is valid and is read
+    // back as an empty list. Without this guard senddata() is called with 0
+    // bytes and returns -1, which the checks below misreport as a disk/
+    // permission write error, dropping the config file.
+    if(sizeItems == 0)
+        return true;
+
     int written = enc_bio->senddata(data, sizeItems);
 
     if(written < 0)

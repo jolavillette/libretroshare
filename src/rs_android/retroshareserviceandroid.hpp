@@ -45,6 +45,10 @@ struct RetroShareServiceAndroid
 	 * @param[in] jclass the usual JNI parafernalia
 	 * @param[in] jsonApiPort port on which JSON API server will listen
 	 * @param[in] jsonApiBindAddress binding address of the JSON API server
+	 * @param[in] webUiDirectory directory the web interface files have been
+	 * extracted to, empty to run the JSON API without the web interface
+	 * @param[in] webUiPasswd passwd the web interface is reachable with, ignored
+	 * when webUiDirectory is empty
 	 * @note Yeah you read it well we use a full 32 bit signed integer for JSON
 	 * API port. This is because Java lack even the minimum decency to implement
 	 * unsigned integral types so we need to wrap the port (16 bit unsigned
@@ -53,7 +57,8 @@ struct RetroShareServiceAndroid
 	 */
 	static jni::Local<jni::Object<ErrorConditionWrap>> start(
 	        JNIEnv& env, jni::Class<RetroShareServiceAndroid>& jclass,
-	       jni::jint jsonApiPort, const jni::String& jsonApiBindAddress );
+	       jni::jint jsonApiPort, const jni::String& jsonApiBindAddress,
+	       const jni::String& webUiDirectory, const jni::String& webUiPasswd );
 
 	/**
 	 * Called from RetroShareServiceAndroid Java to shutdown libretroshare
