@@ -947,6 +947,7 @@ private:
     RsMutex mGenMtx;
     RsGxsDataAccess* mDataAccess;
     RsGeneralDataService* mDataStore;
+    rstime_t mLastMemProbe = 0;
     RsNetworkExchangeService *mNetService;
     RsSerialType *mSerialiser;
     /// service type
