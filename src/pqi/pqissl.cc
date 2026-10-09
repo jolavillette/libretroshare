@@ -1258,12 +1258,16 @@ int pqissl::accept_locked( SSL *ssl, int fd,
 	constexpr int success = 1;
 
 #ifdef RS_PQISSL_BANLIST_DOUBLE_CHECK
-	/* At this point, as we are actively attempting the connection, we decide
-	 * the address to which to connect to, banned addresses should never get
-	 * here as the filtering for banned addresses happens much before, this
-	 * check is therefore redundant, and if it trigger something really fishy
-	 * must be happening (a bug somewhere else in the code). */
+	/* User-set bans are rejected before the SSL handshake, in
+	 * pqissllistenbase::acceptconnection(). Automatically gathered bans
+	 * (DHT-flagged masquerading IPs, auto-banned ranges) are instead decided
+	 * here, once the peer has been authenticated: those lists routinely
+	 * contain the shared exit addresses of CGNAT users (mobile/4G), and an
+	 * IP-level reject would lock out legitimate friends whose certificate we
+	 * have just verified. So at this point only refuse explicit user bans and
+	 * unsatisfied whitelist requirements. */
 	uint32_t check_result;
+	uint32_t ban_reason = RSBANLIST_REASON_UNKNOWN;
 	uint32_t checking_flags = RSBANLIST_CHECKING_FLAGS_BLACKLIST;
 
 	if (rsPeers->servicePermissionFlags(PeerId()) & RS_NODE_PERM_REQUIRE_WL)
@@ -1272,28 +1276,38 @@ int pqissl::accept_locked( SSL *ssl, int fd,
     if( RsX509Cert::getCertSslId(*SSL_get_peer_certificate(ssl)) != PeerId())
         std::cerr << "(EE) pqissl::accept_locked(): PeerId() is " << PeerId() << " but certificate ID is " << RsX509Cert::getCertSslId(*SSL_get_peer_certificate(ssl)) << std::endl;
 
-	if(rsBanList && !rsBanList->isAddressAccepted( foreign_addr, checking_flags, check_result ))
+	if(rsBanList && !rsBanList->isAddressAccepted( foreign_addr, checking_flags, check_result, ban_reason ))
 	{
-		RsInfo() << __PRETTY_FUNCTION__
-		        << " Refusing incoming SSL connection from blacklisted "
-		        << "foreign address " << foreign_addr
-		        << ". Reason: " << check_result << ". This should never happen "
-		        << "at this point! Please report full log to developers!"
-		        << std::endl;
-		print_stacktrace();
-
-		if(rsEvents)
+		if( check_result == RSBANLIST_CHECK_RESULT_NOT_WHITELISTED
+		        || ban_reason == RSBANLIST_REASON_USER )
 		{
-			X509 *x509 = SSL_get_peer_certificate(ssl);
-			auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
-			ev->mSslId = RsX509Cert::getCertSslId(*x509);
-			ev->mLocator = RsUrl(foreign_addr);
-			ev->mErrorCode = RsAuthSslError::IP_IS_BLACKLISTED;
-			rsEvents->postEvent(ev);
+			RsInfo() << __PRETTY_FUNCTION__
+			        << " Refusing incoming SSL connection from "
+			        << ( (check_result == RSBANLIST_CHECK_RESULT_NOT_WHITELISTED)
+			             ? "non-whitelisted" : "user-blacklisted" )
+			        << " foreign address " << foreign_addr << std::endl;
+
+			if(rsEvents)
+			{
+				X509 *x509 = SSL_get_peer_certificate(ssl);
+				auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
+				ev->mSslId = RsX509Cert::getCertSslId(*x509);
+				ev->mLocator = RsUrl(foreign_addr);
+				ev->mErrorCode = RsAuthSslError::IP_IS_BLACKLISTED;
+				rsEvents->postEvent(ev);
+			}
+
+			reset_locked();
+			return failure;
 		}
 
-		reset_locked();
-		return failure;
+		RsInfo() << __PRETTY_FUNCTION__
+		        << " Accepting authenticated friend " << PeerId()
+		        << " despite automatically blacklisted foreign address "
+		        << foreign_addr << " (ban reason: " << ban_reason
+		        << "). Shared CGNAT exit addresses commonly get flagged by "
+		        << "the DHT while the friend itself is legitimate."
+		        << std::endl;
 	}
 #endif //def RS_BANLIST_REDUNDANT_CHECK
 

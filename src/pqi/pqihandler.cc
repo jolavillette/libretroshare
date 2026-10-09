@@ -496,8 +496,16 @@ int     pqihandler::UpdateRates()
 		mod -> pqi -> setMaxRate(false, out_max_bw);
 		if ((rateMap_it = rateMap.find(mod->pqi->PeerId())) != rateMap.end())
 			if (rateMap_it->second.mAllowedOut > 0)
-				if (out_max_bw > rateMap_it->second.mAllowedOut)
-        	                        mod -> pqi -> setMaxRate(false, rateMap_it->second.mAllowedOut);
+			{
+				// Never throttle the upload below a liveness floor: the heartbeat and
+				// control traffic must always fit, otherwise the connection starves and
+				// both ends time out (endless connect/disconnect). A peer can advertise a
+				// tiny-but-positive allowed-out that slips past the >0 guard above.
+				static const float BWCTRL_MIN_UPLOAD_KBS = 1.0f;
+				float allowed = std::max(rateMap_it->second.mAllowedOut, BWCTRL_MIN_UPLOAD_KBS);
+				if (out_max_bw > allowed)
+					mod -> pqi -> setMaxRate(false, allowed);
+			}
 	}
 
 #ifdef UPDATE_RATES_DEBUG

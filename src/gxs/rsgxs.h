@@ -38,4 +38,8 @@ static const uint32_t RS_GXS_DEFAULT_MSG_STORE_PERIOD = 86400 * 372    ;	// 1 ye
 static const uint32_t RS_GXS_DEFAULT_MSG_SEND_PERIOD  = 86400 * 30 * 1 ;	// one month.  Default delay after which we don't send messages
 static const uint32_t RS_GXS_DEFAULT_MSG_REQ_PERIOD   = 86400 * 30 * 1 ;	// one month.  Default Delay after which we don't request messages
 
+// Groups travel unfragmented, in a single packet of at most RsSerialiser::MAX_SERIAL_SIZE (262143) bytes: a bigger group is stored
+// locally but can never reach a friend. Same bound as MAX_ALLOWED_GXS_MESSAGE_SIZE for messages. Applies to group data + public meta.
+static const uint32_t RS_GXS_MAX_GROUP_SIZE = 200000 ;
+
 #endif // RSGXS_H

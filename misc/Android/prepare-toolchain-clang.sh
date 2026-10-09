@@ -245,6 +245,9 @@ function andro_cmake()
 		;;
 	esac
 
+	# pkg-config honours none of CMake's search paths, so pkg_check_modules would
+	# answer with the host's .pc files and hand a host library to a cross build.
+	PKG_CONFIG_LIBDIR="${PREFIX}/lib/pkgconfig" \
 	cmake \
 		$cmakeBuildType $cmakeCompileOptions $cmakeDebugOptions \
 		-DCMAKE_C_COMPILER_AR=$AR \
@@ -967,6 +970,7 @@ build_libretroshare()
 		-D RS_BRODCAST_DISCOVERY=ON -D RS_EXPORT_JNI_ONLOAD=ON \
 		-D RS_SQLCIPHER=OFF -D RS_DH_PRIME_INIT_CHECK=OFF \
 		-D RS_FORUM_DEEP_INDEX=ON -D RS_JSON_API=ON \
+		-D RS_WEBUI=ON \
 		-D RS_LIBRETROSHARE_STANDALONE_INSTALL=ON \
 		$RS_EXTRA_CMAKE_OPTS || return $?
 	make -j${HOST_NUM_CPU} || return $?
