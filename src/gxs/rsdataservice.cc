@@ -2087,6 +2087,29 @@ int RsDataService::setCacheSize(uint32_t /* size */)
     return 0;
 }
 
+std::string RsDataService::debug_cacheSizeString()
+{
+    RS_STACK_MUTEX(mDbMutex);
+
+    uint32_t nb_grps = 0, nb_msgs = 0, nb_msg_groups = 0, tmp_nb = 0;
+    uint64_t grp_bytes = 0, msg_bytes = 0, tmp_bytes = 0;
+
+    mGrpMetaDataCache.debug_computeSize(nb_grps, grp_bytes);
+
+    for(auto& it : mMsgMetaDataCache)
+    {
+        it.second.debug_computeSize(tmp_nb, tmp_bytes);
+        nb_msgs += tmp_nb;
+        msg_bytes += tmp_bytes;
+        ++nb_msg_groups;
+    }
+
+    std::ostringstream os;
+    os << "grp_metas=" << nb_grps << " grp_meta_bytes=" << grp_bytes
+       << " msg_metas=" << nb_msgs << " msg_meta_bytes=" << msg_bytes << " msg_cache_groups=" << nb_msg_groups;
+    return os.str();
+}
+
 void RsDataService::debug_printCacheSize()
 {
     RS_STACK_MUTEX(mDbMutex);

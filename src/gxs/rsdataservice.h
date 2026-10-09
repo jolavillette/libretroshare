@@ -205,6 +205,7 @@ public:
      * @return the cache size set for this RsGeneralDataService in bytes
      */
     uint32_t cacheSize() const override;
+    std::string debug_cacheSizeString() override;
 
     /*!
      * \brief serviceType
