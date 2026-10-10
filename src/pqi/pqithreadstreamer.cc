@@ -35,7 +35,7 @@
 
 #define STREAMER_SLEEP_MIN		   1000 //  1 ms
 #define STREAMER_SLEEP_DELTA               1000 //  1 ms
-#define STREAMER_SLEEP_MAX                30000 // 30 ms
+#define STREAMER_SLEEP_MAX               200000 // 200 ms
 
 #define DEFAULT_STREAMER_IDLE_SLEEP	1000000 //  1 sec
 
