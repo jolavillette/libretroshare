@@ -224,6 +224,10 @@ enum class RsAuthSslError: uint8_t
 	IP_IS_BLACKLISTED               = 0x07,
 	PEER_REFUSED_CONNECTION         = 0x08,
 	UNKNOWN_ERROR                   = 0x09,
+	/// Handshake succeeded, then the peer hung up before sending anything,
+	/// several times in a row: it authenticated us and refuses us on purpose
+	/// (ban list, whitelist requirement...).
+	PEER_CLOSED_AFTER_AUTH          = 0x0a,
 };
 
 /**
