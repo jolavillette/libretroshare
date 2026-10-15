@@ -59,6 +59,8 @@
 //
 #pragma once
 
+#include <functional>
+
 #include "ft/ftsearch.h"
 #include "ft/ftextralist.h"
 #include "retroshare/rsfiles.h"
@@ -276,6 +278,9 @@ class p3FileDatabase: public p3Service, public p3Config, public ftSearch //, pub
 
         uint32_t locked_getFriendIndex(const RsPeerId& pid);
 
+        // Runs search() on every friend's list without holding mFLSMtx, and appends the hits to pointers.
+        void searchRemoteDirectories(const std::function<void(const RemoteDirectoryStorage *,std::list<EntryIndex>&)>& search, std::list<void*>& pointers) const ;
+
         void handleDirSyncRequest (RsFileListsSyncRequestItem *) ;
         void handleDirSyncResponse (RsFileListsSyncResponseItem *&) ;
 
@@ -304,6 +309,7 @@ class p3FileDatabase: public p3Service, public p3Config, public ftSearch //, pub
         // Local flags and mutexes
 
         mutable RsMutex mFLSMtx ;
+        mutable uint32_t mRemoteSearchesInProgress ;	// protected by mFLSMtx: cleanup() deletes no remote list while > 0
         uint32_t mUpdateFlags ;
         std::string mFileSharingDir ;
         rstime_t mLastCleanupTime;

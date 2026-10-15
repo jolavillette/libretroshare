@@ -70,6 +70,7 @@ p3FileDatabase::p3FileDatabase(p3ServiceControl *mpeers)
     mOwnId = mpeers->getOwnId() ;
 
     mBannedFileListNeedsUpdate = false;
+    mRemoteSearchesInProgress = 0 ;
     mLocalSharedDirs = new LocalDirectoryStorage(mFileSharingDir + "/" + LOCAL_SHARED_DIRS_FILE_NAME,mOwnId);
     mHashCache = new HashStorage(mFileSharingDir + "/" + HASH_CACHE_FILE_NAME) ;
 
@@ -764,7 +765,7 @@ void p3FileDatabase::cleanup()
                         			|| ( dir_is_empty && last_contact + DELAY_BEFORE_DELETE_EMPTY_REMOTE_DIR     < now )
                         			|| (!dir_is_empty && last_contact + DELAY_BEFORE_DELETE_NON_EMPTY_REMOTE_DIR < now );
 
-                if(!should_remove || mRemoteDirectories[i]->isLoading())	// the loader thread holds a pointer to it
+                if(!should_remove || mRemoteDirectories[i]->isLoading() || mRemoteSearchesInProgress > 0)	// the loader thread holds a pointer to it; a search holds indexes into mRemoteDirectories
                     continue ;
 
 #ifdef DEBUG_P3FILELISTS
@@ -1630,6 +1631,39 @@ uint32_t p3FileDatabase::watchPeriod()
     return mLocalDirWatcher->fileWatchPeriod();
 }
 
+void p3FileDatabase::searchRemoteDirectories(const std::function<void(const RemoteDirectoryStorage *,std::list<EntryIndex>&)>& search, std::list<void*>& pointers) const
+{
+    // Scanning every friend's list takes seconds when the lists are large or swapped out. Holding mFLSMtx
+    // meanwhile stalls every service ticking on the rs main thread (turtle tunnel requests check
+    // isFileBanned(), p3FileDatabase::tick() itself...). So only the snapshot is taken under the lock, and
+    // cleanup() is kept from deleting or moving storages so the indexes stay valid. Each storage
+    // protects its own content with its own mutex.
+
+    std::vector<const RemoteDirectoryStorage *> dirs ;
+    {
+        RS_STACK_MUTEX(mFLSMtx) ;
+        dirs.assign(mRemoteDirectories.begin(),mRemoteDirectories.end()) ;
+        ++mRemoteSearchesInProgress ;
+    }
+
+    for(uint32_t i=0;i<dirs.size();++i)
+        if(dirs[i] != NULL)
+        {
+            std::list<EntryIndex> local_results;
+            search(dirs[i],local_results) ;
+
+            for(std::list<EntryIndex>::iterator it(local_results.begin());it!=local_results.end();++it)
+            {
+                void *p=NULL;
+                convertEntryIndexToPointer<sizeof(void*)>(*it,i+1,p);
+                pointers.push_back(p) ;
+            }
+        }
+
+    RS_STACK_MUTEX(mFLSMtx) ;
+    --mRemoteSearchesInProgress ;
+}
+
 int p3FileDatabase::SearchKeywords(
         const std::list<std::string>& keywords, std::list<DirDetails>& results,
         FileSearchFlags flags, const RsPeerId& client_peer_id )
@@ -1640,8 +1674,7 @@ int p3FileDatabase::SearchKeywords(
         std::list<void *> pointers;
 
         {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
+            // no mFLSMtx: mLocalSharedDirs lives as long as this object and locks its own content
             mLocalSharedDirs->searchTerms(keywords,firesults) ;
 
 			for(auto& it: std::as_const(firesults))
@@ -1659,24 +1692,7 @@ int p3FileDatabase::SearchKeywords(
     {
 		std::list<void*> pointers ;
 
-        {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
-            for(uint32_t i=0;i<mRemoteDirectories.size();++i)
-                if(mRemoteDirectories[i] != NULL)
-                {
-                    std::list<EntryIndex> local_results;
-                    mRemoteDirectories[i]->searchTerms(keywords,local_results) ;
-
-                    for(std::list<EntryIndex>::iterator it(local_results.begin());it!=local_results.end();++it)
-                    {
-                        void *p=NULL;
-                        convertEntryIndexToPointer<sizeof(void*)>(*it,i+1,p);
-
-						pointers.push_back(p) ;
-					}
-                }
-        }
+        searchRemoteDirectories([&keywords](const RemoteDirectoryStorage *d,std::list<EntryIndex>& r) { d->searchTerms(keywords,r) ; },pointers) ;
 
 		for(auto it(pointers.begin());it!=pointers.end();++it)
 		{
@@ -1699,8 +1715,7 @@ int p3FileDatabase::SearchBoolExp(RsRegularExpression::Expression *exp, std::lis
         std::list<EntryIndex> firesults;
         std::list<void*> pointers;
         {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
+            // no mFLSMtx: mLocalSharedDirs lives as long as this object and locks its own content
             mLocalSharedDirs->searchBoolExp(exp,firesults) ;
 
             for(std::list<EntryIndex>::iterator it(firesults.begin());it!=firesults.end();++it)
@@ -1717,23 +1732,7 @@ int p3FileDatabase::SearchBoolExp(RsRegularExpression::Expression *exp, std::lis
     if(flags & RS_FILE_HINTS_REMOTE)
     {
 		std::list<void*> pointers ;
-        {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
-            for(uint32_t i=0;i<mRemoteDirectories.size();++i)
-                if(mRemoteDirectories[i] != NULL)
-                {
-                    std::list<EntryIndex> local_results;
-                    mRemoteDirectories[i]->searchBoolExp(exp,local_results) ;
-
-                    for(std::list<EntryIndex>::iterator it(local_results.begin());it!=local_results.end();++it)
-                    {
-                        void *p=NULL;
-                        convertEntryIndexToPointer<sizeof(void*)>(*it,i+1,p);
-						pointers.push_back(p) ;
-					}
-                }
-        }
+        searchRemoteDirectories([exp](const RemoteDirectoryStorage *d,std::list<EntryIndex>& r) { d->searchBoolExp(exp,r) ; },pointers) ;
 
 		for(auto it(pointers.begin());it!=pointers.end();++it)
 		{
