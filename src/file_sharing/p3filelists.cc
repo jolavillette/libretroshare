@@ -64,9 +64,13 @@ p3FileDatabase::p3FileDatabase(p3ServiceControl *mpeers)
     // loads existing indexes for friends. Some might be already present here.
     //
     mRemoteDirectories.clear() ;	// we should load them!
+    mRemoteDirLoaderStop = false ;
+    mRemoteDirLoaderRunning = false ;
+    mRemoteDirLoadPending = false ;
     mOwnId = mpeers->getOwnId() ;
 
     mBannedFileListNeedsUpdate = false;
+    mRemoteSearchesInProgress = 0 ;
     mLocalSharedDirs = new LocalDirectoryStorage(mFileSharingDir + "/" + LOCAL_SHARED_DIRS_FILE_NAME,mOwnId);
     mHashCache = new HashStorage(mFileSharingDir + "/" + HASH_CACHE_FILE_NAME) ;
 
@@ -155,6 +159,10 @@ void p3FileDatabase::updateShareFlags(const SharedDirInfo& info)
 
 p3FileDatabase::~p3FileDatabase()
 {
+    mRemoteDirLoaderStop = true ;
+    if(mRemoteDirLoader.joinable())
+        mRemoteDirLoader.join() ;
+
     RS_STACK_MUTEX(mFLSMtx) ;
 
     for(uint32_t i=0;i<mRemoteDirectories.size();++i)
@@ -198,6 +206,7 @@ int p3FileDatabase::tick()
     if(mLastCleanupTime + 5 < now)
     {
         cleanup();
+        startRemoteDirLoaderIfNeeded();
         cleanupUploadStats(mUploadStatsRetentionDays);
         mLastCleanupTime = now ;
     }
@@ -260,7 +269,7 @@ int p3FileDatabase::tick()
         for(uint32_t i=0;i<mRemoteDirectories.size();++i)
             if(mRemoteDirectories[i] != NULL)
             {
-               if(online_peers.find(mRemoteDirectories[i]->peerId()) != online_peers.end() && mRemoteDirectories[i]->lastSweepTime() + DELAY_BETWEEN_REMOTE_DIRECTORIES_SWEEP < now)
+               if(mRemoteDirectories[i]->isLoaded() && online_peers.find(mRemoteDirectories[i]->peerId()) != online_peers.end() && mRemoteDirectories[i]->lastSweepTime() + DELAY_BETWEEN_REMOTE_DIRECTORIES_SWEEP < now)
                {
 #ifdef DEBUG_FILE_HIERARCHY
                   P3FILELISTS_DEBUG() << "Launching recurs sweep of friend directory " << mRemoteDirectories[i]->peerId() << ". Content currently is:" << std::endl;
@@ -271,11 +280,11 @@ int p3FileDatabase::tick()
                   mRemoteDirectories[i]->lastSweepTime() = now ;
                }
 
-               mRemoteDirectories[i]->checkSave() ;
+               mRemoteDirectories[i]->checkSave([this](const RsFileHash& h){ return this->locked_getCumulativeUpload(h); }) ;
             }
 
         mLastRemoteDirSweepTS = now;
-		mLocalSharedDirs->checkSave() ;
+		mLocalSharedDirs->checkSave([this](const RsFileHash& h){ return this->locked_getCumulativeUpload(h); }) ;
 
         // This is a hack to make loaded directories show up in the GUI, because the GUI generally isn't ready at the time they are actually loaded up,
         // so the first notify is ignored, and no other notify will happen next. We only do it if no data was received in the last 5 secs, in order to
@@ -756,7 +765,7 @@ void p3FileDatabase::cleanup()
                         			|| ( dir_is_empty && last_contact + DELAY_BEFORE_DELETE_EMPTY_REMOTE_DIR     < now )
                         			|| (!dir_is_empty && last_contact + DELAY_BEFORE_DELETE_NON_EMPTY_REMOTE_DIR < now );
 
-                if(!should_remove)
+                if(!should_remove || mRemoteDirectories[i]->isLoading() || mRemoteSearchesInProgress > 0)	// the loader thread holds a pointer to it; a search holds indexes into mRemoteDirectories
                     continue ;
 
 #ifdef DEBUG_P3FILELISTS
@@ -836,6 +845,60 @@ void p3FileDatabase::cleanup()
     }
 }
 
+void p3FileDatabase::startRemoteDirLoaderIfNeeded()
+{
+    RS_STACK_MUTEX(mFLSMtx) ;
+
+    if(!mRemoteDirLoadPending || mRemoteDirLoaderRunning)
+        return ;
+
+    if(mRemoteDirLoader.joinable())	// a previous pass has finished
+        mRemoteDirLoader.join() ;
+
+    mRemoteDirLoadPending = false ;
+    mRemoteDirLoaderRunning = true ;
+    mRemoteDirLoader = std::thread([this]() { remoteDirLoaderThreadBody() ; }) ;
+}
+
+void p3FileDatabase::remoteDirLoaderThreadBody()
+{
+    uint32_t n = 0 ;
+    rstime_t t0 = time(NULL) ;
+
+    while(!mRemoteDirLoaderStop)
+    {
+        RemoteDirectoryStorage *s = nullptr ;
+        {
+            RS_STACK_MUTEX(mFLSMtx) ;
+            for(auto *d : mRemoteDirectories)
+                if(d != NULL && !d->isLoaded() && !d->isLoading())
+                {
+                    s = d ;
+                    s->setLoading(true) ;	// under mFLSMtx, so cleanup() cannot delete it from now on
+                    break ;
+                }
+        }
+        if(!s)
+            break ;
+
+        s->loadInBackground() ;	// clears the loading mark once the content is swapped in
+        ++n ;
+    }
+
+    RS_STACK_MUTEX(mFLSMtx) ;
+    mRemoteDirLoaderRunning = false ;
+
+    if(n > 0)
+    {
+        mUpdateFlags |= P3FILELISTS_UPDATE_FLAG_REMOTE_DIRS_CHANGED ;
+        mUpdateFlags |= P3FILELISTS_UPDATE_FLAG_REMOTE_MAP_CHANGED ;
+
+        rstime_t dt = time(NULL) - t0 ;
+        if(n >= 10 || dt >= 1)	// the startup pass; a friend coming online later makes a one-item pass, not worth a line
+            std::cerr << "p3FileDatabase: loaded " << n << " friend directory lists in the background in " << dt << " s" << std::endl;
+    }
+}
+
 std::string p3FileDatabase::makeRemoteFileName(const RsPeerId& pid) const
 {
     return mFileSharingDir + "/" + "dirlist_"+pid.toStdString()+".bin" ;
@@ -859,7 +922,8 @@ uint32_t p3FileDatabase::locked_getFriendIndex(const RsPeerId& pid)
         if(!found)
         {
             found = mRemoteDirectories.size();
-            mRemoteDirectories.push_back(new RemoteDirectoryStorage(pid,makeRemoteFileName(pid)));
+            mRemoteDirectories.push_back(new RemoteDirectoryStorage(pid,makeRemoteFileName(pid),false));
+            mRemoteDirLoadPending = true ;
 
             mUpdateFlags |= P3FILELISTS_UPDATE_FLAG_REMOTE_DIRS_CHANGED ;
             mUpdateFlags |= P3FILELISTS_UPDATE_FLAG_REMOTE_MAP_CHANGED ;
@@ -891,7 +955,8 @@ uint32_t p3FileDatabase::locked_getFriendIndex(const RsPeerId& pid)
         if(mRemoteDirectories.size() <= it->second)
         {
             mRemoteDirectories.resize(it->second+1,NULL) ;
-            mRemoteDirectories[it->second] = new RemoteDirectoryStorage(pid,makeRemoteFileName(pid));
+            mRemoteDirectories[it->second] = new RemoteDirectoryStorage(pid,makeRemoteFileName(pid),false);
+            mRemoteDirLoadPending = true ;
 
             mUpdateFlags |= P3FILELISTS_UPDATE_FLAG_REMOTE_DIRS_CHANGED ;
             mUpdateFlags |= P3FILELISTS_UPDATE_FLAG_REMOTE_MAP_CHANGED ;
@@ -1099,6 +1164,11 @@ int p3FileDatabase::getSharedDirStatistics(const RsPeerId& pid,SharedDirStats& s
 uint64_t p3FileDatabase::getCumulativeUpload(const RsFileHash& hash) const
 {
 	RS_STACK_MUTEX(mFLSMtx);
+	return locked_getCumulativeUpload(hash);
+}
+
+uint64_t p3FileDatabase::locked_getCumulativeUpload(const RsFileHash& hash) const
+{
 	auto it = mCumulativeUploaded.find(hash);
 	if (it != mCumulativeUploaded.end())
 		return it->second.total_bytes;
@@ -1445,6 +1515,13 @@ int p3FileDatabase::RequestDirDetails(
     }
 
     d.id = storage->peerId();
+ 
+    if (d.type == DIR_TYPE_FILE)
+    {
+        d.uploads = locked_getCumulativeUpload(d.hash);
+    }
+ 
+
 
 #ifdef DEBUG_FILE_HIERARCHY
     P3FILELISTS_DEBUG() << "ExtractData: ref=" << ref << ", flags=" << flags << " : returning this: " << std::endl;
@@ -1566,6 +1643,39 @@ uint32_t p3FileDatabase::watchPeriod()
     return mLocalDirWatcher->fileWatchPeriod();
 }
 
+void p3FileDatabase::searchRemoteDirectories(const std::function<void(const RemoteDirectoryStorage *,std::list<EntryIndex>&)>& search, std::list<void*>& pointers) const
+{
+    // Scanning every friend's list takes seconds when the lists are large or swapped out. Holding mFLSMtx
+    // meanwhile stalls every service ticking on the rs main thread (turtle tunnel requests check
+    // isFileBanned(), p3FileDatabase::tick() itself...). So only the snapshot is taken under the lock, and
+    // cleanup() is kept from deleting or moving storages so the indexes stay valid. Each storage
+    // protects its own content with its own mutex.
+
+    std::vector<const RemoteDirectoryStorage *> dirs ;
+    {
+        RS_STACK_MUTEX(mFLSMtx) ;
+        dirs.assign(mRemoteDirectories.begin(),mRemoteDirectories.end()) ;
+        ++mRemoteSearchesInProgress ;
+    }
+
+    for(uint32_t i=0;i<dirs.size();++i)
+        if(dirs[i] != NULL)
+        {
+            std::list<EntryIndex> local_results;
+            search(dirs[i],local_results) ;
+
+            for(std::list<EntryIndex>::iterator it(local_results.begin());it!=local_results.end();++it)
+            {
+                void *p=NULL;
+                convertEntryIndexToPointer<sizeof(void*)>(*it,i+1,p);
+                pointers.push_back(p) ;
+            }
+        }
+
+    RS_STACK_MUTEX(mFLSMtx) ;
+    --mRemoteSearchesInProgress ;
+}
+
 int p3FileDatabase::SearchKeywords(
         const std::list<std::string>& keywords, std::list<DirDetails>& results,
         FileSearchFlags flags, const RsPeerId& client_peer_id )
@@ -1576,8 +1686,7 @@ int p3FileDatabase::SearchKeywords(
         std::list<void *> pointers;
 
         {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
+            // no mFLSMtx: mLocalSharedDirs lives as long as this object and locks its own content
             mLocalSharedDirs->searchTerms(keywords,firesults) ;
 
 			for(auto& it: std::as_const(firesults))
@@ -1595,24 +1704,7 @@ int p3FileDatabase::SearchKeywords(
     {
 		std::list<void*> pointers ;
 
-        {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
-            for(uint32_t i=0;i<mRemoteDirectories.size();++i)
-                if(mRemoteDirectories[i] != NULL)
-                {
-                    std::list<EntryIndex> local_results;
-                    mRemoteDirectories[i]->searchTerms(keywords,local_results) ;
-
-                    for(std::list<EntryIndex>::iterator it(local_results.begin());it!=local_results.end();++it)
-                    {
-                        void *p=NULL;
-                        convertEntryIndexToPointer<sizeof(void*)>(*it,i+1,p);
-
-						pointers.push_back(p) ;
-					}
-                }
-        }
+        searchRemoteDirectories([&keywords](const RemoteDirectoryStorage *d,std::list<EntryIndex>& r) { d->searchTerms(keywords,r) ; },pointers) ;
 
 		for(auto it(pointers.begin());it!=pointers.end();++it)
 		{
@@ -1635,8 +1727,7 @@ int p3FileDatabase::SearchBoolExp(RsRegularExpression::Expression *exp, std::lis
         std::list<EntryIndex> firesults;
         std::list<void*> pointers;
         {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
+            // no mFLSMtx: mLocalSharedDirs lives as long as this object and locks its own content
             mLocalSharedDirs->searchBoolExp(exp,firesults) ;
 
             for(std::list<EntryIndex>::iterator it(firesults.begin());it!=firesults.end();++it)
@@ -1653,23 +1744,7 @@ int p3FileDatabase::SearchBoolExp(RsRegularExpression::Expression *exp, std::lis
     if(flags & RS_FILE_HINTS_REMOTE)
     {
 		std::list<void*> pointers ;
-        {
-            RS_STACK_MUTEX(mFLSMtx) ;
-
-            for(uint32_t i=0;i<mRemoteDirectories.size();++i)
-                if(mRemoteDirectories[i] != NULL)
-                {
-                    std::list<EntryIndex> local_results;
-                    mRemoteDirectories[i]->searchBoolExp(exp,local_results) ;
-
-                    for(std::list<EntryIndex>::iterator it(local_results.begin());it!=local_results.end();++it)
-                    {
-                        void *p=NULL;
-                        convertEntryIndexToPointer<sizeof(void*)>(*it,i+1,p);
-						pointers.push_back(p) ;
-					}
-                }
-        }
+        searchRemoteDirectories([exp](const RemoteDirectoryStorage *d,std::list<EntryIndex>& r) { d->searchBoolExp(exp,r) ; },pointers) ;
 
 		for(auto it(pointers.begin());it!=pointers.end();++it)
 		{
@@ -2114,6 +2189,11 @@ void p3FileDatabase::handleDirSyncResponse(RsFileListsSyncResponseItem*& sitem)
     {
         RS_STACK_MUTEX(mFLSMtx) ;
         fi = locked_getFriendIndex(item->PeerId());
+
+        // Not read from disk yet: ignore the response rather than apply it to an empty tree that the
+        // loader is about to replace. Nothing was requested for it anyway; the sweep re-asks once loaded.
+        if(!mRemoteDirectories[fi]->isLoaded())
+            return ;
 
 #ifdef DEBUG_P3FILELISTS
         P3FILELISTS_DEBUG() << "  friend index is " << fi ;

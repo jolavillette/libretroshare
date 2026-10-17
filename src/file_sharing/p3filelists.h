@@ -59,12 +59,16 @@
 //
 #pragma once
 
+#include <functional>
+
 #include "ft/ftsearch.h"
 #include "ft/ftextralist.h"
 #include "retroshare/rsfiles.h"
 #include "file_sharing/rsfilelistitems.h"
 #include "services/p3service.h"
 #include "util/rstime.h"
+#include <thread>
+#include <atomic>
 #include "file_sharing/hash_cache.h"
 #include "file_sharing/directory_storage.h"
 
@@ -203,6 +207,7 @@ class p3FileDatabase: public p3Service, public p3Config, public ftSearch //, pub
 		bool hashingProcessPaused();
 
     protected:
+        uint64_t locked_getCumulativeUpload(const RsFileHash& hash) const;
         void getExtraFilesDirDetails_locked(void *ref,DirectoryStorage::EntryIndex e,DirDetails& d) const;
 
         int filterResults(const std::list<void*>& firesults,std::list<DirDetails>& results,FileSearchFlags flags,const RsPeerId& peer_id) const;
@@ -253,6 +258,16 @@ class p3FileDatabase: public p3Service, public p3Config, public ftSearch //, pub
         //     RemoteDirectories[ getFriendIndex(pid) - 1] = RemoteDirectoryStorage(pid)
 
         std::vector<RemoteDirectoryStorage *> mRemoteDirectories ;
+
+        // Friends' directory lists are read from disk by a background thread, not by the service tick:
+        // on a node with many friends that is hundreds of MB of cold reads and seconds of parsing, during
+        // which every other service would otherwise wait (they all tick on the same thread).
+        std::thread mRemoteDirLoader ;
+        std::atomic<bool> mRemoteDirLoaderStop ;
+        bool mRemoteDirLoaderRunning ;		// protected by mFLSMtx
+        bool mRemoteDirLoadPending ;		// protected by mFLSMtx: a storage was created with load deferred
+        void startRemoteDirLoaderIfNeeded() ;
+        void remoteDirLoaderThreadBody() ;
         LocalDirectoryStorage *mLocalSharedDirs ;
         LocalDirectoryUpdater *mLocalDirWatcher ;
 		ftExtraList *mExtraFiles;
@@ -263,6 +278,9 @@ class p3FileDatabase: public p3Service, public p3Config, public ftSearch //, pub
         template<int BYTES> static bool convertPointerToEntryIndex(const void *p, EntryIndex& e, uint32_t& friend_index) ;
 
         uint32_t locked_getFriendIndex(const RsPeerId& pid);
+
+        // Runs search() on every friend's list without holding mFLSMtx, and appends the hits to pointers.
+        void searchRemoteDirectories(const std::function<void(const RemoteDirectoryStorage *,std::list<EntryIndex>&)>& search, std::list<void*>& pointers) const ;
 
         void handleDirSyncRequest (RsFileListsSyncRequestItem *) ;
         void handleDirSyncResponse (RsFileListsSyncResponseItem *&) ;
@@ -292,6 +310,7 @@ class p3FileDatabase: public p3Service, public p3Config, public ftSearch //, pub
         // Local flags and mutexes
 
         mutable RsMutex mFLSMtx ;
+        mutable uint32_t mRemoteSearchesInProgress ;	// protected by mFLSMtx: cleanup() deletes no remote list while > 0
         uint32_t mUpdateFlags ;
         std::string mFileSharingDir ;
         rstime_t mLastCleanupTime;

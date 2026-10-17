@@ -948,7 +948,7 @@ private:
     RsGxsDataAccess* mDataAccess;
     RsGeneralDataService* mDataStore;
     RsNetworkExchangeService *mNetService;
-    RsSerialType *mSerialiser;
+    RsSerialType *mSerialiser; // WARNING: used concurrently via OpenMP in getMsgData() -- must remain stateless/re-entrant
     /// service type
     uint16_t mServType;
     RsGixs* mGixs;
@@ -994,6 +994,12 @@ private:
     RsGxsGroupId mNextGroupToCheck ;
 
 protected:
+	/* RsThread overrides. The integrity check runs on a one-shot thread of its
+	 * own that reads mDataStore; it is stopped together with the service so
+	 * that it cannot outlive the store at shutdown. */
+	void onStopRequested() override;
+	void run() override;
+
 	enum CreateStatus { CREATE_FAIL, CREATE_SUCCESS, CREATE_FAIL_TRY_LATER };
 	const uint8_t SIGN_MAX_WAITING_TIME;
 	// TODO: cleanup this should be an enum!
