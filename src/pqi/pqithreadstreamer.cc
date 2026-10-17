@@ -21,6 +21,7 @@
  *******************************************************************************/
 #include "util/rstime.h"
 #include "pqi/pqithreadstreamer.h"
+#include <algorithm>
 #include <unistd.h>
 
 // for timeBeginPeriod
@@ -120,11 +121,12 @@ void pqithreadstreamer::threadTick()
         }
         else
         {
-                // No activity: gradually increase the timeout and sleep to save CPU cycles
-                if (mTimeout < STREAMER_TIMEOUT_MAX)
-                        mTimeout += STREAMER_TIMEOUT_DELTA;
-                if (mSleepPeriod < STREAMER_SLEEP_MAX)
-                        mSleepPeriod += STREAMER_SLEEP_DELTA;
+                // No activity: back off geometrically. Any byte resets both to their minimum, and on a
+                // node with many friends turtle traffic touches every link every few tens of ms: with
+                // a +1 ms ramp a link never got past a few ms of sleep (measured ~150 wakeups/s per
+                // peer thread). Doubling reaches the maximum in a handful of idle passes.
+                mTimeout = std::min<uint32_t>(STREAMER_TIMEOUT_MAX, std::max<uint32_t>(STREAMER_TIMEOUT_DELTA, 2*mTimeout));
+                mSleepPeriod = std::min<uint32_t>(STREAMER_SLEEP_MAX, std::max<uint32_t>(STREAMER_SLEEP_DELTA, 2*mSleepPeriod));
         }
 
 	// RsDbg() << "PQISTREAMER " << threadName() << " pqithreadstreamer::threadTick() mTimeout " << std::dec << mTimeout / 1000 << " mSleepPeriod " <<  mSleepPeriod / 1000 << " readbytes " << readbytes << "  sentbytes " << sentbytes;
