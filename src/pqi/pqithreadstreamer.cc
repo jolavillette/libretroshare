@@ -110,9 +110,12 @@ void pqithreadstreamer::threadTick()
 		sentbytes = tick_send(0);
 	}
 
-        // Adaptive timeout and sleep
-        // Check if any data was processed during previous cycle
-        if (readbytes > 0 || sentbytes > 0)
+        // Adaptive timeout and sleep. Reading, or a send that left items queued, means a transfer:
+        // go reactive. A send that emptied the queue is a lone item (on a node with many friends,
+        // mostly forwarded turtle tunnel requests, several per second on every link): treating it as
+        // activity kept every idle link at a 1 ms cadence. The next lone item waits at most one
+        // sleep period, a few tens of ms.
+        if (readbytes > 0 || (sentbytes > 0 && getQueueSize(false) > 0))
         {
                 // Activity detected: switch to maximum reactivity immediately
                 // This ensure fast throughput for data bursts
