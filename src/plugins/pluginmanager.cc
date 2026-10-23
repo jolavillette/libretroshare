@@ -202,6 +202,9 @@ void RsPluginManager::loadPlugins(const std::vector<std::string>& plugin_directo
 	saveConfiguration();
 }
 
+#include <chrono>
+#include "util/rsdebug.h"
+
 void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 {
 	std::cerr << "  Stopping plugins." << std::endl;
@@ -210,6 +213,7 @@ void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 	{
 		if (_plugins[i].plugin != NULL)
 		{
+			auto t0 = std::chrono::steady_clock::now();
 			p3Service *service = _plugins[i].plugin->p3_service();
 			if (service)
 			{
@@ -219,6 +223,8 @@ void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 			_plugins[i].plugin->stop();
 			delete _plugins[i].plugin;
 			_plugins[i].plugin = NULL;
+			RsInfo() << "shutdown: plugin " << _plugins[i].name << " stopped in "
+			         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() << " ms";
 		}
 		if (_plugins[i].handle)
 		{

@@ -131,6 +131,8 @@ class RsDataService : public RsGeneralDataService
 {
 public:
 
+    std::string dbName() const override { return mDbName; }
+
     RsDataService(const std::string& serviceDir, const std::string& dbName, uint16_t serviceType,
     		RsGxsSearchModule* mod = NULL, const std::string& key = "");
     virtual ~RsDataService();

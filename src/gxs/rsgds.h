@@ -138,6 +138,9 @@ public:
     RsGeneralDataService(){}
 	virtual ~RsGeneralDataService(){}
 
+	/// Name of the underlying store, for log lines; empty when unknown.
+	virtual std::string dbName() const { return std::string(); }
+
     /*!
      * Retrieves all msgs
      * @param reqIds requested msg ids (grpId,msgId), leave msg list empty to get all msgs for the grp
