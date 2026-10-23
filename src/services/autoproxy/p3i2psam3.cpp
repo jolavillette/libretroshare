@@ -29,6 +29,14 @@ static const std::string kConfigKeyBOBAddr     = "BOB_ADDR";
 
 static constexpr bool   kDefaultSAM3Enable = false;
 
+/* At least i2pd doesn't like to instantaniously stop and (re)start a session, so
+ * a new session is never created less than this long after the previous one was
+ * closed. The wait happens in startSession(), where it is actually needed, and
+ * not in stopSession(): a stop is not always followed by a start (RS shutdown,
+ * "stop" button in the settings) and waiting there held back the whole
+ * application exit by 10 seconds. */
+static constexpr auto kSessionRestartDelay = std::chrono::seconds(10);
+
 RS_SET_CONTEXT_DEBUG_LEVEL(2)
 
 static void inline doSleep(std::chrono::duration<long, std::ratio<1,1000>> timeToSleepMS) {
@@ -36,7 +44,9 @@ static void inline doSleep(std::chrono::duration<long, std::ratio<1,1000>> timeT
 }
 
 p3I2pSam3::p3I2pSam3(p3PeerMgr *peerMgr) :
-    mConfigLoaded(false), mPeerMgr(peerMgr), mPending(), mLock("p3i2p-sam3")
+    mConfigLoaded(false), mPeerMgr(peerMgr), mPending(),
+    mLastSessionClosed(std::chrono::steady_clock::time_point::min()),
+    mLock("p3i2p-sam3")
 #ifdef RS_USE_I2P_SAM3_LIBSAM3
   , mLockSam3Access("p3i2p-sam3-access")
 #endif
@@ -498,6 +508,19 @@ bool p3I2pSam3::startSession()
 		stopSession();
 	}
 
+	// Give i2pd time to let go of the previous session. No lock may be held here.
+	std::chrono::steady_clock::time_point sessionReady;
+	{
+		RS_STACK_MUTEX(mLock);
+		sessionReady = mLastSessionClosed + kSessionRestartDelay;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (now < sessionReady) {
+		const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(sessionReady - now);
+		RS_DBG("waiting ", wait.count(), " ms before creating a new SAM session");
+		doSleep(wait);
+	}
+
 	auto session = (Sam3Session*)rs_malloc(sizeof (Sam3Session));
 
 	// add nick
@@ -587,17 +610,23 @@ void p3I2pSam3::stopSession()
 		mValidConnections.clear();
 
 		RS_STACK_MUTEX(mLockSam3Access);
+		/* Detach the connections before closing the session. Their sockets
+		 * are owned by the pqissli2psam3 streamers, which may still be
+		 * reading them; sam3CloseSession() would close those fds and free
+		 * the Sam3Connection structs under them. Each one is closed by its
+		 * streamer and freed in closeConnection(). */
+		for (Sam3Connection *c = mSetting.session->connlist; c; c = c->next)
+			c->ses = nullptr; // the session is freed below
+		mSetting.session->connlist = nullptr;
 		sam3CloseSession(mSetting.session);
 		free(mSetting.session);
 
 		mSetting.session = nullptr;
 		mState = samStatus::samState::offline;
-	}
 
-	// At least i2pd doesn't like to instantaniously stop and (re)start a session, wait here just a little bit.
-	// Not ideal but does the trick.
-	// (This happens when using the "restart" button in the settings.)
-	doSleep(std::chrono::seconds(10));
+		// startSession() waits out kSessionRestartDelay counted from here
+		mLastSessionClosed = std::chrono::steady_clock::now();
+	}
 }
 
 void p3I2pSam3::stopForwarding()
@@ -718,7 +747,7 @@ void p3I2pSam3::closeConnection(taskTicket *ticket)
 
 		auto it = std::find(mInvalidConnections.begin(), mInvalidConnections.end(), conn);
 		if (it != mInvalidConnections.end()) {
-			// this is the expected case
+			// this is the expected case: detached by stopSession(), still ours to free
 			mInvalidConnections.erase(it);
 		} else {
 			// this is unexpected but not a big deal, just warn
@@ -730,11 +759,9 @@ void p3I2pSam3::closeConnection(taskTicket *ticket)
 
 				// now it is getting even weirder, still not a big deal, just warn
 				RS_WARN("found connection in mValidConnections");
-			}
+			} else
+				conn = nullptr; // unknown pointer, do not touch it
 		}
-
-		// when libsam3 has already handled closing of the connection - which should be the case here - the memory has been freed already (-> pointer is invalid)
-		conn = nullptr;
 	} else {
 		RS_STACK_MUTEX(mLock);
 
@@ -748,13 +775,12 @@ void p3I2pSam3::closeConnection(taskTicket *ticket)
 			// search in old connections
 			it = std::find(mInvalidConnections.begin(), mInvalidConnections.end(), conn);
 			if (it != mInvalidConnections.end()) {
-				// old connection, just ignore. *should* be freed already
+				// old connection, detached by stopSession(): freed below
 				mInvalidConnections.erase(it);
 
 				RS_DBG2("found old (invalid) connection");
 
 				callClose = false;
-				conn = nullptr;
 			} else {
 				// weird
 				RS_WARN("could'n find connection!");
@@ -769,6 +795,9 @@ void p3I2pSam3::closeConnection(taskTicket *ticket)
 			RS_DBG2("closing connection");
 
 			RS_STACK_MUTEX(mLockSam3Access);
+			// The streamer closed the socket already; the fd number may have
+			// been reused since, so only unlink and free the struct.
+			conn->fd = -1;
 			sam3CloseConnection(conn);
 			conn = nullptr; // freed by above call
 		}

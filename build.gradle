@@ -268,6 +268,31 @@ ext.buildLibretroshareNativeLib =
 	copyChecked(
 		"${currToolchainPath}/sysroot/usr/share/retroshare/bdboot.txt",
 		bdbootAssetDir )
+
+	/* Ship the web interface as Android assets so RetroShareServiceAndroid can
+	 * extract it at startup and hand the directory to rsWebUi. The sources live
+	 * in the retroshare-webui sibling repository and have to be built there
+	 * first (npm run build in webui-src) — this only packages the result.
+	 *
+	 * Absent in a standalone libretroshare clone, which is what upstream CI
+	 * builds, so a missing directory is not an error: the service then simply
+	 * finds no webui assets and starts the JSON API alone. */
+	def webuiSourceDir = file("${projectDir}/../retroshare-webui/webui")
+	if(webuiSourceDir.isDirectory() &&
+	   file("${webuiSourceDir}/index.html").isFile())
+	{
+		def webuiAssetDir = "${getAssetsDir()}/webui"
+		delete webuiAssetDir
+		mkdir webuiAssetDir
+		copy
+		{
+			from webuiSourceDir
+			into webuiAssetDir
+		}
+		println "Bundling web interface from ${webuiSourceDir}"
+	}
+	else
+		println "No built web interface at ${webuiSourceDir}, skipping it"
 }
 
 android

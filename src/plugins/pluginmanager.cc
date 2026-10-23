@@ -34,6 +34,7 @@
 
 #include <rsserver/p3face.h>
 #include <util/rsdir.h>
+#include <util/rsdebug.h>
 #include <retroshare/rsversion.h>
 #include <util/folderiterator.h>
 #include <ft/ftserver.h>
@@ -69,6 +70,7 @@ RsPluginManager::RsPluginManager(const RsFileHash &hash)
 	: p3Config(),_current_executable_hash(hash)
 {
 	_allow_all_plugins = false ;
+	_reference_hash_loaded = false ;
 }
 
 bool RsPluginManager::loadConfiguration(RsFileHash &loadHash)
@@ -161,7 +163,10 @@ void RsPluginManager::loadPlugins(const std::vector<std::string>& plugin_directo
 
 	// 0 - get the list of files to read
 
-	bool first_time = (_accepted_hashes.empty()) && _rejected_hashes.empty() ;
+	// Only skip the confirmation dialog on the very first run. Empty hash lists also happen after every
+	// executable update (the accepted list is discarded, see loadList()), and silently disabling the
+	// plugins there is what forced users to re-enable them after each upgrade.
+	bool first_time = !_reference_hash_loaded ;
 
 	for(uint32_t i=0;i<plugin_directories.size();++i)
 	{
@@ -202,14 +207,20 @@ void RsPluginManager::loadPlugins(const std::vector<std::string>& plugin_directo
 	saveConfiguration();
 }
 
+#include <chrono>
+#include "util/rsdebug.h"
+
 void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 {
 	std::cerr << "  Stopping plugins." << std::endl;
 
 	for (uint32_t i = 0; i < _plugins.size(); ++i)
 	{
+		std::string name = _plugins[i].file_name;
 		if (_plugins[i].plugin != NULL)
 		{
+			auto t0 = std::chrono::steady_clock::now();
+			name = _plugins[i].plugin->getPluginName();
 			p3Service *service = _plugins[i].plugin->p3_service();
 			if (service)
 			{
@@ -219,11 +230,16 @@ void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 			_plugins[i].plugin->stop();
 			delete _plugins[i].plugin;
 			_plugins[i].plugin = NULL;
+			RsInfo() << "shutdown: plugin " << name << " stopped in "
+			         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() << " ms";
 		}
 		if (_plugins[i].handle)
 		{
+			auto t0 = std::chrono::steady_clock::now();
 			dlclose(_plugins[i].handle);
 			_plugins[i].handle = NULL;
+			RsInfo() << "shutdown: plugin " << name << " unloaded in "
+			         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() << " ms";
 		}
 	}
 }
@@ -415,6 +431,9 @@ bool RsPluginManager::loadPlugin(const std::string& plugin_name,bool first_time)
 	pinfo.info_string = "" ;
 
 	_accepted_hashes.insert(pinfo.file_hash) ;	// do it now, to avoid putting in list a plugin that might have crashed during the load.
+	RsInfo() << "PLUGINSDIR: Successfully loaded plugin in memory: "
+	         << (p ? p->getPluginName() : "Unknown")
+	         << " from path: " << plugin_name;
 	return true;
 }
 
@@ -520,6 +539,7 @@ bool RsPluginManager::loadList(std::list<RsItem*>& list)
 				else if((*kit).key == "REFERENCE_EXECUTABLE_HASH")
 				{
 					reference_executable_hash = RsFileHash(kit->value) ;
+					_reference_hash_loaded = true ;
 					std::cerr << "   Reference executable hash: " << kit->value << std::endl;
 				}
 				else if((*kit).key == "ACCEPTED")

@@ -29,6 +29,13 @@ import android.content.Context;
 import android.content.Intent;
 import android.util.Log;
 import android.app.ActivityManager;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.security.SecureRandom;
 
 
 public class RetroShareServiceAndroid extends Service
@@ -67,6 +74,81 @@ public class RetroShareServiceAndroid extends Service
         return false;
     }
 
+    /**
+     * @return the passwd the web interface is reachable with, empty when the
+     * web interface is not running. Meant for the embedding application to show
+     * it to the user, as it is generated per installation.
+     */
+    public static String getWebUiPasswd() { return sWebUiPasswd; }
+
+    /**
+     * The passwd has to survive service restarts, or the one the user was given
+     * stops working the next time the service comes up — which happens on its
+     * own, the service being START_STICKY and restarted after task removal. So
+     * it is generated once and kept in the private data directory.
+     */
+    private String loadOrCreateWebUiPasswd()
+    {
+        File passwdFile = new File(getFilesDir(), WEBUI_PASSWD_FILE_NAME);
+
+        if(passwdFile.isFile())
+        {
+            InputStream in = null;
+            try
+            {
+                in = new FileInputStream(passwdFile);
+                byte[] buf = new byte[64];
+                int len = in.read(buf);
+                if(len > 0)
+                {
+                    String stored = new String(buf, 0, len, "UTF-8").trim();
+                    if(!stored.isEmpty()) return stored;
+                }
+            }
+            catch(IOException e)
+            {
+                Log.e(TAG, "Failure reading " + passwdFile + " " + e.getMessage());
+            }
+            finally
+            {
+                try { if(in != null) in.close(); }
+                catch(IOException e) { /* nothing useful to do about it */ }
+            }
+        }
+
+        String generated = generateWebUiPasswd();
+
+        OutputStream out = null;
+        try
+        {
+            out = new FileOutputStream(passwdFile);
+            out.write(generated.getBytes("UTF-8"));
+        }
+        catch(IOException e)
+        {
+            Log.e(
+                TAG,
+                "Failure storing the web interface passwd in " + passwdFile +
+                ", it will change at the next start: " + e.getMessage() );
+        }
+        finally
+        {
+            try { if(out != null) out.close(); }
+            catch(IOException e) { /* nothing useful to do about it */ }
+        }
+
+        return generated;
+    }
+
+    private static String generateWebUiPasswd()
+    {
+        byte[] raw = new byte[9];
+        new SecureRandom().nextBytes(raw);
+        StringBuilder sb = new StringBuilder(raw.length * 2);
+        for(byte b : raw) sb.append(String.format("%02x", b));
+        return sb.toString();
+    }
+
     public static Context getServiceContext()
     {
         if(sServiceContext == null)
@@ -97,7 +179,35 @@ public class RetroShareServiceAndroid extends Service
             jsonApiBindAddress =
                 args.getString(JSON_API_BIND_ADDRESS_KEY);
 
-        ErrorConditionWrap ec = nativeStart(jsonApiPort, jsonApiBindAddress);
+        /* The web interface is served by the JSON API server out of a plain
+         * directory, so the assets have to be on the filesystem first. When they
+         * are not shipped — a build without the retroshare-webui sibling
+         * repository — webUiDirectory stays empty and the core starts the JSON
+         * API alone, exactly as before. */
+        String webUiDirectory = "";
+        String webUiPasswd = "";
+        File webUiDir = new File(getFilesDir(), WEBUI_DIR_NAME);
+        if(AssetHelper.copyAssetDir(
+               this, WEBUI_DIR_NAME, webUiDir.getAbsolutePath() ))
+        {
+            webUiDirectory = webUiDir.getAbsolutePath();
+
+            if(args.containsKey(WEBUI_PASSWD_KEY))
+                webUiPasswd = args.getString(WEBUI_PASSWD_KEY);
+            else webUiPasswd = loadOrCreateWebUiPasswd();
+
+            sWebUiPasswd = webUiPasswd;
+            Log.i(TAG, "Web interface passwd: " + webUiPasswd);
+            Log.i(
+                TAG,
+                "Web interface enabled, files at " + webUiDirectory +
+                ", reachable on http://" + jsonApiBindAddress + ":" +
+                jsonApiPort );
+        }
+        else Log.i(TAG, "No web interface assets, starting the JSON API alone");
+
+        ErrorConditionWrap ec = nativeStart(
+            jsonApiPort, jsonApiBindAddress, webUiDirectory, webUiPasswd );
         if(ec.toBool()) Log.e(TAG, "onStartCommand(...) " + ec.toString());
 
         return super.onStartCommand(intent, flags, startId);
@@ -130,12 +240,26 @@ public class RetroShareServiceAndroid extends Service
         RetroShareServiceAndroid.class.getCanonicalName() +
         "/JSON_API_BIND_ADDRESS_KEY" ;
 
+    private static final String WEBUI_PASSWD_KEY =
+        RetroShareServiceAndroid.class.getCanonicalName() +
+        "/WEBUI_PASSWD_KEY" ;
+
+    /** Where the web interface assets get extracted, under the private data
+     *  directory of the application, which is the only place a service can
+     *  count on being able to write to. */
+    private static final String WEBUI_DIR_NAME = "webui";
+
+    private static final String WEBUI_PASSWD_FILE_NAME = "webui_passwd";
+
     private static final String TAG = "RetroShareServiceAndroid.java";
 
     private static Context sServiceContext;
 
+    private static String sWebUiPasswd = "";
+
     protected static native ErrorConditionWrap nativeStart(
-        int jsonApiPort, String jsonApiBindAddress );
+        int jsonApiPort, String jsonApiBindAddress,
+        String webUiDirectory, String webUiPasswd );
 
     protected static native ErrorConditionWrap nativeStop();
 }

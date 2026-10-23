@@ -91,22 +91,25 @@ void LocalDirectoryUpdater::threadTick()
             else
                 std::cerr << "(WW) sweepSharedDirectories() failed. Will do it again in a short time." << std::endl;
         }
-
-        if(now > DELAY_BETWEEN_LOCAL_DIRECTORIES_TS_UPDATE + mLastTSUpdateTime)
-        {
-            mSharedDirectories->updateTimeStamps() ;
-            mLastTSUpdateTime = now ;
-        }
     }
 
-	for(uint32_t i=0;i<10;++i)
+    /* Not gated by mIsEnabled: with the periodic check disabled, a forced
+     * sweep could otherwise miss its timestamp update (same-second race with
+     * the 20 s spacing) and the hashes it requests land later anyway. */
+    if(now > DELAY_BETWEEN_LOCAL_DIRECTORIES_TS_UPDATE + mLastTSUpdateTime)
+    {
+        mSharedDirectories->updateTimeStamps() ;
+        mLastTSUpdateTime = now ;
+    }
+
+	/* 1 s slices so that a stop request (shutdown) or a forced update is
+	 * honoured within a second, not after the full 10 s. */
+	for(uint32_t i=0;i<10 && !shouldStop();++i)
 	{
 		rstime::rs_usleep(1*1000*1000);
 
-		{
 		if(mForceUpdate)
 			break ;
-		}
 	}
 }
 

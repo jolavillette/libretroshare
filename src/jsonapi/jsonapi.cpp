@@ -51,6 +51,9 @@
 static RsMutex restartMtx("JSON API Restart");	// In global scope, to make sure it's allocated in the main thread
 const std::string RsJsonApi::DEFAULT_BINDING_ADDRESS = "127.0.0.1";
 
+/* Threads restbed runs its service on, see JsonApiServer::run(). */
+static constexpr unsigned int RS_JSONAPI_SERVICE_THREADS = 4;
+
 /*static*/ const std::multimap<std::string, std::string>
 JsonApiServer::corsHeaders =
 {
@@ -929,6 +932,19 @@ void JsonApiServer::run()
 	settings->set_port(mListeningPort);
 	settings->set_bind_address(mBindingAddress);
 	settings->set_default_header("Connection", "close");
+
+	/* restbed defaults its worker limit to 0, which makes Service::start() run
+	 * the io_context on the calling thread alone: every request is then answered
+	 * one at a time. Together with the "Connection: close" above -- each answer
+	 * costs a fresh TCP handshake -- this is invisible over loopback and very
+	 * visible from a phone, where a web UI page needs dozens of round trips and
+	 * the browser only keeps six sockets open.
+	 *
+	 * A handful of threads is enough to overlap those round trips; the work
+	 * itself is done inside RetroShare's services, which have their own
+	 * locking. Kept deliberately small: these threads answer API calls, they do
+	 * not do the API's work. */
+	settings->set_worker_limit(RS_JSONAPI_SERVICE_THREADS);
 
 	auto tService = std::make_shared<restbed::Service>();
 
