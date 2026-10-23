@@ -211,9 +211,11 @@ void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 
 	for (uint32_t i = 0; i < _plugins.size(); ++i)
 	{
+		std::string name = _plugins[i].file_name;
 		if (_plugins[i].plugin != NULL)
 		{
 			auto t0 = std::chrono::steady_clock::now();
+			name = _plugins[i].plugin->getPluginName();
 			p3Service *service = _plugins[i].plugin->p3_service();
 			if (service)
 			{
@@ -223,13 +225,16 @@ void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 			_plugins[i].plugin->stop();
 			delete _plugins[i].plugin;
 			_plugins[i].plugin = NULL;
-			RsInfo() << "shutdown: plugin " << _plugins[i].name << " stopped in "
+			RsInfo() << "shutdown: plugin " << name << " stopped in "
 			         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() << " ms";
 		}
 		if (_plugins[i].handle)
 		{
+			auto t0 = std::chrono::steady_clock::now();
 			dlclose(_plugins[i].handle);
 			_plugins[i].handle = NULL;
+			RsInfo() << "shutdown: plugin " << name << " unloaded in "
+			         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() << " ms";
 		}
 	}
 }
