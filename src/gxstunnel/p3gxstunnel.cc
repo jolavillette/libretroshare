@@ -1414,7 +1414,6 @@ bool p3GxsTunnelService::locked_sendEncryptedTunnelData(RsGxsTunnelItem *item)
 
 	if(!it->second.accepts_fast_turtle_items)
 	{
-        std::cerr << "Sending old format (slow) item for packet IV=" << std::hex << IV << std::dec << " in tunnel VPID=" << it->second.virtual_peer_id << std::endl;
 		gitem = new RsTurtleGenericDataItem ;
 
 		gitem->data_bytes = data_bytes;
@@ -1423,7 +1422,6 @@ bool p3GxsTunnelService::locked_sendEncryptedTunnelData(RsGxsTunnelItem *item)
 
 	if(it->second.accepts_fast_turtle_items || !it->second.already_probed_for_fast_items)
 	{
-        std::cerr << "Sending new format (fast) item for packet IV=" << std::hex << IV << std::dec << " in tunnel VPID=" << it->second.virtual_peer_id << std::endl;
 		gitem2 = new RsTurtleGenericFastDataItem ;
 
         if(gitem != NULL)	// duplicate the data because it was already sent in gitem.
