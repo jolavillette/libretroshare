@@ -64,6 +64,7 @@ static const uint32_t INDEX_AUTHEN_PUBLISH      = 0x00000020; // publish key
 static const uint32_t INDEX_AUTHEN_ADMIN        = 0x00000040; // admin key
 
 static const uint32_t MSG_CLEANUP_PERIOD     = 60*59; // 59 minutes
+static const uint32_t REJECTED_GRPS_REPORT_PERIOD = 60*10; // 10 minutes
 static const uint32_t INTEGRITY_CHECK_PERIOD = 60*31; // 31 minutes
 
 #define GXS_MASK "GXS_MASK_HACK"
@@ -183,6 +184,8 @@ RsGenExchange::RsGenExchange(
   mAuthenPolicy(authenPolicy),
   mCleaning(false),
   mLastClean((int)time(NULL) - (int)(RSRandom::random_u32() % MSG_CLEANUP_PERIOD)),	// this helps unsynchronising the checks for the different services
+  mRejectedGrpsReported(0),
+  mLastRejectedGrpsReport(time(NULL)),
   mChecking(false),
   mCheckStarted(false),
   mLastCheck((int)time(NULL) - (int)(RSRandom::random_u32() % INTEGRITY_CHECK_PERIOD) + 120),	// this helps unsynchronising the checks for the different services, with 2 min security to avoid checking right away before statistics come up.
@@ -263,6 +266,26 @@ void RsGenExchange::tick()
 	processRecvdData();
 
 	processRoutingClues() ;
+
+	if(mLastRejectedGrpsReport + REJECTED_GRPS_REPORT_PERIOD < time(NULL))
+	{
+		RS_STACK_MUTEX(mGenMtx);
+		mLastRejectedGrpsReport = time(NULL);
+
+		size_t nb_rejected = mRejectedGrpsNoAdminSign.size() + mRejectedGrpsBadSign.size();
+
+		if(nb_rejected > mRejectedGrpsReported)
+		{
+			mRejectedGrpsReported = nb_rejected;
+
+			RsInfo() << "GXS service " << std::hex << mServType << std::dec << ": " << nb_rejected
+			         << " group(s) rejected since start because their signature does not check ("
+			         << mRejectedGrpsBadSign.size() << " with an invalid signature, "
+			         << mRejectedGrpsNoAdminSign.size() << " with no admin signature)."
+			         << " Most likely they were signed by a RetroShare version older than February 2026:"
+			         << " they come back once their owner runs a current version and saves them again." ;
+		}
+	}
 
 	{
 		std::vector<RsGxsNotify*> mNotifications_copy;
@@ -3470,6 +3493,11 @@ void RsGenExchange::processRecvdGroups()
 #ifdef GEN_EXCH_DEBUG
 			std::cerr << "  failed to validate incoming meta, grpId: " << grp->grpId << ": wrong signature" << std::endl;
 #endif
+            if(grp->metaData->signSet.keySignSet.find(INDEX_AUTHEN_ADMIN) == grp->metaData->signSet.keySignSet.end())
+                mRejectedGrpsNoAdminSign.insert(grp->grpId);
+            else
+                mRejectedGrpsBadSign.insert(grp->grpId);
+
             RsGxsGroupChange* c = new RsGxsGroupChange(RsGxsNotify::TYPE_GROUP_AUTH_REJECTED, grp->grpId, false);
 
             // No need to bring the internal data for now, since this is only used to keep a list of faulty groups so as not to re-ask them again.
@@ -3597,6 +3625,8 @@ void RsGenExchange::performUpdateValidation()
 		else
         {
             RsWarn() << "Received a faulty update for group " << gu.newGrp->metaData->mGroupId << ": notifying the client." ;
+
+            mRejectedGrpsBadSign.insert(gu.newGrp->metaData->mGroupId);
 
             RsGxsGroupChange* c = new RsGxsGroupChange(RsGxsNotify::TYPE_GROUP_AUTH_REJECTED, gu.newGrp->metaData->mGroupId, false);
 

@@ -988,6 +988,12 @@ private:
     bool mCleaning;
     rstime_t mLastClean;
 
+    // groups dropped because their signature does not check, for the periodic report in tick()
+    std::set<RsGxsGroupId> mRejectedGrpsNoAdminSign;
+    std::set<RsGxsGroupId> mRejectedGrpsBadSign;
+    size_t mRejectedGrpsReported;
+    rstime_t mLastRejectedGrpsReport;
+
     bool mChecking, mCheckStarted;
     rstime_t mLastCheck;
     RsGxsIntegrityCheck* mIntegrityCheck;
