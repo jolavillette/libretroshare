@@ -736,9 +736,6 @@ endif(RS_JSON_API)
 ################################################################################
 
 if(RS_FORUM_DEEP_INDEX)
-	find_package(Xapian REQUIRED)
-	target_link_libraries(${PROJECT_NAME} PRIVATE ${XAPIAN_LIBRARIES})
-
 	target_compile_definitions(${PROJECT_NAME} PUBLIC RS_DEEP_FORUMS_INDEX)
 endif(RS_FORUM_DEEP_INDEX)
 
@@ -1062,7 +1059,15 @@ if(RS_CPPTRACE_STACKTRACE)
       GIT_PROGRESS TRUE
       TIMEOUT 10
     )
+    # Always link cpptrace (and the libdwarf it fetches) statically into
+    # libretroshare. Both default to BUILD_SHARED_LIBS, which is ON when
+    # libretroshare itself is shared (Windows): they then come out as DLLs
+    # that nothing deploys next to the executable, and it refuses to start.
+    set(SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+    set(BUILD_SHARED_LIBS OFF)
+    set(CPPTRACE_BUILD_SHARED OFF CACHE BOOL "cpptrace as a static library" FORCE)
     FetchContent_MakeAvailable(cpptrace)
+    set(BUILD_SHARED_LIBS ${SAVED_BUILD_SHARED_LIBS})
     target_link_libraries(${PROJECT_NAME} PRIVATE cpptrace::cpptrace)
     target_compile_definitions(
         ${PROJECT_NAME} PRIVATE RS_JEREMY_RIFKIN_CPPTRACE )

@@ -21,9 +21,11 @@
  ******************************************************************************/
 #pragma once
 
+#include <atomic>
 #include <string>
 #include <stdint.h>
 #include <list>
+#include <functional>
 
 #include "retroshare/rsids.h"
 #include "retroshare/rsfiles.h"
@@ -38,7 +40,7 @@ class RsTlvBinaryData ;
 class DirectoryStorage
 {
 	public:
-        DirectoryStorage(const RsPeerId& pid, const std::string& fname) ;
+        DirectoryStorage(const RsPeerId& pid, const std::string& fname, bool load_now = true) ;
         virtual ~DirectoryStorage();
 
         typedef uint32_t EntryIndex ;
@@ -151,12 +153,24 @@ class DirectoryStorage
 		 * \brief checkSave
 		 * 			Checks the time of last saving, last modification time, and saves if needed.
 		 */
-		void checkSave() ;
+		void checkSave(std::function<uint64_t(const RsFileHash&)> get_uploads = nullptr) ;
 
 		const std::string& filename() const { return mFileName ; }
 
     protected:
         bool load(const std::string& local_file_name) ;
+
+    public:
+        /*!
+         * For a storage built with load_now=false: reads the file into a fresh hierarchy without holding
+         * any lock, then swaps it in under the storage mutex. Safe to call from a background thread while
+         * the service keeps using the (empty) storage. Marks the storage loaded whether the file exists or not.
+         */
+        bool loadInBackground() ;
+        bool isLoaded() const { return mLoaded ; }
+        bool isLoading() const { return mLoading ; }
+        void setLoading(bool b) { mLoading = b ; }
+    protected:
 		void save(const std::string& local_file_name) ;
 
     private:
@@ -175,13 +189,15 @@ class DirectoryStorage
 
 		rstime_t mLastSavedTime ;
 		bool mChanged ;
+        std::atomic<bool> mLoaded ;		// false until the file has been read (load_now=false storages)
+        std::atomic<bool> mLoading ;	// set by the owner while a background load is in progress
 		std::string mFileName;
 };
 
 class RemoteDirectoryStorage: public DirectoryStorage
 {
 public:
-    RemoteDirectoryStorage(const RsPeerId& pid,const std::string& fname) ;
+    RemoteDirectoryStorage(const RsPeerId& pid,const std::string& fname, bool load_now = true) ;
     virtual ~RemoteDirectoryStorage() {}
 
     /*!

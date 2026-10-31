@@ -30,6 +30,10 @@
 #include "rs_android/retroshareserviceandroid.hpp"
 #include "rs_android/rsjni.hpp"
 
+#ifdef RS_WEBUI
+#	include "retroshare/rswebui.h"
+#endif
+
 
 /*static*/ std::unique_ptr<AndroidCoutCerrCatcher>
 RetroShareServiceAndroid::sAndroidCoutCerrCatcher = nullptr;
@@ -39,7 +43,8 @@ using ErrorConditionWrap = RsJni::ErrorConditionWrap;
 /*static*/ jni::Local<jni::Object<ErrorConditionWrap>>
 RetroShareServiceAndroid::start(
         JNIEnv& env, jni::Class<RetroShareServiceAndroid>&,
-        jni::jint jsonApiPort, const jni::String& jsonApiBindAddress )
+        jni::jint jsonApiPort, const jni::String& jsonApiBindAddress,
+        const jni::String& webUiDirectory, const jni::String& webUiPasswd )
 {
 	if(jsonApiPort < 0 || jsonApiPort > std::numeric_limits<uint16_t>::max())
 	{
@@ -66,6 +71,28 @@ RetroShareServiceAndroid::start(
 
 	// Dirty workaround, plugins not supported on Android ATM
 	conf.main_executable_path = " ";
+
+#ifdef RS_WEBUI
+	/* The web interface is served out of a directory, and on Android there is no
+	 * RS_DATA_DIR to serve it from: the files are shipped as assets and the Java
+	 * side extracts them before calling us. rsWebUi is a global constructed when
+	 * the library is loaded, so it can be pointed at that directory here, well
+	 * before startupWebServices() reads htmlFilesDirectory(). */
+	const std::string webUiDir = jni::Make<std::string>(env, webUiDirectory);
+	const std::string webUiPwd = jni::Make<std::string>(env, webUiPasswd);
+	if(!webUiDir.empty() && !webUiPwd.empty())
+	{
+		const auto ec = rsWebUi->setHtmlFilesDirectory(webUiDir);
+		if(ec)
+			RS_ERR("Cannot serve the web interface from ", webUiDir, ": ", ec);
+		else
+		{
+			conf.enableWebUI = true;
+			conf.webUIPasswd = webUiPwd;
+			RS_INFO("Web interface enabled, files from ", webUiDir);
+		}
+	}
+#endif // def RS_WEBUI
 
 	int initResult = RsInit::InitRetroShare(conf);
 	if(initResult != RS_INIT_OK)

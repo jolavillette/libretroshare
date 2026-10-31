@@ -145,6 +145,7 @@ class RsPluginManager: public RsPluginHandler, public p3Config
         std::set<RsFileHash> _rejected_hashes ; // rejected hash values for reference executable hash.
         RsFileHash _current_executable_hash ;		// At all times, the list of accepted plugins should be related to the current hash of the executable.
 		bool _allow_all_plugins ;
+		bool _reference_hash_loaded ; // a plugins.cfg with a reference executable hash was read: not the first run.
 
 		static std::string _plugin_entry_symbol ;
 		static std::string _plugin_revision_symbol ;

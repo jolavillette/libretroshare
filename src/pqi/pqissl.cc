@@ -70,6 +70,14 @@ static const rstime_t PQISSL_MAX_READ_ZERO_TIME = 15; // 15 seconds of no data =
 
 static const int PQISSL_SSL_CONNECT_TIMEOUT = 30;
 
+/* A close counts as "right after authentication" within this many seconds of
+ * the handshake (a close_notify takes PQISSL_MAX_READ_ZERO_TIME to be acted
+ * upon; the heartbeat watchdog cuts a silent link only after 60 s, from
+ * pqiperson, so it never comes through here). */
+static const rstime_t PQISSL_EARLY_CLOSE_WINDOW = 30;
+/* Consecutive early closes before the peer is reported as refusing us. */
+static const uint32_t PQISSL_EARLY_CLOSE_THRESHOLD = 3;
+
 /********** PQI SSL STUFF ******************************************
  *
  * A little note on the notifyEvent(FAILED)....
@@ -99,7 +107,8 @@ pqissl::pqissl(pqissllistener *l, PQInterface *parent, p3LinkMgr *lm) :
     mLinkMgr(lm), pqil(l), mSslMtx("pqissl"), active(false), certvalid(false),
     waiting(WAITING_NOT), sslmode(PQISSL_ACTIVE), ssl_connection(NULL),
     sockfd(-1), readpkt(NULL), pktlen(0), total_len(0), attempt_ts(0),
-    n_read_zero(0), mReadZeroTS(0), ssl_connect_timeout(0), mConnectDelay(0),
+    n_read_zero(0), mReadZeroTS(0), mAcceptTS(0), mReceivedSinceAccept(false),
+    mEarlyCloseCount(0), ssl_connect_timeout(0), mConnectDelay(0),
     mConnectTS(0), mConnectTimeout(0), mTimeoutTS(0)
 { sockaddr_storage_clear(remote_addr); }
 
@@ -223,6 +232,7 @@ int pqissl::reset_locked()
 	ssl_connection = NULL;
 	n_read_zero = 0;
 	mReadZeroTS = 0;
+	mAcceptTS = 0;
 	total_len = 0 ;
 	mTimeoutTS = 0;
 
@@ -1261,12 +1271,16 @@ int pqissl::accept_locked( SSL *ssl, int fd,
 	constexpr int success = 1;
 
 #ifdef RS_PQISSL_BANLIST_DOUBLE_CHECK
-	/* At this point, as we are actively attempting the connection, we decide
-	 * the address to which to connect to, banned addresses should never get
-	 * here as the filtering for banned addresses happens much before, this
-	 * check is therefore redundant, and if it trigger something really fishy
-	 * must be happening (a bug somewhere else in the code). */
+	/* User-set bans are rejected before the SSL handshake, in
+	 * pqissllistenbase::acceptconnection(). Automatically gathered bans
+	 * (DHT-flagged masquerading IPs, auto-banned ranges) are instead decided
+	 * here, once the peer has been authenticated: those lists routinely
+	 * contain the shared exit addresses of CGNAT users (mobile/4G), and an
+	 * IP-level reject would lock out legitimate friends whose certificate we
+	 * have just verified. So at this point only refuse explicit user bans and
+	 * unsatisfied whitelist requirements. */
 	uint32_t check_result;
+	uint32_t ban_reason = RSBANLIST_REASON_UNKNOWN;
 	uint32_t checking_flags = RSBANLIST_CHECKING_FLAGS_BLACKLIST;
 
 	if (rsPeers->servicePermissionFlags(PeerId()) & RS_NODE_PERM_REQUIRE_WL)
@@ -1283,29 +1297,39 @@ int pqissl::accept_locked( SSL *ssl, int fd,
         }
     }
 
-	if(rsBanList && !rsBanList->isAddressAccepted( foreign_addr, checking_flags, check_result ))
+	if(rsBanList && !rsBanList->isAddressAccepted( foreign_addr, checking_flags, check_result, ban_reason ))
 	{
-		RsInfo() << __PRETTY_FUNCTION__
-		        << " Refusing incoming SSL connection from blacklisted "
-		        << "foreign address " << foreign_addr
-		        << ". Reason: " << check_result << ". This should never happen "
-		        << "at this point! Please report full log to developers!"
-		        << std::endl;
-		print_stacktrace();
-
-		if(rsEvents)
+		if( check_result == RSBANLIST_CHECK_RESULT_NOT_WHITELISTED
+		        || ban_reason == RSBANLIST_REASON_USER )
 		{
-			X509 *x509 = SSL_get_peer_certificate(ssl);
-			auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
-			ev->mSslId = RsX509Cert::getCertSslId(*x509);
-			X509_free(x509);
-			ev->mLocator = RsUrl(foreign_addr);
-			ev->mErrorCode = RsAuthSslError::IP_IS_BLACKLISTED;
-			rsEvents->postEvent(ev);
+			RsInfo() << __PRETTY_FUNCTION__
+			        << " Refusing incoming SSL connection from "
+			        << ( (check_result == RSBANLIST_CHECK_RESULT_NOT_WHITELISTED)
+			             ? "non-whitelisted" : "user-blacklisted" )
+			        << " foreign address " << foreign_addr << std::endl;
+
+			if(rsEvents)
+			{
+				X509 *x509 = SSL_get_peer_certificate(ssl);
+				auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
+				ev->mSslId = RsX509Cert::getCertSslId(*x509);
+				X509_free(x509); // SSL_get_peer_certificate() hands out a reference
+				ev->mLocator = RsUrl(foreign_addr);
+				ev->mErrorCode = RsAuthSslError::IP_IS_BLACKLISTED;
+				rsEvents->postEvent(ev);
+			}
+
+			reset_locked();
+			return failure;
 		}
 
-		reset_locked();
-		return failure;
+		RsInfo() << __PRETTY_FUNCTION__
+		        << " Accepting authenticated friend " << PeerId()
+		        << " despite automatically blacklisted foreign address "
+		        << foreign_addr << " (ban reason: " << ban_reason
+		        << "). Shared CGNAT exit addresses commonly get flagged by "
+		        << "the DHT while the friend itself is legitimate."
+		        << std::endl;
 	}
 #endif //def RS_BANLIST_REDUNDANT_CHECK
 
@@ -1420,6 +1444,8 @@ int pqissl::accept_locked( SSL *ssl, int fd,
 
 	active = true;
 	waiting = WAITING_NOT;
+	mAcceptTS = time(NULL);
+	mReceivedSinceAccept = false;
 
 #ifdef PQISSL_DEBUG
 	std::cerr << __PRETTY_FUNCTION__ << "connection complete - notifying parent"
@@ -1492,6 +1518,7 @@ int 	pqissl::senddata(void *data, int len)
 				rslog(RSL_ALERT, pqisslzone, out2);
 			}
 
+			notePeerClosed_locked(0);
 			rslog(RSL_ALERT, pqisslzone, "pqissl::senddata() -> calling reset()");
 			reset_locked();
 			return -1;
@@ -1517,12 +1544,56 @@ int 	pqissl::senddata(void *data, int len)
 			std::cerr << out << std::endl;
 			rslog(RSL_ALERT, pqisslzone, out);
 
+			notePeerClosed_locked(0);
 			rslog(RSL_ALERT, pqisslzone, "pqissl::senddata() -> calling reset()");
 			reset_locked();
 			return -1;
 		}
 	}
 	return tmppktlen;
+}
+
+void pqissl::notePeerClosed_locked(unsigned long sslErr)
+{
+	/* Only a close that follows a completed handshake, before the peer sent
+	 * a single byte, says something: the peer authenticated us and hung up on
+	 * purpose. A later close is an ordinary link loss. */
+	if(mAcceptTS == 0 || mReceivedSinceAccept) return;
+	if(time(NULL) - mAcceptTS > PQISSL_EARLY_CLOSE_WINDOW) return;
+
+	/* In TLS 1.3 our handshake completes before the peer has checked our
+	 * certificate, so a rejection arrives as an alert on the first read
+	 * instead of failing SSL_connect(): same meaning as the handshake-time
+	 * PEER_REFUSED_CONNECTION. Alert reasons are SSL_AD_REASON_OFFSET + the
+	 * alert number. */
+	const int reason = ERR_GET_REASON(sslErr);
+	const bool tlsAlert = sslErr != 0
+	        && reason >= SSL_AD_REASON_OFFSET
+	        && reason < SSL_AD_REASON_OFFSET + 256;
+
+	if(!tlsAlert)
+	{
+		++mEarlyCloseCount;
+		if(mEarlyCloseCount < PQISSL_EARLY_CLOSE_THRESHOLD) return;
+	}
+
+	if(tlsAlert)
+		RsWarn() << "Peer " << PeerId() << " at " << remote_addr
+		         << " rejected us with a TLS alert right after the handshake"
+		         << std::endl;
+	else
+		RsWarn() << "Peer " << PeerId() << " at " << remote_addr
+		         << " closed the connection right after authenticating us, "
+		         << mEarlyCloseCount << " times in a row" << std::endl;
+
+	if(!rsEvents) return;
+
+	auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
+	ev->mSslId = PeerId();
+	ev->mLocator = RsUrl(remote_addr);
+	ev->mErrorCode = tlsAlert ? RsAuthSslError::PEER_REFUSED_CONNECTION
+	                          : RsAuthSslError::PEER_CLOSED_AFTER_AUTH;
+	rsEvents->postEvent(ev);
 }
 
 int pqissl::readdata(void *data, int len)
@@ -1606,6 +1677,7 @@ int pqissl::readdata(void *data, int len)
 					out += " Count passed Limit, shutting down!";
 					rs_sprintf_append(out, " ReadZero Age: %ld", time(NULL) - mReadZeroTS);
 
+					notePeerClosed_locked(0);
 					rslog(RSL_ALERT, pqisslzone, "pqissl::readdata() -> calling reset()");
 					reset_locked();
 				}
@@ -1645,6 +1717,7 @@ int pqissl::readdata(void *data, int len)
 					rslog(RSL_ALERT, pqisslzone, out2);
 				}
 
+				notePeerClosed_locked(0);
 				rslog(RSL_ALERT, pqisslzone, "pqissl::readdata() -> calling reset()");
 				reset_locked();
 				std::cerr << out << std::endl ;
@@ -1679,6 +1752,7 @@ int pqissl::readdata(void *data, int len)
 
 			printSSLError(ssl_connection, tmppktlen, error, err2, out);
             
+				notePeerClosed_locked(err2);
 				rslog(RSL_ALERT, pqisslzone, "pqissl::readdata() -> calling reset()");
 				reset_locked();
 				return -1;
@@ -1688,7 +1762,15 @@ int pqissl::readdata(void *data, int len)
 			//exit(1);
 		}
 		else
+		{
 			total_len+=tmppktlen ;
+
+			if(!mReceivedSinceAccept)
+			{
+				mReceivedSinceAccept = true;
+				mEarlyCloseCount = 0;
+			}
+		}
 	} while(total_len < len) ;
 
 #ifdef PQISSL_DEBUG

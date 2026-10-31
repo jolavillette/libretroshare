@@ -39,6 +39,10 @@ const int RetroDb::OPEN_READONLY = SQLITE_OPEN_READONLY;
 const int RetroDb::OPEN_READWRITE = SQLITE_OPEN_READWRITE;
 const int RetroDb::OPEN_READWRITE_CREATE = SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE;
 
+// toggle between auto_vacuum FULL mode and NONE mode
+// attn: changing the mode will result in a database operation at first start that can take a few minutes
+//#define ENABLE_FULL_AUTO_VACUUM
+
 RetroDb::RetroDb(const std::string& dbPath, int flags, const std::string& key):
     mDb(nullptr), mKey(key),mDbNeedsCleaning(false),mPath(dbPath)
 {
@@ -148,6 +152,9 @@ RetroDb::RetroDb(const std::string& dbPath, int flags, const std::string& key):
 		}
 	}
 #endif // ndef NO_SQLCIPHER
+
+	// Check and migrate to auto_vacuum if necessary before using the DB
+	checkAndMigrateAutoVacuum();
 }
 
 RetroDb::~RetroDb() { closeDb(); }
@@ -157,12 +164,17 @@ void RetroDb::closeDb()
     if(!mDb)
         return;
 
-    if(mDbNeedsCleaning)
+    /* COMMENTED OUT:
+       Cleaning is now handled by auto_vacuum. 
+       Avoiding the blocking VACUUM on close.
+   
+       if(mDbNeedsCleaning)
     {
         RsDbg() << "Cleaning the Db \"" << mPath << "\" using the VACUUM command." ;
         execSQL("VACUUM;");
         mDbNeedsCleaning = false;
     }
+    */
 
 	// no-op if mDb is nullptr (https://www.sqlite.org/c3ref/close.html)
 	int rc = sqlite3_close(mDb);
@@ -592,11 +604,15 @@ bool RetroDb::sqlDelete(const std::string &tableName, const std::string &whereCl
 
     bool res = execSQL(sqlQuery);
 
+    /* COMMENTED OUT:
+       We no longer flag for manual cleanup. 
+       With auto_vacuum=FULL, space is reused automatically.
     if(res)
     {
         RsDbg() << "After deletion from Db \"" << mPath << "\", a cleaning operation will occur when closing." ;
         mDbNeedsCleaning = true;
     }
+    */
 
     return res;
 }
@@ -879,5 +895,77 @@ const void* RetroCursor::getData(int columnIndex, uint32_t &datSize){
     datSize = sqlite3_column_bytes(mStmt, columnIndex);
 
     return val;
+}
+
+void RetroDb::checkAndMigrateAutoVacuum()
+{
+    if (!mDb) return;
+
+    // Define target mode based on compile-time flag
+#ifdef ENABLE_FULL_AUTO_VACUUM
+    const int TARGET_MODE = 1; // 1 = FULL
+    const char* TARGET_STR = "FULL";
+#else
+    const int TARGET_MODE = 0; // 0 = NONE
+    const char* TARGET_STR = "NONE";
+#endif
+
+    sqlite3_stmt* stmt = nullptr;
+    int currentMode = -1;
+    const char* query = "PRAGMA auto_vacuum;";
+
+    // 1. Check the current mode directly via SQLite API
+    int rc = sqlite3_prepare_v2(mDb, query, -1, &stmt, nullptr);
+    if (rc == SQLITE_OK)
+    {
+        if (sqlite3_step(stmt) == SQLITE_ROW)
+        {
+            currentMode = sqlite3_column_int(stmt, 0);
+        }
+    }
+    else
+    {
+        RsErr() << "RetroDb::checkAndMigrateAutoVacuum() Failed to check pragma: "
+                << sqlite3_errmsg(mDb) << std::endl;
+    }
+
+    sqlite3_finalize(stmt);
+
+    // 2. If current mode differs from the compile-time target, migrate.
+    // This handles transitions from NONE to FULL, but also FULL to NONE.
+    if (currentMode != -1 && currentMode != TARGET_MODE)
+    {
+        RsInfo() << "RetroDb: Database auto_vacuum is " << currentMode
+                 << ". Migrating to " << TARGET_STR << " (" << TARGET_MODE << ")..." << std::endl;
+        RsInfo() << "RetroDb: This operation triggers a full VACUUM and may take time." << std::endl;
+
+        // Prepare the PRAGMA command string
+        std::string pragmaSql = "PRAGMA auto_vacuum = " + std::to_string(TARGET_MODE) + ";";
+
+        // Set the parameter (takes effect after the next VACUUM)
+        if (execSQL(pragmaSql))
+        {
+            // Execute VACUUM to physically apply the structure change
+            if (execSQL("VACUUM;"))
+            {
+                RsInfo() << "RetroDb: Migration to auto_vacuum=" << TARGET_STR << " completed successfully." << std::endl;
+            }
+            else
+            {
+                RsErr() << "RetroDb: VACUUM failed during migration!" << std::endl;
+            }
+        }
+        else
+        {
+            RsErr() << "RetroDb: Failed to set PRAGMA auto_vacuum!" << std::endl;
+        }
+    }
+    else
+    {
+        // Mode is already correct.
+#ifdef RETRODB_DEBUG
+        RsInfo() << "RetroDb: Database is already in auto_vacuum=" << TARGET_STR << "." << std::endl;
+#endif
+    }
 }
 
