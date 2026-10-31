@@ -59,7 +59,7 @@ class GxsGrpPendingSign
 public:
 
 	GxsGrpPendingSign(RsGxsGrpItem* item, uint32_t token): mLastAttemptTS(0), mStartTS(time(NULL)), mToken(token),
-		mItem(item), mHaveKeys(false), mIsUpdate(false)
+		mItem(item), mHaveKeys(false), mIsUpdate(false), mIsResign(false)
 	{}
 
 	rstime_t mLastAttemptTS, mStartTS;
@@ -67,6 +67,7 @@ public:
 	RsGxsGrpItem* mItem;
 	bool mHaveKeys; // mKeys->first == true if key present
 	bool mIsUpdate;
+	bool mIsResign; // re-sign the stored group as is, without calling service_CreateGroup()
 	RsTlvSecurityKeySet mKeys;
 };
 
@@ -807,6 +808,13 @@ private:
 
     void processGroupUpdatePublish();
 
+    /*!
+     * Re-signs and republishes the groups we own whose stored signature peers
+     * can no longer check (signed before the service string was removed from
+     * the signed data, or with no admin signature at all).
+     */
+    void resignOwnLegacyGroups();
+
     void processGroupDelete();
     void processMessageDelete();
     void processRoutingClues();
@@ -992,6 +1000,9 @@ private:
     rstime_t mLastCheck;
     RsGxsIntegrityCheck* mIntegrityCheck;
     RsGxsGroupId mNextGroupToCheck ;
+
+    rstime_t mOwnGroupsResignTS;
+    bool mOwnGroupsResignDone;
 
 protected:
 	enum CreateStatus { CREATE_FAIL, CREATE_SUCCESS, CREATE_FAIL_TRY_LATER };

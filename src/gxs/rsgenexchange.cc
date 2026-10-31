@@ -65,6 +65,7 @@ static const uint32_t INDEX_AUTHEN_ADMIN        = 0x00000040; // admin key
 
 static const uint32_t MSG_CLEANUP_PERIOD     = 60*59; // 59 minutes
 static const uint32_t INTEGRITY_CHECK_PERIOD = 60*31; // 31 minutes
+static const uint32_t OWN_GROUPS_RESIGN_DELAY = 60*5;  // once, 5 minutes after start: identities and keys are loaded by then
 
 #define GXS_MASK "GXS_MASK_HACK"
 
@@ -187,6 +188,8 @@ RsGenExchange::RsGenExchange(
   mCheckStarted(false),
   mLastCheck((int)time(NULL) - (int)(RSRandom::random_u32() % INTEGRITY_CHECK_PERIOD) + 120),	// this helps unsynchronising the checks for the different services, with 2 min security to avoid checking right away before statistics come up.
   mIntegrityCheck(NULL),
+  mOwnGroupsResignTS(time(NULL) + OWN_GROUPS_RESIGN_DELAY),
+  mOwnGroupsResignDone(false),
   SIGN_MAX_WAITING_TIME(60),
   SIGN_FAIL(0),
   SIGN_SUCCESS(1),
@@ -289,6 +292,12 @@ void RsGenExchange::tick()
 	service_tick();
 
 	rstime_t now = time(NULL);
+
+	if(!mOwnGroupsResignDone && mOwnGroupsResignTS < now)
+	{
+		mOwnGroupsResignDone = true;
+		resignOwnLegacyGroups();
+	}
     
     // Cleanup unused data. This is only needed when auto-synchronization is needed, which is not the case
     // of identities. This is why idendities do their own cleaning.
@@ -2652,6 +2661,96 @@ void RsGenExchange::processGroupUpdatePublish()
 }
 
 
+void RsGenExchange::resignOwnLegacyGroups()
+{
+	// Groups signed before c5135a210 included the service string in the signed data, and some old groups
+	// carry no admin signature at all. Current peers reject both. When we own the admin key, re-signing the
+	// group fixes it for everybody: this is what "edit + save" does, done once at startup for all our groups.
+
+	RsGxsGrpMetaTemporaryMap allMeta;
+	mDataStore->retrieveGxsGrpMetaData(allMeta);
+
+	RsNxsGrpDataTemporaryMap ownGrps;
+
+	for(auto& it: allMeta)
+		if(it.second && (it.second->mSubscribeFlags & GXS_SERV::GROUP_SUBSCRIBE_ADMIN)
+		             && (it.second->mSubscribeFlags & GXS_SERV::GROUP_SUBSCRIBE_SUBSCRIBED))
+			ownGrps.insert(std::make_pair(it.first, (RsNxsGrp*)NULL));
+
+	if(ownGrps.empty() || !mDataStore->retrieveNxsGrps(ownGrps, true))
+		return;
+
+	uint32_t nb_resigned = 0;
+
+	for(auto& it: ownGrps)
+	{
+		RsNxsGrp *grp = it.second;
+
+		if(!grp || !grp->metaData || grp->meta.bin_len == 0)
+			continue;
+
+		// our private admin key, whose id is the group id
+
+		auto kit = grp->metaData->keys.private_keys.find(RsGxsId(grp->grpId));
+
+		if(kit == grp->metaData->keys.private_keys.end() || kit->second.keyFlags != (RSTLV_KEY_DISTRIB_ADMIN | RSTLV_KEY_TYPE_FULL))
+			continue;
+
+		// Check the stored meta exactly as a peer receiving it does (see processRecvdGroups()).
+
+		RsGxsGrpMetaData sentMeta;
+
+		if(!sentMeta.deserialise(grp->meta.bin_data, grp->meta.bin_len))
+			continue;
+
+		bool valid = false;
+		auto sit = sentMeta.signSet.keySignSet.find(INDEX_AUTHEN_ADMIN);
+		auto pit = sentMeta.keys.public_keys.find(RsGxsId(grp->grpId));
+
+		if(sit != sentMeta.signSet.keySignSet.end() && pit != sentMeta.keys.public_keys.end())
+		{
+			RsTlvKeySignature adminSign = sit->second;
+			RsTlvPublicRSAKey adminKey = pit->second;
+
+			RsGxsGrpMetaData *storedMeta = grp->metaData;
+			grp->metaData = &sentMeta;
+			valid = GxsSecurity::validateNxsGrp(*grp, adminSign, adminKey);
+			grp->metaData = storedMeta;
+		}
+
+		if(valid)
+			continue;
+
+		RsGxsGrpItem *grpItem = dynamic_cast<RsGxsGrpItem*>(mSerialiser->deserialise(grp->grp.bin_data, &grp->grp.bin_len));
+
+		if(!grpItem)
+		{
+			RsWarn() << "Own group " << grp->grpId << " has a signature peers reject, but its data cannot be read back. Edit and save it by hand." ;
+			continue;
+		}
+
+		grpItem->meta = *grp->metaData;
+
+		RsInfo() << "Re-signing own group " << grp->grpId << " (\"" << grp->metaData->mGroupName << "\"): peers would reject its current signature." ;
+
+		GxsGrpPendingSign ggps(grpItem, mDataAccess->generatePublicToken());
+
+		ggps.mKeys = grp->metaData->keys;
+		GxsSecurity::createPublicKeysFromPrivateKeys(ggps.mKeys);
+		ggps.mHaveKeys = true;
+		ggps.mIsUpdate = true;
+		ggps.mIsResign = true;
+
+		RS_STACK_MUTEX(mGenMtx);
+		mGrpsToPublish.push_back(ggps);
+		++nb_resigned;
+	}
+
+	if(nb_resigned > 0)
+		RsInfo() << "Service " << std::hex << mServType << std::dec << ": " << nb_resigned << " own group(s) re-signed so that current peers accept them." ;
+}
+
+
 void RsGenExchange::processRoutingClues()
 {
     RS_STACK_MUTEX(mGenMtx) ;
@@ -2872,7 +2971,9 @@ void RsGenExchange::publishGrps()
 			    // get group id from private admin key id
 			    grpItem->meta.mGroupId = grp->grpId = RsGxsGroupId(privAdminKey.keyId);
 
-			    ServiceCreate_Return ret = service_CreateGroup(grpItem, fullKeySet);
+			    // A re-signed group keeps its stored content: the service has nothing to add, and must not
+			    // be asked for a new PGP signature.
+			    ServiceCreate_Return ret = ggps.mIsResign ? SERVICE_CREATE_SUCCESS : service_CreateGroup(grpItem, fullKeySet);
 
 			    bool serialOk = false, servCreateOk;
 
