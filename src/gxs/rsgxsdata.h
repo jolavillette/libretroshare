@@ -70,6 +70,7 @@ public:
     uint32_t    mSignFlags;
 
     // BELOW HERE IS LOCAL DATA, THAT IS NOT FROM MSG.
+    std::string mReceivedServiceString;  // service string as sent by pre-0.6.8 peers: only used to check legacy signatures, never stored
     bool        mUseLegacyServiceString; // Temporary flag for legacy signature verification
 
     uint32_t    mSubscribeFlags;

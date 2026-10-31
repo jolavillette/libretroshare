@@ -1166,16 +1166,16 @@ bool GxsSecurity::validateNxsGrp(const RsNxsGrp& grp, const RsTlvKeySignature& s
 		return true;
 	}
 
-	// Legacy fallback: try to verify the signature using the mServiceString
+	// Legacy fallback: try to verify the signature using the service string
 	// that was present at group creation time. Before commit c5135a210,
 	// mServiceString was included in the signed payload. We reconstruct it
 	// and retry verification to maintain backward compatibility with 0.6.7.
 
 	std::cerr << "(WW) GxsSecurity::validateNxsGrp() Standard verification failed for group "
-	          << grpMeta.mGroupId << ". mServiceString=\"" << grpMeta.mServiceString
-	          << "\" (len=" << grpMeta.mServiceString.size() << ")" << std::endl;
+	          << grpMeta.mGroupId << ". mServiceString=\"" << grpMeta.mReceivedServiceString
+	          << "\" (len=" << grpMeta.mReceivedServiceString.size() << ")" << std::endl;
 
-	if (!grpMeta.mServiceString.empty())
+	if (!grpMeta.mReceivedServiceString.empty())
 	{
 		// Build a list of legacy mServiceString candidates to try.
 		// At creation time, p3idservice sets mServiceString = ssdata.save()
@@ -1185,7 +1185,7 @@ bool GxsSecurity::validateNxsGrp(const RsNxsGrp& grp, const RsTlvKeySignature& s
 
 		// Candidate 1: the received mServiceString itself (works if it
 		// hasn't been modified by intermediate nodes since last signing)
-		legacyCandidates.push_back(grpMeta.mServiceString);
+		legacyCandidates.push_back(grpMeta.mReceivedServiceString);
 
 		// Candidate 2: creation-time string for anonymous identity
 		legacyCandidates.push_back("v2 {P:K:0 T:0 C:0}{T:F:0 P:0 T:0}{R:5 5 0 0}");
@@ -1193,15 +1193,15 @@ bool GxsSecurity::validateNxsGrp(const RsNxsGrp& grp, const RsTlvKeySignature& s
 		// Candidate 3: creation-time string for PGP-linked identity
 		// Extract PGP ID from the received mServiceString if present
 		std::string pgpId;
-		std::string::size_type ipos = grpMeta.mServiceString.find("I:");
+		std::string::size_type ipos = grpMeta.mReceivedServiceString.find("I:");
 		if (ipos != std::string::npos)
 		{
 			ipos += 2; // skip "I:"
-			std::string::size_type end = grpMeta.mServiceString.find_first_of(" }", ipos);
+			std::string::size_type end = grpMeta.mReceivedServiceString.find_first_of(" }", ipos);
 			if (end != std::string::npos)
-				pgpId = grpMeta.mServiceString.substr(ipos, end - ipos);
+				pgpId = grpMeta.mReceivedServiceString.substr(ipos, end - ipos);
 			else
-				pgpId = grpMeta.mServiceString.substr(ipos);
+				pgpId = grpMeta.mReceivedServiceString.substr(ipos);
 
 			if (!pgpId.empty())
 				legacyCandidates.push_back("v2 {P:K:1 I:" + pgpId + "}{T:F:0 P:0 T:0}{R:5 5 0 0}");

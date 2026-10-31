@@ -72,6 +72,7 @@ void RsGxsGrpMetaData::clear(){
     keys.TlvClear();
 
     mServiceString.clear();
+    mReceivedServiceString.clear();
     mUseLegacyServiceString = false;
     mAuthenFlags = 0;
     mParentGrpId.clear();
@@ -160,7 +161,7 @@ bool RsGxsGrpMetaData::deserialise(void *data, uint32_t &pktsize)
     
        
     ok &= mAuthorId.deserialise(data, pktsize, offset);
-    ok &= GetTlvString(data, pktsize, &offset, 0, mServiceString);
+    ok &= GetTlvString(data, pktsize, &offset, 0, mReceivedServiceString);	// only kept to check legacy signatures, never stored
     ok &= mCircleId.deserialise(data, pktsize, offset);
     ok &= signSet.GetTlv(data, pktsize, &offset);
     ok &= keys.GetTlv(data, pktsize, &offset);
