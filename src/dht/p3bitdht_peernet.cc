@@ -1100,6 +1100,13 @@ int p3BitDht::tick()
 
 	minuteTick();
 
+	/* DHT-RS diagnostics, temporary */
+	{
+		uint32_t netsize = 0, rsnetsize = 0;
+		getNetworkStats(netsize, rsnetsize);
+		mRsCensus.tick(mUdpBitDht, mDhtFns, netsize, rsnetsize);
+	}
+
 #ifdef DEBUG_PEERNET_COMMON
 	time_t now = time(NULL);  // Don't use rstime_t here or ctime break on windows
 	std::cerr << "p3BitDht::tick() TIME: " << ctime(&now) << std::endl;

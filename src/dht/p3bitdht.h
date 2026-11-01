@@ -38,6 +38,7 @@
 #include "bitdht/bdiface.h"
 
 #include "dht/connectstatebox.h"
+#include "dht/p3bitdht_rscensus.h" /* DHT-RS diagnostics, temporary */
 
 class DhtPeerDetails
 {
@@ -371,6 +372,8 @@ private:
     pqiNetAssistPeerShare *mPeerSharer;
 
     bdDhtFunctions *mDhtFns;
+
+    DhtRsCensus mRsCensus; /* DHT-RS diagnostics, temporary, has its own mutex */
 
     RsMutex dhtMtx;
 

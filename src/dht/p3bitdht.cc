@@ -275,6 +275,7 @@ void    p3BitDht::enable(bool on)
 	
 void    p3BitDht::shutdown() /* blocking call */
 {
+	mRsCensus.save(); /* DHT-RS diagnostics, temporary */
 	mUdpBitDht->stopDht();
 }
 
