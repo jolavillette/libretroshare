@@ -143,17 +143,22 @@ static uint32_t estBdOld(const std::vector<int> &n, int K, int bucketBits)
 /* Cumulative estimator: all the nodes of the buckets closer than the first
  * saturated one, divided by the fraction of the id space those buckets cover.
  * sat[i] decides saturation (n itself, or the real occupancy). */
-static double estCum(const std::vector<int> &n, const std::vector<int> &sat, int K)
+static double estCum(const std::vector<int> &n, const std::vector<int> &sat, int K, int bucketBits)
 {
+	/* Same outlier guard as libbitdht: buckets closer than 2^-(64-bits-1) of
+	 * the space can only hold forged ids (nodes that copy a prefix of ours;
+	 * seen live: a full bucket 39). They are ignored, for saturation too. */
+	const int lo = BITDHT_KEY_BITLEN - (BITDHT_ULLONG_BITS - bucketBits - 1);
+
 	int firstFull = NBUCKETS;
-	for (int i = 0; i < NBUCKETS; ++i)
+	for (int i = lo; i < NBUCKETS; ++i)
 		if (sat[i] >= K) { firstFull = i; break; }
 
 	int j = firstFull - 1;
-	if (j < 0)
+	if (j < lo)
 		return 0;
 	double sum = 0;
-	for (int i = 0; i <= j; ++i)
+	for (int i = lo; i <= j; ++i)
 		sum += n[i];
 	/* buckets 0..j cover 2^(j+1) / 2^160 of the space */
 	return std::ldexp(sum, BITDHT_KEY_BITLEN - (j + 1));
@@ -388,9 +393,9 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	uint32_t rsBdOld     = estBdOld(nRs, K, bucketBits);
 	uint32_t allBdOld    = estBdOld(nAll, K, bucketBits);
 	double rsBdFixFull   = estBdFixFull(nRs, occ, K, bucketBits);
-	double rsCum         = estCum(nRs, nRs, K);
-	double rsCumFixFull  = estCum(nRs, occ, K);
-	double allCum        = estCum(nAll, nAll, K);
+	double rsCum         = estCum(nRs, nRs, K, bucketBits);
+	double rsCumFixFull  = estCum(nRs, occ, K, bucketBits);
+	double allCum        = estCum(nAll, nAll, K, bucketBits);
 
 	/* medians of the libbitdht numbers */
 	std::vector<double> vRs, vAll;
