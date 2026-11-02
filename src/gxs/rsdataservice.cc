@@ -1216,6 +1216,19 @@ void RsDataService::locked_retrieveGroups(RetroCursor* c, std::vector<RsNxsGrp*>
 
 int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  bool withMeta)
 {
+    // GXS-PROF: who loads full messages, how many and how big, and how long
+    // the DB mutex is held for it (temporary diagnostics, do not upstream).
+    auto prof_t0 = std::chrono::steady_clock::now();
+    int64_t prof_wait_ms = 0;
+    size_t prof_ids_requested = 0, prof_all_groups = 0;
+    size_t prof_n_msgs = 0, prof_bytes = 0, prof_big_n = 0, prof_big_bytes = 0;
+    RsGxsGroupId prof_big_grp;
+    auto prof_lock_wait = [&](std::chrono::steady_clock::time_point tw)
+    {
+        prof_wait_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - tw).count();
+    };
+
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     rstime::RsScopeTimer timer("");
     int resultCount = 0;
@@ -1230,9 +1243,14 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
         const std::set<RsGxsMessageId>& msgIdV = mit->second;
         std::vector<RsNxsMsg*> msgSet;
 
+		prof_ids_requested += msgIdV.size();
+		if(msgIdV.empty()) ++prof_all_groups;
+		auto prof_tw = std::chrono::steady_clock::now();
+
 		if(msgIdV.empty())
 		{
 			RS_STACK_MUTEX(mDbMutex);
+			prof_lock_wait(prof_tw);
 
             RetroCursor* c = mDb->sqlQuery(MSG_TABLE_NAME, withMeta ? mMsgColumnsWithMeta : mMsgColumns, KEY_GRP_ID+ "='" + grpId.toStdString() + "'", "");
 
@@ -1244,6 +1262,7 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
 		else
 		{
 			RS_STACK_MUTEX(mDbMutex);
+			prof_lock_wait(prof_tw);
 
             // Retrieve the requested messages in batches, using a single
             // "msgId IN (...)" clause per batch. Preparing one statement per
@@ -1293,6 +1312,20 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
         resultCount += msgSet.size();
 #endif
 
+        {
+            size_t grp_bytes = 0;
+            for(const RsNxsMsg* m: msgSet)
+                if(m) grp_bytes += m->msg.bin_len + m->meta.bin_len;
+            prof_n_msgs += msgSet.size();
+            prof_bytes += grp_bytes;
+            if(grp_bytes > prof_big_bytes)
+            {
+                prof_big_bytes = grp_bytes;
+                prof_big_n = msgSet.size();
+                prof_big_grp = grpId;
+            }
+        }
+
         msg[grpId] = msgSet;
 
         msgSet.clear();
@@ -1301,6 +1334,19 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     std::cerr << "RsDataService::retrieveNxsMsgs() " << mDbName << ", Requests: " << reqIds.size() << ", Results: " << resultCount << ", Time: " << timer.duration() << std::endl;
 #endif
+
+    {
+        int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - prof_t0).count();
+        if(prof_ms >= GxsTickProfiler::slowThresholdMs())
+            RsWarn() << "GXS-PROF " << mDbName << " retrieveNxsMsgs "
+                     << reqIds.size() << " groups requested (" << prof_all_groups
+                     << " whole groups, " << prof_ids_requested << " explicit ids), returned "
+                     << prof_n_msgs << " msgs / " << prof_bytes / 1024 << " KB in "
+                     << prof_ms << " ms (" << prof_wait_ms << " ms lock wait), biggest group "
+                     << prof_big_grp << ": " << prof_big_n << " msgs / "
+                     << prof_big_bytes / 1024 << " KB" << std::endl;
+    }
 
     return 1;
 }
