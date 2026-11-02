@@ -147,8 +147,14 @@ public:
     // search. SearchHash is logarithmic. The other two are linear.
 
     bool searchHash(const RsFileHash& hash, DirectoryStorage::EntryIndex &result);
-    int searchBoolExp(RsRegularExpression::Expression * exp, std::list<DirectoryStorage::EntryIndex> &results) const ;
-    int searchTerms(const std::list<std::string>& terms, std::list<DirectoryStorage::EntryIndex> &results) const ;		// does a logical OR between items of the list of terms
+    // The two linear searches are resumable, so that the caller can release the storage mutex between
+    // slices: each call goes on through the hash table from where 'cursor' stopped, for about 'budget_ms',
+    // and returns true once the whole table has been scanned.
+
+    struct SearchCursor { bool started = false ; RsFileHash last ; };
+
+    bool searchBoolExp(RsRegularExpression::Expression * exp, std::list<DirectoryStorage::EntryIndex> &results, SearchCursor& cursor, uint32_t budget_ms) const ;
+    bool searchTerms(const std::list<std::string>& terms, std::list<DirectoryStorage::EntryIndex> &results, SearchCursor& cursor, uint32_t budget_ms) const ;		// does a logical OR between items of the list of terms
 
     bool check(std::string& error_string)	;// checks consistency of storage.
 

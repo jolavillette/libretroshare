@@ -21,6 +21,8 @@
  *                                                                             *
  ******************************************************************************/
 #include <set>
+#include <chrono>
+#include <thread>
 
 #include "util/rstime.h"
 #include "serialiser/rstlvbinary.h"
@@ -224,17 +226,56 @@ void DirectoryStorage::print()
     mFileHierarchy->print();
 }
 
+// A linear search over a large list can take minutes when that list has to be paged back in. It releases the
+// storage mutex every SEARCH_SLICE_MS, so that the other users of this list (the GUI thread looking up a hash,
+// rs main handling a sync, all of them possibly under mFLSMtx) wait for one slice at most, not for the whole scan.
+
+static const uint32_t SEARCH_SLICE_MS = 20 ;
+
+template<class Slice>
+static void runSlicedSearch(
+        RsMutex& mtx, InternalFileHierarchyStorage *const & hierarchy,
+        std::list<DirectoryStorage::EntryIndex>& results, Slice slice )
+{
+    InternalFileHierarchyStorage::SearchCursor cursor ;
+    const InternalFileHierarchyStorage *scanned = nullptr ;
+
+    for(;;)
+    {
+        {
+            RS_STACK_MUTEX(mtx) ;
+
+            if(scanned != nullptr && scanned != hierarchy)	// reloaded in between: the indexes found so far belong to the old one
+            {
+                results.clear() ;
+                cursor = InternalFileHierarchyStorage::SearchCursor() ;
+            }
+            scanned = hierarchy ;
+
+            if(slice(hierarchy,cursor))
+                return ;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)) ;	// the mutex is not fair: let the waiting threads in
+    }
+}
+
 int DirectoryStorage::searchTerms(
         const std::list<std::string>& terms,
         std::list<EntryIndex>& results ) const
 {
-    RS_STACK_MUTEX(mDirStorageMtx) ;
-    return mFileHierarchy->searchTerms(terms,results);
+    runSlicedSearch(mDirStorageMtx,mFileHierarchy,results,[&](const InternalFileHierarchyStorage *h,InternalFileHierarchyStorage::SearchCursor& c)
+    {
+        return h->searchTerms(terms,results,c,SEARCH_SLICE_MS) ;
+    });
+    return 0 ;
 }
 int DirectoryStorage::searchBoolExp(RsRegularExpression::Expression * exp, std::list<EntryIndex> &results) const
 {
-    RS_STACK_MUTEX(mDirStorageMtx) ;
-    return mFileHierarchy->searchBoolExp(exp,results);
+    runSlicedSearch(mDirStorageMtx,mFileHierarchy,results,[&](const InternalFileHierarchyStorage *h,InternalFileHierarchyStorage::SearchCursor& c)
+    {
+        return h->searchBoolExp(exp,results,c,SEARCH_SLICE_MS) ;
+    });
+    return 0 ;
 }
 
 bool DirectoryStorage::extractData(const EntryIndex& indx,DirDetails& d)
