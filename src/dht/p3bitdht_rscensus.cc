@@ -45,7 +45,16 @@ static const int      LOOKUP_K         = 8;     /* k-th closest answering node *
 /* libbitdht's own 300 s cap is only checked once every peer of the closest
  * list was asked, and its send budget is shared round-robin with every
  * friend query: the first live lookups were still QUERYING after 360 s. */
+#ifdef BITDHT_QFLAGS_MEASURE
+/* libbitdht feature/dht-measure-lookups: direct, prioritised, ends at 300 s */
+static const uint32_t LOOKUP_QFLAGS    = BITDHT_QFLAGS_MEASURE;
+static const char    *LOOKUP_MODE      = "measure";
+static const rstime_t LOOKUP_TIMEOUT   = 360;
+#else
+static const uint32_t LOOKUP_QFLAGS    = BITDHT_QFLAGS_NONE;
+static const char    *LOOKUP_MODE      = "plain";
 static const rstime_t LOOKUP_TIMEOUT   = 1200;
+#endif
 
 static const char *SCHEMA_KEYS =
 	"rs_bd,rs_bd_recalc,rs_bd_old,rs_bd_fixfull,rs_cum,rs_cum_fixfull,"
@@ -279,7 +288,8 @@ void DhtRsCensus::tick(UdpBitDht *dht, bdDhtFunctions *fns, uint32_t bdAll, uint
 		RsInfo() << "DHT-RS schema v=3 keys=" << SCHEMA_KEYS;
 		RsInfo() << "DHT-RS start census_loaded=" << mNodes.size()
 		         << " data_start=" << mDataStart
-		         << " census_file=" << mCensusFile;
+		         << " census_file=" << mCensusFile
+		         << " lookup_mode=" << LOOKUP_MODE;
 	}
 
 	mLastPoll = now;
@@ -687,12 +697,16 @@ void DhtRsCensus::lookups_locked(UdpBitDht *dht, rstime_t now)
 
 		if (k >= 2 && d[k - 1] > 0)
 		{
-			LookupSample ls{now, (k - 1) / d[k - 1], k, (uint32_t) d.size(), rs, done};
+			/* a measure query that hit libbitdht's 300 s cap also ends in a
+			 * "done" state: only an end before the cap counts as converged */
+			bool converged = done && q.mSearchTime <= 300;
+			LookupSample ls{now, (k - 1) / d[k - 1], k, (uint32_t) d.size(), rs, converged};
 			mLookupSamples.push_back(ls);
 			while (mLookupSamples.size() > LOOKUP_KEEP)
 				mLookupSamples.pop_front();
 			RsInfo() << "DHT-RS lookup target=" << it->first.substr(0, 8)
-			         << " state=" << q.mState << " converged=" << done
+			         << " state=" << q.mState << " converged=" << converged
+			         << " search_secs=" << q.mSearchTime
 			         << " secs=" << (now - it->second.start)
 			         << " closest=" << q.mClosest.size() << " answered=" << d.size()
 			         << " answered_rs=" << rs << " k=" << k
@@ -720,7 +734,7 @@ void DhtRsCensus::lookups_locked(UdpBitDht *dht, rstime_t now)
 		l.start = now;
 		std::string key;
 		bdStdPrintNodeId(key, &l.id, false);
-		dht->addFindNode(&l.id, BITDHT_QFLAGS_NONE);
+		dht->addFindNode(&l.id, LOOKUP_QFLAGS);
 		mLookups[key] = l;
 	}
 }
