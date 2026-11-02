@@ -38,12 +38,19 @@ static const rstime_t DAY              = 24 * HOUR;
 static const rstime_t WEEK             = 7 * DAY;
 static const int      NBUCKETS         = BITDHT_KEY_BITLEN; /* 160 */
 
+/* random-target lookups (total DHT size) */
+static const size_t   LOOKUP_PARALLEL  = 2;     /* running at once */
+static const size_t   LOOKUP_KEEP      = 30;    /* results the median is taken over */
+static const int      LOOKUP_K         = 8;     /* k-th closest answering node */
+static const rstime_t LOOKUP_TIMEOUT   = 330;   /* libbitdht forces an end at 300 s */
+
 static const char *SCHEMA_KEYS =
 	"rs_bd,rs_bd_recalc,rs_bd_old,rs_bd_fixfull,rs_cum,rs_cum_fixfull,"
 	"rs_bd_med24h,rs_count_now,rs_count_1h,rs_count_24h,rs_count_7d,"
 	"rs_chapman_1h,rs_chapman_1h_nostable,rs_chapman_24h,rs_schnabel_24h,"
 	"rs_chao1_24h,rs_chao1_7d,"
-	"all_bd,all_bd_recalc,all_bd_old,all_cum,all_bd_med24h";
+	"all_bd,all_bd_recalc,all_bd_old,all_cum,all_bd_med24h,"
+	"all_lookup,all_lookup_n,rs_lookup";
 
 /*****************************************************************************
  * Instant estimators, from the per-bucket counts.
@@ -194,6 +201,7 @@ static std::string cov(rstime_t secs)
 
 DhtRsCensus::DhtRsCensus()
 	: mMtx("DhtRsCensus"), mLoaded(false),
+	  mLookupsLost(0),
 	  mSessionStart(0), mDataStart(0), mLastPoll(0), mLastEst(0), mLastSave(0)
 {
 }
@@ -265,13 +273,14 @@ void DhtRsCensus::tick(UdpBitDht *dht, bdDhtFunctions *fns, uint32_t bdAll, uint
 		if (mDataStart == 0)
 			mDataStart = now;
 
-		RsInfo() << "DHT-RS schema v=1 keys=" << SCHEMA_KEYS;
+		RsInfo() << "DHT-RS schema v=2 keys=" << SCHEMA_KEYS;
 		RsInfo() << "DHT-RS start census_loaded=" << mNodes.size()
 		         << " data_start=" << mDataStart
 		         << " census_file=" << mCensusFile;
 	}
 
 	mLastPoll = now;
+	lookups_locked(dht, now);
 	poll_locked(dht, fns, now, bdAll, bdRs);
 
 	if (now - mLastSave >= SAVE_PERIOD)
@@ -297,7 +306,8 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	std::vector<int> nAll(NBUCKETS, 0), nRs(NBUCKETS, 0), occ(NBUCKETS, 0);
 	std::map<std::string, int> present; /* RS id -> bucket */
 
-	for (int i = 0; i < NBUCKETS; ++i)
+	/* bucket 0 (XOR distance < 2) can only hold our own node: skipped */
+	for (int i = 1; i < NBUCKETS; ++i)
 	{
 		bdBucket b;
 		dht->getDhtBucket(i, b);
@@ -511,6 +521,26 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	occasions_locked(now, w7, k7, masks7);
 	double chao7 = chao1(masks7, f1_7, f2_7);
 
+	/* random-target lookups: median of the last results; the RS share of
+	 * the nodes that answered, times that total */
+	double allLookup = 0, rsLookup = 0;
+	rstime_t lookupCov = 0;
+	{
+		std::vector<double> v;
+		double ans = 0, ansRs = 0;
+		for (const LookupSample &ls : mLookupSamples)
+		{
+			v.push_back(ls.n);
+			ans += ls.answered;
+			ansRs += ls.answeredRs;
+		}
+		allLookup = median(v);
+		if (ans > 0)
+			rsLookup = allLookup * ansRs / ans;
+		if (!mLookupSamples.empty())
+			lookupCov = now - mLookupSamples.front().t;
+	}
+
 	/* churn */
 	std::vector<double> dwells;
 	for (const auto &g : mGone)
@@ -539,7 +569,10 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	    << " all_bd_recalc=" << allBdRecalc
 	    << " all_bd_old=" << allBdOld
 	    << " all_cum=" << fmt(allCum)
-	    << " all_bd_med24h=" << fmt(allMed) << " all_bd_med24h_cov=" << cov(medCov);
+	    << " all_bd_med24h=" << fmt(allMed) << " all_bd_med24h_cov=" << cov(medCov)
+	    << " all_lookup=" << fmt(allLookup) << " all_lookup_cov=" << cov(lookupCov)
+	    << " all_lookup_n=" << mLookupSamples.size()
+	    << " rs_lookup=" << fmt(rsLookup);
 	RsInfo() << est.str();
 
 	std::ostringstream raw;
@@ -555,7 +588,8 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	    << " d_n1=" << dn1 << " d_n2=" << dn2 << " d_m=" << dm
 	    << " occ24=" << k24 << " M_24h=" << masks24.size() << " f1_24h=" << f1_24 << " f2_24h=" << f2_24
 	    << " occ7=" << k7 << " M_7d=" << masks7.size() << " f1_7d=" << f1_7 << " f2_7d=" << f2_7
-	    << " census=" << mNodes.size();
+	    << " census=" << mNodes.size()
+	    << " lookups_running=" << mLookups.size() << " lookups_lost=" << mLookupsLost;
 	RsInfo() << raw.str();
 
 	std::ostringstream bk;
@@ -564,6 +598,92 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 		if (occ[i] > 0)
 			bk << " " << i << "=" << nRs[i] << "/" << occ[i];
 	RsInfo() << bk.str();
+}
+
+/* XOR distance as a fraction of the id space (first 8 bytes are plenty). */
+static double metricFraction(const bdMetric &m)
+{
+	double d = 0;
+	for (int i = 0; i < 8; ++i)
+		d += std::ldexp((double) m.data[i], -8 * (i + 1));
+	return d;
+}
+
+void DhtRsCensus::lookups_locked(UdpBitDht *dht, rstime_t now)
+{
+	/* ---- collect the finished ones ---- */
+	for (auto it = mLookups.begin(); it != mLookups.end(); )
+	{
+		bdQuerySummary q;
+		bool have = dht->getDhtQueryStatus(&(it->second.id), q) == 1;
+		bool done = have && (q.mState == BITDHT_QUERY_FOUND_CLOSEST ||
+		                     q.mState == BITDHT_QUERY_SUCCESS ||
+		                     q.mState == BITDHT_QUERY_PEER_UNREACHABLE ||
+		                     q.mState == BITDHT_QUERY_FAILURE);
+		bool timedOut = now - it->second.start > LOOKUP_TIMEOUT;
+
+		/* libbitdht only turns a queued find into a query at its next REFRESH
+		 * step (~10 s), or after a DHT restart: give it time to appear */
+		bool queued = !have && now - it->second.start < 120;
+
+		if ((have && !done && !timedOut) || queued)
+		{
+			++it;
+			continue;
+		}
+
+		/* only the nodes that answered us: an id merely reported by a third
+		 * party may be forged */
+		std::vector<double> d;
+		uint32_t rs = 0;
+		if (have)
+			for (const auto &c : q.mClosest)
+				if (c.second.mLastRecvTime != 0)
+				{
+					d.push_back(metricFraction(c.first));
+					if (c.second.mPeerFlags & BITDHT_PEER_STATUS_DHT_ENGINE)
+						rs++;
+				}
+		std::sort(d.begin(), d.end());
+		int k = std::min<int>(LOOKUP_K, (int) d.size());
+
+		if (k >= 2 && d[k - 1] > 0)
+		{
+			LookupSample ls{now, (k - 1) / d[k - 1], k, (uint32_t) d.size(), rs};
+			mLookupSamples.push_back(ls);
+			while (mLookupSamples.size() > LOOKUP_KEEP)
+				mLookupSamples.pop_front();
+			RsInfo() << "DHT-RS lookup target=" << it->first.substr(0, 8)
+			         << " state=" << q.mState << " secs=" << (now - it->second.start)
+			         << " closest=" << q.mClosest.size() << " answered=" << d.size()
+			         << " answered_rs=" << rs << " k=" << k
+			         << " d1=" << d[0] << " dk=" << d[k - 1]
+			         << " n=" << fmt(ls.n);
+		}
+		else
+		{
+			mLookupsLost++;
+			RsInfo() << "DHT-RS lookup target=" << it->first.substr(0, 8)
+			         << " lost have=" << have << " state=" << (have ? (int) q.mState : -1)
+			         << " secs=" << (now - it->second.start)
+			         << " answered=" << d.size();
+		}
+
+		dht->removeFindNode(&(it->second.id));
+		it = mLookups.erase(it);
+	}
+
+	/* ---- start new ones ---- */
+	while (mLookups.size() < LOOKUP_PARALLEL)
+	{
+		Lookup l;
+		bdStdRandomNodeId(&l.id);
+		l.start = now;
+		std::string key;
+		bdStdPrintNodeId(key, &l.id, false);
+		dht->addFindNode(&l.id, BITDHT_QFLAGS_NONE);
+		mLookups[key] = l;
+	}
 }
 
 void DhtRsCensus::prune_locked(rstime_t now)
@@ -680,6 +800,12 @@ void DhtRsCensus::load_locked()
 			n.polls = (uint32_t) strtoul(cols[3].c_str(), NULL, 10);
 			n.bucket = atoi(cols[4].c_str());
 			n.inTable = false;
+			if (n.bucket == 0)
+			{
+				/* our own node, counted by the first probe version */
+				mNodes.erase(cols[0]);
+				continue;
+			}
 			if (cols.size() > 5)
 			{
 				std::vector<std::pair<rstime_t, rstime_t> > v;

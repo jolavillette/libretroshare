@@ -11,6 +11,7 @@
  * remembered by its DHT id with the time intervals during which it was in     *
  * the table. The census survives restarts (dht-rs-census.csv in the account   *
  * directory); the per-poll libbitdht estimates go to dht-rs-samples.csv.      *
+ * The total DHT size is also measured by random-target lookups.              *
  *                                                                             *
  * This program is free software: you can redistribute it and/or modify       *
  * it under the terms of the GNU Lesser General Public License as              *
@@ -26,6 +27,7 @@
 #include <string>
 #include <vector>
 
+#include "bitdht/bdiface.h"
 #include "util/rsthreads.h"
 #include "util/rstime.h"
 
@@ -61,6 +63,21 @@ private:
 
 	struct Sample { rstime_t t; uint32_t rsBd; uint32_t allBd; };
 
+	/* Random-target lookups measuring the total DHT size: a find_node towards
+	 * a random id; the XOR distance of the k-th closest node that answered
+	 * gives N ~ (k - 1) / d_k (d_k as a fraction of the id space). */
+	struct Lookup { bdNodeId id; rstime_t start; };
+	struct LookupSample
+	{
+		rstime_t t;
+		double n;           /* (k - 1) / d_k */
+		int k;
+		uint32_t answered;  /* nodes of mClosest that answered */
+		uint32_t answeredRs;
+	};
+
+	void lookups_locked(UdpBitDht *dht, rstime_t now);
+
 	void poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	                 uint32_t bdAll, uint32_t bdRs);
 	void load_locked();
@@ -83,6 +100,10 @@ private:
 	std::vector<Interval> mObs;              /* when we were polling */
 	std::deque<Sample> mSamples;             /* last 24 h of libbitdht estimates */
 	std::deque<std::pair<rstime_t, rstime_t> > mGone; /* (time, dwell) last 1 h */
+
+	std::map<std::string, Lookup> mLookups;  /* running, by hex target */
+	std::deque<LookupSample> mLookupSamples; /* last LOOKUP_KEEP results */
+	uint32_t mLookupsLost;                   /* vanished (DHT restart) or empty */
 
 	rstime_t mSessionStart;
 	rstime_t mDataStart;
