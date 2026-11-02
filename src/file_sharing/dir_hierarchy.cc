@@ -813,63 +813,90 @@ private:
     const InternalFileHierarchyStorage::DirEntry& mDe ;
 };
 
-int InternalFileHierarchyStorage::searchBoolExp(
-        RsRegularExpression::Expression* exp,
-        std::list<DirectoryStorage::EntryIndex>& results ) const
-{
-	for(auto& it: std::as_const(mFileHashes))
-		if(mNodes[it.second])
-			if(exp->eval(
-			            DirectoryStorageExprFileEntry(
-			                *static_cast<const FileEntry*>(mNodes[it.second]),
-			                *static_cast<const DirEntry*>(mNodes[mNodes[it.second]->parent_index])
-			                                      ) ))
-			results.push_back(it.second);
+// Walks the hash table from where 'cursor' stopped, calling 'match' on each file index, for about 'budget_ms'.
+// Resuming by key (upper_bound) rather than with an iterator stays valid when the table was changed while the
+// caller had released the storage mutex: entries added or removed meanwhile are simply seen or not.
 
-    return 0;
+template<class Match>
+static bool scanFileHashes(
+        const std::map<RsFileHash,DirectoryStorage::EntryIndex>& hashes,
+        InternalFileHierarchyStorage::SearchCursor& cursor, uint32_t budget_ms, Match match )
+{
+	auto it = cursor.started ? hashes.upper_bound(cursor.last) : hashes.begin();
+	cursor.started = true;
+
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
+
+	for(uint32_t n=1; it != hashes.end(); ++it, ++n)
+	{
+		match(it->second);
+
+		if(n % 256 == 0 && std::chrono::steady_clock::now() > deadline)
+		{
+			cursor.last = it->first;
+			return false;
+		}
+	}
+	return true;
 }
 
-int InternalFileHierarchyStorage::searchTerms(
+bool InternalFileHierarchyStorage::searchBoolExp(
+        RsRegularExpression::Expression* exp,
+        std::list<DirectoryStorage::EntryIndex>& results,
+        SearchCursor& cursor, uint32_t budget_ms ) const
+{
+	return scanFileHashes(mFileHashes, cursor, budget_ms, [&](DirectoryStorage::EntryIndex i)
+	{
+		if(mNodes[i])
+			if(exp->eval(
+			            DirectoryStorageExprFileEntry(
+			                *static_cast<const FileEntry*>(mNodes[i]),
+			                *static_cast<const DirEntry*>(mNodes[mNodes[i]->parent_index])
+			                                      ) ))
+				results.push_back(i);
+	});
+}
+
+bool InternalFileHierarchyStorage::searchTerms(
         const std::list<std::string>& terms,
-        std::list<DirectoryStorage::EntryIndex>& results ) const
+        std::list<DirectoryStorage::EntryIndex>& results,
+        SearchCursor& cursor, uint32_t budget_ms ) const
 {
 	/* most entries are likely to be files, so we could do a linear search over
 	 * the entries tab. Instead we go through the table of hashes.*/
 
-	for(auto& it : std::as_const(mFileHashes))
+	return scanFileHashes(mFileHashes, cursor, budget_ms, [&](DirectoryStorage::EntryIndex i)
 	{
 		// node may be null for some hash waiting to be deleted
-		if(mNodes[it.second])
+		if(!mNodes[i])
+			return;
+
+		rs_view_ptr<FileEntry> tFileEntry = static_cast<FileEntry*>(mNodes[i]);
+
+		/* Most file will just have file name stored, but single file shared
+		 * without a shared dir will contain full path instead of just the
+		 * name, so purify it to perform the search */
+		std::string tFilename = tFileEntry->file_name;
+		if(tFileEntry->file_name.find("/") != std::string::npos)
 		{
-			rs_view_ptr<FileEntry> tFileEntry =
-			        static_cast<FileEntry*>(mNodes[it.second]);
+			std::string _tParentDir;
+			RsDirUtil::splitDirFromFile(
+			            tFileEntry->file_name, _tParentDir, tFilename );
+		}
 
-			/* Most file will just have file name stored, but single file shared
-			 * without a shared dir will contain full path instead of just the
-			 * name, so purify it to perform the search */
-			std::string tFilename = tFileEntry->file_name;
-			if(tFileEntry->file_name.find("/") != std::string::npos)
+		for(auto& termIt : std::as_const(terms))
+		{
+			/* always ignore case */
+			if(tFilename.end() != std::search(
+			            tFilename.begin(), tFilename.end(),
+			            termIt.begin(), termIt.end(),
+			            RsRegularExpression::CompareCharIC() ))
 			{
-				std::string _tParentDir;
-				RsDirUtil::splitDirFromFile(
-				            tFileEntry->file_name, _tParentDir, tFilename );
-			}
-
-			for(auto& termIt : std::as_const(terms))
-			{
-				/* always ignore case */
-				if(tFilename.end() != std::search(
-				            tFilename.begin(), tFilename.end(),
-				            termIt.begin(), termIt.end(),
-				            RsRegularExpression::CompareCharIC() ))
-				{
-					results.push_back(it.second);
-					break;
-				}
+				results.push_back(i);
+				break;
 			}
 		}
-	}
-	return 0;
+	});
 }
 
 bool InternalFileHierarchyStorage::check(std::string& error_string) // checks consistency of storage.
