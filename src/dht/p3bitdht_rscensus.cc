@@ -42,7 +42,10 @@ static const int      NBUCKETS         = BITDHT_KEY_BITLEN; /* 160 */
 static const size_t   LOOKUP_PARALLEL  = 2;     /* running at once */
 static const size_t   LOOKUP_KEEP      = 30;    /* results the median is taken over */
 static const int      LOOKUP_K         = 8;     /* k-th closest answering node */
-static const rstime_t LOOKUP_TIMEOUT   = 330;   /* libbitdht forces an end at 300 s */
+/* libbitdht's own 300 s cap is only checked once every peer of the closest
+ * list was asked, and its send budget is shared round-robin with every
+ * friend query: the first live lookups were still QUERYING after 360 s. */
+static const rstime_t LOOKUP_TIMEOUT   = 1200;
 
 static const char *SCHEMA_KEYS =
 	"rs_bd,rs_bd_recalc,rs_bd_old,rs_bd_fixfull,rs_cum,rs_cum_fixfull,"
@@ -50,7 +53,7 @@ static const char *SCHEMA_KEYS =
 	"rs_chapman_1h,rs_chapman_1h_nostable,rs_chapman_24h,rs_schnabel_24h,"
 	"rs_chao1_24h,rs_chao1_7d,"
 	"all_bd,all_bd_recalc,all_bd_old,all_cum,all_bd_med24h,"
-	"all_lookup,all_lookup_n,rs_lookup";
+	"all_lookup,all_lookup_n,all_lookup_any,all_lookup_any_n,rs_lookup";
 
 /*****************************************************************************
  * Instant estimators, from the per-bucket counts.
@@ -273,7 +276,7 @@ void DhtRsCensus::tick(UdpBitDht *dht, bdDhtFunctions *fns, uint32_t bdAll, uint
 		if (mDataStart == 0)
 			mDataStart = now;
 
-		RsInfo() << "DHT-RS schema v=2 keys=" << SCHEMA_KEYS;
+		RsInfo() << "DHT-RS schema v=3 keys=" << SCHEMA_KEYS;
 		RsInfo() << "DHT-RS start census_loaded=" << mNodes.size()
 		         << " data_start=" << mDataStart
 		         << " census_file=" << mCensusFile;
@@ -392,6 +395,15 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	if (mLastEst != 0 && now - mLastEst < estPeriod)
 		return;
 	mLastEst = now;
+
+	/* every query libbitdht runs (ours + one per friend): they share its
+	 * per-iteration send budget */
+	size_t dhtQueries = 0;
+	{
+		std::map<bdNodeId, bdQueryStatus> qs;
+		dht->getDhtQueries(qs);
+		dhtQueries = qs.size();
+	}
 
 	const rstime_t dataAge = now - mDataStart;
 	const rstime_t sessAge = now - mSessionStart;
@@ -523,18 +535,25 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 
 	/* random-target lookups: median of the last results; the RS share of
 	 * the nodes that answered, times that total */
-	double allLookup = 0, rsLookup = 0;
+	/* all_lookup: converged lookups only; all_lookup_any: every result */
+	double allLookup = 0, allLookupAny = 0, rsLookup = 0;
+	size_t nLookup = 0;
 	rstime_t lookupCov = 0;
 	{
-		std::vector<double> v;
+		std::vector<double> v, vAny;
 		double ans = 0, ansRs = 0;
 		for (const LookupSample &ls : mLookupSamples)
 		{
+			vAny.push_back(ls.n);
+			if (!ls.converged)
+				continue;
 			v.push_back(ls.n);
 			ans += ls.answered;
 			ansRs += ls.answeredRs;
 		}
 		allLookup = median(v);
+		allLookupAny = median(vAny);
+		nLookup = v.size();
 		if (ans > 0)
 			rsLookup = allLookup * ansRs / ans;
 		if (!mLookupSamples.empty())
@@ -571,7 +590,8 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	    << " all_cum=" << fmt(allCum)
 	    << " all_bd_med24h=" << fmt(allMed) << " all_bd_med24h_cov=" << cov(medCov)
 	    << " all_lookup=" << fmt(allLookup) << " all_lookup_cov=" << cov(lookupCov)
-	    << " all_lookup_n=" << mLookupSamples.size()
+	    << " all_lookup_n=" << nLookup
+	    << " all_lookup_any=" << fmt(allLookupAny) << " all_lookup_any_n=" << mLookupSamples.size()
 	    << " rs_lookup=" << fmt(rsLookup);
 	RsInfo() << est.str();
 
@@ -589,7 +609,8 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	    << " occ24=" << k24 << " M_24h=" << masks24.size() << " f1_24h=" << f1_24 << " f2_24h=" << f2_24
 	    << " occ7=" << k7 << " M_7d=" << masks7.size() << " f1_7d=" << f1_7 << " f2_7d=" << f2_7
 	    << " census=" << mNodes.size()
-	    << " lookups_running=" << mLookups.size() << " lookups_lost=" << mLookupsLost;
+	    << " lookups_running=" << mLookups.size() << " lookups_lost=" << mLookupsLost
+	    << " dht_queries=" << dhtQueries;
 	RsInfo() << raw.str();
 
 	std::ostringstream bk;
@@ -628,6 +649,23 @@ void DhtRsCensus::lookups_locked(UdpBitDht *dht, rstime_t now)
 
 		if ((have && !done && !timedOut) || queued)
 		{
+			if (have)
+			{
+				double d1 = -1, dk = -1;
+				uint32_t ans = 0;
+				for (const auto &c : q.mClosest)
+					if (c.second.mLastRecvTime != 0)
+					{
+						double f = metricFraction(c.first);
+						if (d1 < 0) d1 = f;
+						if (++ans == (uint32_t) LOOKUP_K) dk = f;
+					}
+				RsInfo() << "DHT-RS lookup_progress target=" << it->first.substr(0, 8)
+				         << " state=" << q.mState << " secs=" << (now - it->second.start)
+				         << " closest=" << q.mClosest.size()
+				         << " potential=" << q.mPotentialPeers.size()
+				         << " answered=" << ans << " d1=" << d1 << " dk=" << dk;
+			}
 			++it;
 			continue;
 		}
@@ -649,12 +687,13 @@ void DhtRsCensus::lookups_locked(UdpBitDht *dht, rstime_t now)
 
 		if (k >= 2 && d[k - 1] > 0)
 		{
-			LookupSample ls{now, (k - 1) / d[k - 1], k, (uint32_t) d.size(), rs};
+			LookupSample ls{now, (k - 1) / d[k - 1], k, (uint32_t) d.size(), rs, done};
 			mLookupSamples.push_back(ls);
 			while (mLookupSamples.size() > LOOKUP_KEEP)
 				mLookupSamples.pop_front();
 			RsInfo() << "DHT-RS lookup target=" << it->first.substr(0, 8)
-			         << " state=" << q.mState << " secs=" << (now - it->second.start)
+			         << " state=" << q.mState << " converged=" << done
+			         << " secs=" << (now - it->second.start)
 			         << " closest=" << q.mClosest.size() << " answered=" << d.size()
 			         << " answered_rs=" << rs << " k=" << k
 			         << " d1=" << d[0] << " dk=" << d[k - 1]

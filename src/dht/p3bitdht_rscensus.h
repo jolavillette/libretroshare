@@ -74,6 +74,7 @@ private:
 		int k;
 		uint32_t answered;  /* nodes of mClosest that answered */
 		uint32_t answeredRs;
+		bool converged;     /* libbitdht ended it, not our timeout */
 	};
 
 	void lookups_locked(UdpBitDht *dht, rstime_t now);
