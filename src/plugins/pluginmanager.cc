@@ -214,19 +214,27 @@ void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 		std::string name = _plugins[i].file_name;
 		if (_plugins[i].plugin != NULL)
 		{
-			auto t0 = std::chrono::steady_clock::now();
+			using sclock = std::chrono::steady_clock;
+			auto ms = [](sclock::time_point a, sclock::time_point b)
+			{ return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count(); };
+			auto t0 = sclock::now();
 			name = _plugins[i].plugin->getPluginName();
 			p3Service *service = _plugins[i].plugin->p3_service();
 			if (service)
 			{
 				pqih->removeService(service);
 			}
+			auto t1 = sclock::now();
 
 			_plugins[i].plugin->stop();
+			auto t2 = sclock::now();
 			delete _plugins[i].plugin;
 			_plugins[i].plugin = NULL;
-			RsInfo() << "shutdown: plugin " << name << " stopped in "
-			         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() << " ms";
+			auto t3 = sclock::now();
+			RsInfo() << "shutdown: plugin " << name << " stopped in " << ms(t0, t3)
+			         << " ms (remove service " << ms(t0, t1)
+			         << " ms, stop() " << ms(t1, t2)
+			         << " ms, delete " << ms(t2, t3) << " ms)";
 		}
 		if (_plugins[i].handle)
 		{
