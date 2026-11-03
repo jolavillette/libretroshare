@@ -238,11 +238,8 @@ void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 		}
 		if (_plugins[i].handle)
 		{
-			auto t0 = std::chrono::steady_clock::now();
 			dlclose(_plugins[i].handle);
 			_plugins[i].handle = NULL;
-			RsInfo() << "shutdown: plugin " << name << " unloaded in "
-			         << std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count() << " ms";
 		}
 	}
 }
