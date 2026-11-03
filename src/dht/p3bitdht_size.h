@@ -32,20 +32,25 @@
 
 class UdpBitDht;
 
-/* Estimates the size of the DHT and of its RetroShare part, as ranges.
+/* Estimates how many nodes the DHT and its RetroShare part have, as ranges.
  *
- * RetroShare nodes: every minute the RS nodes (DHT_ENGINE flag) of our
- * routing table are recorded with the time intervals they were in it.
- * Low end = distinct RS nodes seen over the last 24 h; high end = bias
- * corrected Chao1 over up to 7 occasions spread on the last 7 days, which
- * adds the nodes we are likely to have missed.
+ * Random-target lookups (libbitdht BITDHT_QFLAGS_MEASURE), two kinds run side
+ * by side: over the whole DHT, and over RetroShare nodes only
+ * (BITDHT_QFLAGS_MEASURE_APPL). The XOR distance d_k of the k-th closest node
+ * to a random target gives the density: N = sum(k - 1) / sum(d_k) over the
+ * recent lookups. Two counts per lookup:
+ *   - reachable: the nodes that answered us;
+ *   - heard: those plus the silent ones at least two nodes reported (one
+ *     report only is often a stale entry or a forged id).
+ * The range shown goes from the low end of the reachable confidence interval
+ * to the high end of the heard one (bootstrap over the lookups, 10-90 %).
  *
- * Whole DHT: when libbitdht offers BITDHT_QFLAGS_MEASURE, one find_node
- * towards a random id every few minutes. The XOR distance d_k of the k-th
- * closest node gives N ~ (k - 1) / d_k. Low end = over the nodes that
- * answered us; high end = over every node heard of near the target, the
- * silent ones included (most DHT nodes do not answer an unknown node).
- * Medians over the recent lookups.
+ * Two RetroShare checks, independent of the lookups:
+ *   - the RS nodes of our own routing table, each minute; with the RS nodes
+ *     the lookups met over the same 24 h they give a Chapman estimate of the
+ *     distinct RS nodes online during the day;
+ *   - our friends present in the DHT: the share of them our table holds
+ *     calibrates how much of the RS network the table sees.
  *
  * The data survive restarts (dht-size.txt in the account directory). */
 class DhtSizeEstimator
@@ -53,8 +58,12 @@ class DhtSizeEstimator
 public:
 	DhtSizeEstimator();
 
-	/* From p3BitDht::tick(); does its work at most once a minute. */
-	void tick(UdpBitDht *dht);
+	/* true when tick() would do its once-a-minute work */
+	bool due();
+
+	/* From p3BitDht::tick(). friendsInDht = DHT ids of our friends the DHT
+	 * currently finds. */
+	void tick(UdpBitDht *dht, const std::vector<bdNodeId> &friendsInDht);
 
 	/* Writes the data to disk (also done every SAVE_PERIOD). */
 	void save();
@@ -62,20 +71,28 @@ public:
 	void getEstimate(RsDhtSizeEstimate &est);
 
 private:
-	struct Interval { rstime_t s; rstime_t e; };
-	struct Node
-	{
-		Node() : last(0), inTable(false) {}
-		rstime_t last;
-		bool inTable;
-		std::vector<Interval> iv;
-	};
-	struct LookupSample { rstime_t t; double answered; double heard; };
+	/* one lookup result: k-th distance over the answered nodes and over the
+	 * heard ones (fraction of the id space) */
+	struct Sample { rstime_t t; int kA; double dA; int kH; double dH; };
 
-	void poll_locked(UdpBitDht *dht, rstime_t now);
-	void lookup_locked(UdpBitDht *dht, rstime_t now);
-	void estimate_locked(rstime_t now);
+	struct Kind
+	{
+		Kind() : flags(0), running(false), start(0), lastEnd(0) {}
+		uint32_t flags;
+		bool running;
+		bdNodeId id;
+		rstime_t start;
+		rstime_t lastEnd;
+		std::deque<Sample> samples;
+	};
+	enum { KIND_ALL = 0, KIND_RS = 1, NKINDS = 2 };
+
+	struct PollStat { rstime_t t; uint32_t rsInTable; uint32_t friends; uint32_t friendsInTable; };
+
+	void lookup_locked(UdpBitDht *dht, Kind &k, int kind, rstime_t now);
+	void poll_locked(UdpBitDht *dht, const std::vector<bdNodeId> &friendsInDht, rstime_t now);
 	void prune_locked(rstime_t now);
+	void estimate_locked(rstime_t now);
 	void load_locked();
 	void save_locked();
 
@@ -83,15 +100,11 @@ private:
 	bool mLoaded;
 	std::string mFile;
 
-	std::map<std::string, Node> mNodes;  /* RS nodes, by hex DHT id */
-	std::vector<Interval> mObs;          /* when we were polling */
-	rstime_t mDataStart;
-
-	bool mLookupRunning;
-	bdNodeId mLookupId;
-	rstime_t mLookupStart;
-	rstime_t mLastLookupEnd;
-	std::deque<LookupSample> mLookupSamples;
+	Kind mKinds[NKINDS];
+	std::map<std::string, rstime_t> mTableSeen; /* RS nodes of our table, last seen */
+	std::map<std::string, rstime_t> mWalkSeen;  /* RS nodes RS lookups met, last seen */
+	std::deque<PollStat> mPolls;                /* last 24 h, not saved */
+	rstime_t mObsStart;                         /* first poll of the data kept */
 
 	rstime_t mLastPoll;
 	rstime_t mLastSave;

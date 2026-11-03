@@ -173,28 +173,47 @@ public:
     rstime_t mLastSeen;
 };
 
-/** Size of the DHT and of its RetroShare part, as ranges. 0 = not known yet.
- * The low ends are counts of what we saw, the high ends estimates. */
+/** Size of the DHT and of its RetroShare part. 0 = not measured yet.
+ * Densities come from random-target lookups; "reachable" counts the nodes
+ * that answered us, "heard" adds the silent ones at least two nodes reported.
+ * Errors are half the 10-90 % confidence interval, in percent. */
 struct RsDhtSizeEstimate
 {
-	RsDhtSizeEstimate() : rsMin(0), rsMax(0), allMin(0), allMax(0),
-	    rsObservedSecs(0), allSamples(0) {}
+	/** RetroShare nodes online now: low end of the reachable interval to the
+	 * high end of the heard one */
+	uint32_t rsMin = 0;
+	uint32_t rsMax = 0;
+	/** fewer lookups than a full sample yet: the range will still move */
+	bool rsProvisional = true;
+	uint32_t rsReachable = 0;
+	uint32_t rsReachableErr = 0;
+	uint32_t rsHeard = 0;
+	uint32_t rsHeardErr = 0;
+	uint32_t rsLookups = 0;
 
-	/** RetroShare nodes seen in our DHT routing table over the last 24 h */
-	uint32_t rsMin;
-	/** Chao1 estimate over the last 7 days, the nodes we missed included */
-	uint32_t rsMax;
-	/** whole DHT, from random lookups: the nodes that answered us */
-	uint32_t allMin;
-	/** same lookups, every node heard of near the targets, the silent ones
-	 * included (most DHT nodes do not answer an unknown node) */
-	uint32_t allMax;
+	/** RS nodes seen in our own routing table over the last 24 h */
+	uint32_t rsSeen24h = 0;
+	/** distinct RS nodes online during the last 24 h, from the overlap of
+	 * our routing table and the RS lookups (Chapman); 0 = no overlap yet */
+	uint32_t rsDistinct24h = 0;
+	/** RS nodes online now from our routing table, calibrated by the share
+	 * of our friends present in the DHT the table holds; 0 = no friend in
+	 * the DHT. Friends are over-represented in our table: a low estimate */
+	uint32_t rsFriendCalibrated = 0;
+	uint32_t rsFriendsInDht = 0;
 
-	/** time the RS census was observed over the last 7 days, in seconds */
-	uint32_t rsObservedSecs;
-	/** lookups behind allMin / allMax (0 when this libbitdht cannot run
-	 * them: allMin = allMax = 0 then) */
-	uint32_t allSamples;
+	/** whole DHT, same meanings */
+	uint32_t allMin = 0;
+	uint32_t allMax = 0;
+	bool allProvisional = true;
+	uint32_t allReachable = 0;
+	uint32_t allReachableErr = 0;
+	uint32_t allHeard = 0;
+	uint32_t allHeardErr = 0;
+	uint32_t allLookups = 0;
+
+	/** false when this libbitdht cannot run the lookups at all */
+	bool lookupsAvailable = false;
 };
 
 class RsDht

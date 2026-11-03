@@ -25,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
+#include <random>
 #include <set>
 #include <sstream>
 
@@ -36,34 +37,26 @@
 #include "util/rsdir.h"
 
 static const rstime_t POLL_PERIOD     = 60;
-static const rstime_t OBS_GAP         = 3 * POLL_PERIOD; /* longer = we were not polling */
 static const rstime_t SAVE_PERIOD     = 1800;
-static const rstime_t HOUR            = 3600;
-static const rstime_t DAY             = 24 * HOUR;
-static const rstime_t WEEK            = 7 * DAY;
-static const int      RS_OCCASIONS    = 7;
+static const rstime_t DAY             = 24 * 3600;
 static const int      NBUCKETS        = BITDHT_KEY_BITLEN;
 
-static const rstime_t LOOKUP_PERIOD   = 120;  /* pause between two lookups */
+static const rstime_t LOOKUP_PERIOD   = 60;   /* pause between two lookups of a kind */
 static const rstime_t LOOKUP_TIMEOUT  = 360;  /* libbitdht ends them at 300 s */
 static const rstime_t LOOKUP_MAX_AGE  = 300;  /* BITDHT_MAX_QUERY_AGE */
-static const size_t   LOOKUP_KEEP     = 24;
-static const size_t   LOOKUP_MIN      = 6;
-static const int      LOOKUP_K        = 8;
+static const size_t   LOOKUP_KEEP     = 24;   /* per kind */
+static const size_t   LOOKUP_FULL     = 12;   /* fewer: provisional */
+static const int      K_ANSWERED      = 8;
+static const int      K_HEARD         = 12;
+static const uint32_t MIN_REPORTERS   = 2;
+static const int      BOOTSTRAP       = 200;
+static const uint32_t CHAPMAN_MIN_OVERLAP = 3;
 /* closer than 2^-40 of the id space: a node copying the target id (no real
  * node is expected there below ~10^9 nodes) */
 static const double   FORGED_DIST     = 9.094947017729282e-13;
 
 static const char    *FILE_NAME       = "dht-size.txt";
-
-static double median(std::vector<double> v)
-{
-	if (v.empty())
-		return 0;
-	std::sort(v.begin(), v.end());
-	size_t h = v.size() / 2;
-	return (v.size() % 2) ? v[h] : (v[h - 1] + v[h]) / 2;
-}
+static const char    *FILE_HEADER     = "# rs-dht-size v2";
 
 /* first 64 bits of an XOR distance, as a fraction of the id space */
 static double metricFraction(const bdMetric &m)
@@ -74,26 +67,101 @@ static double metricFraction(const bdMetric &m)
 	return d;
 }
 
-/* (k - 1) / d_k over the sorted distances, forged ones skipped; 0 if too few */
-static double sizeFromDistances(std::vector<double> d)
+/* k-th smallest distance, forged ones skipped; false if fewer than 2 */
+static bool kthDistance(std::vector<double> d, int kmax, int &k, double &dk)
 {
 	d.erase(std::remove_if(d.begin(), d.end(),
 	                       [](double x) { return x < FORGED_DIST; }), d.end());
 	std::sort(d.begin(), d.end());
-	int k = std::min<int>(LOOKUP_K, (int) d.size());
-	if (k < 2 || d[k - 1] <= 0)
+	k = std::min<int>(kmax, (int) d.size());
+	if (k < 2)
+		return false;
+	dk = d[k - 1];
+	return dk > 0;
+}
+
+/* N = sum(k - 1) / sum(d_k), and its 10-90 % bootstrap interval */
+struct Pooled { double n; double lo; double hi; };
+
+static Pooled pooled(const std::vector<std::pair<int, double> > &s)
+{
+	Pooled p{0, 0, 0};
+	if (s.empty())
+		return p;
+	auto est = [](const std::vector<std::pair<int, double> > &v,
+	              const std::vector<size_t> *idx) -> double
+	{
+		double num = 0, den = 0;
+		size_t n = idx ? idx->size() : v.size();
+		for (size_t i = 0; i < n; ++i)
+		{
+			const auto &x = v[idx ? (*idx)[i] : i];
+			num += x.first - 1;
+			den += x.second;
+		}
+		return den > 0 ? num / den : 0;
+	};
+	p.n = est(s, NULL);
+	p.lo = p.hi = p.n;
+	if (s.size() < 3)
+		return p;
+
+	/* fixed seed: the same samples always give the same interval */
+	std::mt19937 rng(0x5eed);
+	std::uniform_int_distribution<size_t> pick(0, s.size() - 1);
+	std::vector<double> b;
+	std::vector<size_t> idx(s.size());
+	for (int r = 0; r < BOOTSTRAP; ++r)
+	{
+		for (size_t i = 0; i < idx.size(); ++i)
+			idx[i] = pick(rng);
+		b.push_back(est(s, &idx));
+	}
+	std::sort(b.begin(), b.end());
+	p.lo = b[(size_t)(0.1 * (b.size() - 1))];
+	p.hi = b[(size_t)(0.9 * (b.size() - 1))];
+	return p;
+}
+
+static uint32_t clampU32(double v)
+{
+	if (!(v > 0))
 		return 0;
-	return (k - 1) / d[k - 1];
+	return (uint32_t) std::min<long long>(std::llround(v), 4000000000LL);
+}
+
+static uint32_t errPercent(const Pooled &p)
+{
+	return p.n > 0 ? clampU32(50.0 * (p.hi - p.lo) / p.n) : 0;
+}
+
+static std::string hexId(const bdNodeId &id)
+{
+	std::string s;
+	bdStdPrintNodeId(s, &id, false);
+	return s;
 }
 
 /*****************************************************************************/
 
 DhtSizeEstimator::DhtSizeEstimator()
-	: mMtx("DhtSizeEstimator"), mLoaded(false), mDataStart(0),
-	  mLookupRunning(false), mLookupStart(0), mLastLookupEnd(0),
+	: mMtx("DhtSizeEstimator"), mLoaded(false), mObsStart(0),
 	  mLastPoll(0), mLastSave(0)
 {
-	bdZeroNodeId(&mLookupId);
+#ifdef BITDHT_QFLAGS_MEASURE
+	mKinds[KIND_ALL].flags = BITDHT_QFLAGS_MEASURE;
+#ifdef BITDHT_QFLAGS_MEASURE_APPL
+	mKinds[KIND_RS].flags = BITDHT_QFLAGS_MEASURE | BITDHT_QFLAGS_MEASURE_APPL;
+#endif
+#endif
+	for (int i = 0; i < NKINDS; ++i)
+		bdZeroNodeId(&mKinds[i].id);
+}
+
+bool DhtSizeEstimator::due()
+{
+	RS_STACK_MUTEX(mMtx);
+	return time(NULL) - mLastPoll >= POLL_PERIOD;
 }
 
 void DhtSizeEstimator::getEstimate(RsDhtSizeEstimate &est)
@@ -108,7 +176,7 @@ void DhtSizeEstimator::save()
 	save_locked();
 }
 
-void DhtSizeEstimator::tick(UdpBitDht *dht)
+void DhtSizeEstimator::tick(UdpBitDht *dht, const std::vector<bdNodeId> &friendsInDht)
 {
 	RS_STACK_MUTEX(mMtx);
 
@@ -125,14 +193,15 @@ void DhtSizeEstimator::tick(UdpBitDht *dht)
 			mFile = dir + "/" + FILE_NAME;
 			load_locked();
 		}
-		if (mDataStart == 0)
-			mDataStart = now;
+		if (mObsStart == 0)
+			mObsStart = now;
 		mLastSave = now;
 	}
 
 	mLastPoll = now;
-	lookup_locked(dht, now);
-	poll_locked(dht, now);
+	for (int i = 0; i < NKINDS; ++i)
+		lookup_locked(dht, mKinds[i], i, now);
+	poll_locked(dht, friendsInDht, now);
 	prune_locked(now);
 	estimate_locked(now);
 
@@ -141,69 +210,36 @@ void DhtSizeEstimator::tick(UdpBitDht *dht)
 		save_locked();
 		mLastSave = now;
 		RsInfo() << "DHT size estimate: RS " << mEst.rsMin << "-" << mEst.rsMax
-		         << " (observed " << mEst.rsObservedSecs / 3600 << " h of 7 d), DHT "
-		         << mEst.allMin << "-" << mEst.allMax << " (" << mEst.allSamples
-		         << " lookups)";
+		         << (mEst.rsProvisional ? " provisional" : "")
+		         << " (reachable " << mEst.rsReachable << " +-" << mEst.rsReachableErr
+		         << "%, heard " << mEst.rsHeard << " +-" << mEst.rsHeardErr
+		         << "%, " << mEst.rsLookups << " lookups; table 24h " << mEst.rsSeen24h
+		         << ", distinct 24h " << mEst.rsDistinct24h
+		         << ", friend-calibrated " << mEst.rsFriendCalibrated
+		         << "), DHT " << mEst.allMin << "-" << mEst.allMax
+		         << (mEst.allProvisional ? " provisional" : "")
+		         << " (reachable " << mEst.allReachable << " +-" << mEst.allReachableErr
+		         << "%, heard " << mEst.allHeard << " +-" << mEst.allHeardErr
+		         << "%, " << mEst.allLookups << " lookups)";
 	}
 }
 
-void DhtSizeEstimator::poll_locked(UdpBitDht *dht, rstime_t now)
+void DhtSizeEstimator::lookup_locked(UdpBitDht *dht, Kind &k, int kind, rstime_t now)
 {
-	if (!mObs.empty() && now - mObs.back().e <= OBS_GAP)
-		mObs.back().e = now;
-	else
-		mObs.push_back(Interval{now, now});
+	if (!k.flags)
+		return;
 
-	std::set<std::string> present;
-	/* bucket 0 (XOR distance < 2) can only hold our own node */
-	for (int i = 1; i < NBUCKETS; ++i)
-	{
-		bdBucket b;
-		dht->getDhtBucket(i, b);
-		for (const bdPeer &p : b.entries)
-			if (p.mPeerFlags & BITDHT_PEER_STATUS_DHT_ENGINE)
-			{
-				std::string id;
-				bdStdPrintNodeId(id, &(p.mPeerId.id), false);
-				present.insert(id);
-			}
-	}
-
-	for (const std::string &id : present)
-	{
-		Node &n = mNodes[id];
-		if (!n.inTable)
-		{
-			n.inTable = true;
-			/* a short absence (or our own restart) extends the last stay */
-			if (!n.iv.empty() && now - n.iv.back().e <= OBS_GAP)
-				n.iv.back().e = now;
-			else
-				n.iv.push_back(Interval{now, now});
-		}
-		else
-			n.iv.back().e = now;
-		n.last = now;
-	}
-	for (auto &it : mNodes)
-		if (it.second.inTable && present.find(it.first) == present.end())
-			it.second.inTable = false;
-}
-
-void DhtSizeEstimator::lookup_locked(UdpBitDht *dht, rstime_t now)
-{
-#ifdef BITDHT_QFLAGS_MEASURE
-	if (mLookupRunning)
+	if (k.running)
 	{
 		bdQuerySummary q;
-		bool have = dht->getDhtQueryStatus(&mLookupId, q) == 1;
+		bool have = dht->getDhtQueryStatus(&k.id, q) == 1;
 		bool done = have && (q.mState == BITDHT_QUERY_FOUND_CLOSEST ||
 		                     q.mState == BITDHT_QUERY_SUCCESS ||
 		                     q.mState == BITDHT_QUERY_PEER_UNREACHABLE ||
 		                     q.mState == BITDHT_QUERY_FAILURE);
-		bool timedOut = now - mLookupStart > LOOKUP_TIMEOUT;
+		bool timedOut = now - k.start > LOOKUP_TIMEOUT;
 		/* libbitdht turns a queued find into a query at its next refresh */
-		bool queued = !have && now - mLookupStart < 120;
+		bool queued = !have && now - k.start < 120;
 
 		if ((have && !done && !timedOut) || queued)
 			return;
@@ -212,156 +248,168 @@ void DhtSizeEstimator::lookup_locked(UdpBitDht *dht, rstime_t now)
 		if (done && q.mSearchTime <= LOOKUP_MAX_AGE)
 		{
 			std::vector<double> answered, heard;
-			std::set<bdMetric> all;
+			std::set<bdMetric> seen;
+			auto reporters = [&q](const bdMetric &m) -> uint32_t
+			{
+				auto it = q.mReporters.find(m);
+				return it == q.mReporters.end() ? 0 : it->second;
+			};
 			for (const auto &c : q.mClosest)
 			{
-				if (c.second.mLastRecvTime != 0)
+				bool ans = (c.second.mLastRecvTime != 0);
+				if (ans)
+				{
 					answered.push_back(metricFraction(c.first));
-				all.insert(c.first);
+					if (kind == KIND_RS)
+						mWalkSeen[hexId(c.second.mPeerId.id)] = now;
+				}
+				if ((ans || reporters(c.first) >= MIN_REPORTERS) && seen.insert(c.first).second)
+					heard.push_back(metricFraction(c.first));
 			}
 			for (const auto &c : q.mPotentialPeers)
-				all.insert(c.first);
-			for (const bdMetric &m : all)
-				heard.push_back(metricFraction(m));
+				if (reporters(c.first) >= MIN_REPORTERS && seen.insert(c.first).second)
+					heard.push_back(metricFraction(c.first));
 
-			double nA = sizeFromDistances(answered);
-			double nH = sizeFromDistances(heard);
-			if (nA > 0 && nH > 0)
+			Sample s{now, 0, 0, 0, 0};
+			if (kthDistance(answered, K_ANSWERED, s.kA, s.dA) &&
+			    kthDistance(heard, K_HEARD, s.kH, s.dH))
 			{
-				mLookupSamples.push_back(LookupSample{now, nA, std::max(nA, nH)});
-				while (mLookupSamples.size() > LOOKUP_KEEP)
-					mLookupSamples.pop_front();
+				k.samples.push_back(s);
+				while (k.samples.size() > LOOKUP_KEEP)
+					k.samples.pop_front();
+				RsDbg() << "DHT size lookup " << (kind == KIND_RS ? "rs" : "all")
+				        << " secs=" << q.mSearchTime << " answered=" << answered.size()
+				        << " heard=" << heard.size() << " kA=" << s.kA << " dA=" << s.dA
+				        << " kH=" << s.kH << " dH=" << s.dH;
 			}
 		}
 
-		dht->removeFindNode(&mLookupId);
-		mLookupRunning = false;
-		mLastLookupEnd = now;
+		dht->removeFindNode(&k.id);
+		k.running = false;
+		k.lastEnd = now;
 	}
 
-	if (now - mLastLookupEnd >= LOOKUP_PERIOD)
+	if (now - k.lastEnd >= LOOKUP_PERIOD)
 	{
-		bdStdRandomNodeId(&mLookupId);
-		dht->addFindNode(&mLookupId, BITDHT_QFLAGS_MEASURE);
-		mLookupStart = now;
-		mLookupRunning = true;
+		bdStdRandomNodeId(&k.id);
+		dht->addFindNode(&k.id, k.flags);
+		k.start = now;
+		k.running = true;
 	}
-#else
-	(void) dht;
-	(void) now;
-#endif
+}
+
+void DhtSizeEstimator::poll_locked(UdpBitDht *dht, const std::vector<bdNodeId> &friendsInDht,
+                                   rstime_t now)
+{
+	std::set<std::string> present;
+	/* bucket 0 (XOR distance < 2) can only hold our own node */
+	for (int i = 1; i < NBUCKETS; ++i)
+	{
+		bdBucket b;
+		dht->getDhtBucket(i, b);
+		for (const bdPeer &p : b.entries)
+			if (p.mPeerFlags & BITDHT_PEER_STATUS_DHT_ENGINE)
+				present.insert(hexId(p.mPeerId.id));
+	}
+	for (const std::string &id : present)
+		mTableSeen[id] = now;
+
+	PollStat ps{now, (uint32_t) present.size(), (uint32_t) friendsInDht.size(), 0};
+	for (const bdNodeId &f : friendsInDht)
+		if (present.count(hexId(f)))
+			ps.friendsInTable++;
+	mPolls.push_back(ps);
 }
 
 void DhtSizeEstimator::prune_locked(rstime_t now)
 {
-	const rstime_t keep = now - WEEK - DAY;
-	for (auto it = mNodes.begin(); it != mNodes.end(); )
-	{
-		std::vector<Interval> &iv = it->second.iv;
-		iv.erase(std::remove_if(iv.begin(), iv.end(),
-		                        [keep](const Interval &i) { return i.e < keep; }),
-		         iv.end());
-		if (iv.empty() && !it->second.inTable)
-			it = mNodes.erase(it);
-		else
-			++it;
-	}
-	mObs.erase(std::remove_if(mObs.begin(), mObs.end(),
-	                          [keep](const Interval &i) { return i.e < keep; }),
-	           mObs.end());
-	if (mDataStart < keep)
-		mDataStart = keep;
-	while (!mLookupSamples.empty() && mLookupSamples.front().t < now - DAY)
-		mLookupSamples.pop_front();
+	const rstime_t keep = now - DAY;
+	for (auto *m : {&mTableSeen, &mWalkSeen})
+		for (auto it = m->begin(); it != m->end(); )
+		{
+			if (it->second < keep)
+				it = m->erase(it);
+			else
+				++it;
+		}
+	while (!mPolls.empty() && mPolls.front().t < keep)
+		mPolls.pop_front();
+	for (int i = 0; i < NKINDS; ++i)
+		while (!mKinds[i].samples.empty() && mKinds[i].samples.front().t < keep)
+			mKinds[i].samples.pop_front();
+	if (mObsStart < keep)
+		mObsStart = keep;
 }
 
 void DhtSizeEstimator::estimate_locked(rstime_t now)
 {
+	(void) now;
 	RsDhtSizeEstimate est;
+	est.lookupsAvailable = (mKinds[KIND_ALL].flags != 0);
 
-	/* ---- RS nodes ---- */
-	auto observed = [this](rstime_t a, rstime_t b) -> rstime_t
+	/* ---- lookups ---- */
+	auto fill = [](const std::deque<Sample> &ss, uint32_t &mn, uint32_t &mx, bool &prov,
+	               uint32_t &reach, uint32_t &reachErr, uint32_t &heard,
+	               uint32_t &heardErr, uint32_t &count)
 	{
-		rstime_t t = 0;
-		for (const Interval &i : mObs)
+		std::vector<std::pair<int, double> > a, h;
+		for (const Sample &s : ss)
 		{
-			rstime_t s = std::max(i.s, a), e = std::min(i.e, b);
-			if (e > s)
-				t += e - s;
+			a.push_back(std::make_pair(s.kA, s.dA));
+			h.push_back(std::make_pair(s.kH, s.dH));
 		}
-		return t;
+		count = (uint32_t) ss.size();
+		prov = ss.size() < LOOKUP_FULL;
+		if (ss.empty())
+			return;
+		Pooled pa = pooled(a), ph = pooled(h);
+		reach = clampU32(pa.n);
+		reachErr = errPercent(pa);
+		heard = clampU32(std::max(ph.n, pa.n));
+		heardErr = errPercent(ph);
+		mn = clampU32(pa.lo);
+		mx = std::max(mn, clampU32(std::max(ph.hi, pa.hi)));
 	};
+	fill(mKinds[KIND_ALL].samples, est.allMin, est.allMax, est.allProvisional,
+	     est.allReachable, est.allReachableErr, est.allHeard, est.allHeardErr, est.allLookups);
+	fill(mKinds[KIND_RS].samples, est.rsMin, est.rsMax, est.rsProvisional,
+	     est.rsReachable, est.rsReachableErr, est.rsHeard, est.rsHeardErr, est.rsLookups);
 
-	uint32_t seen24h = 0;
-	for (const auto &it : mNodes)
-		if (it.second.last >= now - DAY)
-			seen24h++;
+	/* ---- our routing table (maps pruned to the last 24 h) ---- */
+	est.rsSeen24h = (uint32_t) mTableSeen.size();
 
-	/* occasions: up to RS_OCCASIONS equal slices of the last 7 days (of the
-	 * time since the data start while shorter); a slice we barely observed
-	 * would make every node look rare, so those are left out */
-	const rstime_t w = std::min(WEEK, now - mDataStart);
-	std::vector<std::pair<rstime_t, rstime_t> > occ;
-	int k = std::max(1, std::min<int>(RS_OCCASIONS, (int)(w / POLL_PERIOD)));
-	for (int o = 0; o < k; ++o)
+	uint32_t overlap = 0;
+	for (const auto &w : mWalkSeen)
+		if (mTableSeen.count(w.first))
+			overlap++;
+	if (overlap >= CHAPMAN_MIN_OVERLAP)
+		est.rsDistinct24h = clampU32((mTableSeen.size() + 1.0) * (mWalkSeen.size() + 1.0)
+		                             / (overlap + 1.0) - 1.0);
+
+	double inTable = 0, friends = 0, friendsInTable = 0, polls = 0;
+	for (const PollStat &p : mPolls)
 	{
-		rstime_t a = now - w + (w * o) / k;
-		rstime_t b = now - w + (w * (o + 1)) / k;
-		if (observed(a, b) * 10 >= (b - a))
-			occ.push_back(std::make_pair(a, b));
+		if (p.friends == 0)
+			continue;
+		inTable += p.rsInTable;
+		friends += p.friends;
+		friendsInTable += p.friendsInTable;
+		polls++;
 	}
-
-	double chao = seen24h;
-	if (occ.size() >= 2)
-	{
-		double M = 0, f1 = 0, f2 = 0;
-		for (const auto &it : mNodes)
-		{
-			int c = 0;
-			for (const auto &o : occ)
-				for (const Interval &i : it.second.iv)
-					if (i.s <= o.second && i.e >= o.first)
-					{
-						c++;
-						break;
-					}
-			if (c == 0)
-				continue;
-			M++;
-			if (c == 1) f1++;
-			else if (c == 2) f2++;
-		}
-		/* bias-corrected Chao1 */
-		chao = M + f1 * (f1 - 1) / (2.0 * (f2 + 1));
-	}
-
-	est.rsMin = seen24h;
-	est.rsMax = (uint32_t) std::max<double>(seen24h, std::lround(chao));
-	est.rsObservedSecs = (uint32_t) observed(now - WEEK, now);
-
-	/* ---- whole DHT ---- */
-	if (mLookupSamples.size() >= LOOKUP_MIN)
-	{
-		std::vector<double> a, h;
-		for (const LookupSample &s : mLookupSamples)
-		{
-			a.push_back(s.answered);
-			h.push_back(s.heard);
-		}
-		est.allMin = (uint32_t) std::min<double>(median(a), 4e9);
-		est.allMax = (uint32_t) std::min<double>(std::max(median(a), median(h)), 4e9);
-	}
-	est.allSamples = (uint32_t) mLookupSamples.size();
+	if (friendsInTable > 0)
+		est.rsFriendCalibrated = clampU32(inTable / polls * friends / friendsInTable);
+	if (!mPolls.empty())
+		est.rsFriendsInDht = mPolls.back().friends;
 
 	mEst = est;
 }
 
 /* Format:
- *   # rs-dht-size v1
- *   D <data_start>
- *   O <s>-<e>;<s>-<e>;...          when we were polling
- *   N <dht id> <s>-<e>;...         an RS node and its stays in our table
- *   L <time> <answered> <heard>    a lookup result
+ *   # rs-dht-size v2
+ *   S <first poll of the data kept>
+ *   T <dht id> <last seen>              RS node of our routing table
+ *   W <dht id> <last seen>              RS node an RS lookup met
+ *   L <kind> <time> <kA> <dA> <kH> <dH> lookup result (kind 0 all, 1 rs)
  */
 void DhtSizeEstimator::save_locked()
 {
@@ -373,97 +421,74 @@ void DhtSizeEstimator::save_locked()
 		std::ofstream f(tmp, std::ios::trunc);
 		if (!f)
 			return;
-		f << "# rs-dht-size v1\n";
-		f << "D " << mDataStart << "\n";
-		f << "O ";
-		for (size_t i = 0; i < mObs.size(); ++i)
-			f << (i ? ";" : "") << mObs[i].s << "-" << mObs[i].e;
-		f << "\n";
-		for (const auto &it : mNodes)
-		{
-			if (it.second.iv.empty())
-				continue;
-			f << "N " << it.first << " ";
-			for (size_t i = 0; i < it.second.iv.size(); ++i)
-				f << (i ? ";" : "") << it.second.iv[i].s << "-" << it.second.iv[i].e;
-			f << "\n";
-		}
-		char buf[96];
-		for (const LookupSample &s : mLookupSamples)
-		{
-			snprintf(buf, sizeof(buf), "L %lld %.0f %.0f\n",
-			         (long long) s.t, s.answered, s.heard);
-			f << buf;
-		}
+		f << FILE_HEADER << "\n";
+		f << "S " << mObsStart << "\n";
+		for (const auto &it : mTableSeen)
+			f << "T " << it.first << " " << it.second << "\n";
+		for (const auto &it : mWalkSeen)
+			f << "W " << it.first << " " << it.second << "\n";
+		char buf[128];
+		for (int i = 0; i < NKINDS; ++i)
+			for (const Sample &s : mKinds[i].samples)
+			{
+				snprintf(buf, sizeof(buf), "L %d %lld %d %.10g %d %.10g\n",
+				         i, (long long) s.t, s.kA, s.dA, s.kH, s.dH);
+				f << buf;
+			}
 		if (!f)
 			return;
 	}
 	RsDirUtil::renameFile(tmp, mFile);
 }
 
-static void parseIntervals(const std::string &s, std::vector<std::pair<rstime_t, rstime_t> > &out)
-{
-	std::stringstream ss(s);
-	std::string tok;
-	while (std::getline(ss, tok, ';'))
-	{
-		long long a = 0, b = 0;
-		if (sscanf(tok.c_str(), "%lld-%lld", &a, &b) == 2 && a <= b)
-			out.push_back(std::make_pair((rstime_t) a, (rstime_t) b));
-	}
-}
-
 void DhtSizeEstimator::load_locked()
 {
 	std::ifstream f(mFile);
 	std::string line;
-	while (f && std::getline(f, line))
+	if (!std::getline(f, line) || line != FILE_HEADER)
+		return; /* missing, or an older format: start afresh */
+
+	while (std::getline(f, line))
 	{
-		if (line.size() < 2 || line[1] != ' ')
+		if (line.size() < 3 || line[1] != ' ')
 			continue;
-		const std::string rest = line.substr(2);
+		std::istringstream is(line.substr(2));
 		switch (line[0])
 		{
-		case 'D':
-			mDataStart = (rstime_t) atoll(rest.c_str());
-			break;
-		case 'O':
+		case 'S':
 		{
-			std::vector<std::pair<rstime_t, rstime_t> > v;
-			parseIntervals(rest, v);
-			for (const auto &p : v)
-				mObs.push_back(Interval{p.first, p.second});
+			long long t = 0;
+			if (is >> t)
+				mObsStart = (rstime_t) t;
 			break;
 		}
-		case 'N':
+		case 'T':
+		case 'W':
 		{
-			size_t sp = rest.find(' ');
-			if (sp == std::string::npos || sp == 0)
-				break;
-			std::vector<std::pair<rstime_t, rstime_t> > v;
-			parseIntervals(rest.substr(sp + 1), v);
-			if (v.empty())
-				break;
-			Node &n = mNodes[rest.substr(0, sp)];
-			for (const auto &p : v)
-			{
-				n.iv.push_back(Interval{p.first, p.second});
-				n.last = std::max(n.last, p.second);
-			}
+			std::string id;
+			long long t = 0;
+			if ((is >> id >> t) && id.size() == 40)
+				(line[0] == 'T' ? mTableSeen : mWalkSeen)[id] = (rstime_t) t;
 			break;
 		}
 		case 'L':
 		{
+			int kind = -1;
 			long long t = 0;
-			double a = 0, h = 0;
-			if (sscanf(rest.c_str(), "%lld %lf %lf", &t, &a, &h) == 3 && a > 0 && h > 0)
-				mLookupSamples.push_back(LookupSample{(rstime_t) t, a, h});
+			Sample s{0, 0, 0, 0, 0};
+			if ((is >> kind >> t >> s.kA >> s.dA >> s.kH >> s.dH) &&
+			    kind >= 0 && kind < NKINDS && s.kA >= 2 && s.kH >= 2 && s.dA > 0 && s.dH > 0)
+			{
+				s.t = (rstime_t) t;
+				mKinds[kind].samples.push_back(s);
+			}
 			break;
 		}
 		default:
 			break;
 		}
 	}
-	while (mLookupSamples.size() > LOOKUP_KEEP)
-		mLookupSamples.pop_front();
+	for (int i = 0; i < NKINDS; ++i)
+		while (mKinds[i].samples.size() > LOOKUP_KEEP)
+			mKinds[i].samples.pop_front();
 }
