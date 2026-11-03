@@ -37,8 +37,9 @@ class UdpBitDht;
  * Random-target lookups (libbitdht BITDHT_QFLAGS_MEASURE), two kinds run side
  * by side: over the whole DHT, and over RetroShare nodes only
  * (BITDHT_QFLAGS_MEASURE_APPL). The XOR distance d_k of the k-th closest node
- * to a random target gives the density: N = sum(k - 1) / sum(d_k) over the
- * recent lookups. Two counts per lookup:
+ * to a random target gives the density: N = median of (k - 1/3) / d_k over
+ * the recent lookups (unbiased, and one lookup stuck far from its target
+ * cannot drag it). Two counts per lookup:
  *   - reachable: the nodes that answered us;
  *   - heard: those plus the silent ones at least two nodes reported (one
  *     report only is often a stale entry or a forged id).

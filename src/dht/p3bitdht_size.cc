@@ -80,42 +80,45 @@ static bool kthDistance(std::vector<double> d, int kmax, int &k, double &dk)
 	return dk > 0;
 }
 
-/* N = sum(k - 1) / sum(d_k), and its 10-90 % bootstrap interval */
+/* N per lookup = (k - 1/3) / d_k: d_k * N follows Gamma(k, 1), whose median
+ * is ~k - 1/3, so the median of these is unbiased. A median, not a pooled
+ * sum(k - 1) / sum(d_k): one lookup stuck far from its target (seen live:
+ * d_k 400x the others) would drag a pooled value down by an order of
+ * magnitude. Returned with its 10-90 % bootstrap interval. */
 struct Pooled { double n; double lo; double hi; };
+
+static double median(std::vector<double> v)
+{
+	if (v.empty())
+		return 0;
+	std::sort(v.begin(), v.end());
+	size_t h = v.size() / 2;
+	return (v.size() % 2) ? v[h] : (v[h - 1] + v[h]) / 2;
+}
 
 static Pooled pooled(const std::vector<std::pair<int, double> > &s)
 {
 	Pooled p{0, 0, 0};
-	if (s.empty())
+	std::vector<double> n;
+	for (const auto &x : s)
+		if (x.second > 0)
+			n.push_back((x.first - 1.0 / 3.0) / x.second);
+	if (n.empty())
 		return p;
-	auto est = [](const std::vector<std::pair<int, double> > &v,
-	              const std::vector<size_t> *idx) -> double
-	{
-		double num = 0, den = 0;
-		size_t n = idx ? idx->size() : v.size();
-		for (size_t i = 0; i < n; ++i)
-		{
-			const auto &x = v[idx ? (*idx)[i] : i];
-			num += x.first - 1;
-			den += x.second;
-		}
-		return den > 0 ? num / den : 0;
-	};
-	p.n = est(s, NULL);
+	p.n = median(n);
 	p.lo = p.hi = p.n;
-	if (s.size() < 3)
+	if (n.size() < 3)
 		return p;
 
 	/* fixed seed: the same samples always give the same interval */
 	std::mt19937 rng(0x5eed);
-	std::uniform_int_distribution<size_t> pick(0, s.size() - 1);
-	std::vector<double> b;
-	std::vector<size_t> idx(s.size());
-	for (int r = 0; r < BOOTSTRAP; ++r)
+	std::uniform_int_distribution<size_t> pick(0, n.size() - 1);
+	std::vector<double> b, r(n.size());
+	for (int i = 0; i < BOOTSTRAP; ++i)
 	{
-		for (size_t i = 0; i < idx.size(); ++i)
-			idx[i] = pick(rng);
-		b.push_back(est(s, &idx));
+		for (size_t j = 0; j < r.size(); ++j)
+			r[j] = n[pick(rng)];
+		b.push_back(median(r));
 	}
 	std::sort(b.begin(), b.end());
 	p.lo = b[(size_t)(0.1 * (b.size() - 1))];
