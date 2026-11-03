@@ -39,7 +39,11 @@ static const rstime_t WEEK             = 7 * DAY;
 static const int      NBUCKETS         = BITDHT_KEY_BITLEN; /* 160 */
 
 /* random-target lookups (total DHT size) */
-static const size_t   LOOKUP_PARALLEL  = 2;     /* running at once */
+/* 0: the probe no longer runs its own lookups. feature/dht-size-estimates
+ * runs two measure lookups of its own, and with these two more they starved
+ * each other of libbitdht's measure budget: most ran into the 300 s cap and
+ * were thrown away (2026-11-03). The census part of the probe still runs. */
+static const size_t   LOOKUP_PARALLEL  = 0;     /* running at once */
 static const size_t   LOOKUP_KEEP      = 30;    /* results the median is taken over */
 static const int      LOOKUP_K         = 8;     /* k-th closest answering node */
 /* libbitdht's own 300 s cap is only checked once every peer of the closest
