@@ -62,7 +62,7 @@ static const char *SCHEMA_KEYS =
 	"rs_chapman_1h,rs_chapman_1h_nostable,rs_chapman_24h,rs_schnabel_24h,"
 	"rs_chao1_24h,rs_chao1_7d,"
 	"all_bd,all_bd_recalc,all_bd_old,all_cum,all_bd_med24h,"
-	"all_lookup,all_lookup_n,all_lookup_any,all_lookup_any_n,rs_lookup";
+	"all_lookup,all_lookup_n,all_lookup_any,all_lookup_any_n,rs_lookup,all_lookup_heard";
 
 /*****************************************************************************
  * Instant estimators, from the per-bucket counts.
@@ -285,7 +285,7 @@ void DhtRsCensus::tick(UdpBitDht *dht, bdDhtFunctions *fns, uint32_t bdAll, uint
 		if (mDataStart == 0)
 			mDataStart = now;
 
-		RsInfo() << "DHT-RS schema v=3 keys=" << SCHEMA_KEYS;
+		RsInfo() << "DHT-RS schema v=4 keys=" << SCHEMA_KEYS;
 		RsInfo() << "DHT-RS start census_loaded=" << mNodes.size()
 		         << " data_start=" << mDataStart
 		         << " census_file=" << mCensusFile
@@ -546,11 +546,11 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	/* random-target lookups: median of the last results; the RS share of
 	 * the nodes that answered, times that total */
 	/* all_lookup: converged lookups only; all_lookup_any: every result */
-	double allLookup = 0, allLookupAny = 0, rsLookup = 0;
+	double allLookup = 0, allLookupAny = 0, rsLookup = 0, allLookupHeard = 0;
 	size_t nLookup = 0;
 	rstime_t lookupCov = 0;
 	{
-		std::vector<double> v, vAny;
+		std::vector<double> v, vAny, vHeard;
 		double ans = 0, ansRs = 0;
 		for (const LookupSample &ls : mLookupSamples)
 		{
@@ -558,11 +558,14 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 			if (!ls.converged)
 				continue;
 			v.push_back(ls.n);
+			if (ls.nHeard > 0)
+				vHeard.push_back(ls.nHeard);
 			ans += ls.answered;
 			ansRs += ls.answeredRs;
 		}
 		allLookup = median(v);
 		allLookupAny = median(vAny);
+		allLookupHeard = median(vHeard);
 		nLookup = v.size();
 		if (ans > 0)
 			rsLookup = allLookup * ansRs / ans;
@@ -602,7 +605,8 @@ void DhtRsCensus::poll_locked(UdpBitDht *dht, bdDhtFunctions *fns, rstime_t now,
 	    << " all_lookup=" << fmt(allLookup) << " all_lookup_cov=" << cov(lookupCov)
 	    << " all_lookup_n=" << nLookup
 	    << " all_lookup_any=" << fmt(allLookupAny) << " all_lookup_any_n=" << mLookupSamples.size()
-	    << " rs_lookup=" << fmt(rsLookup);
+	    << " rs_lookup=" << fmt(rsLookup)
+	    << " all_lookup_heard=" << fmt(allLookupHeard);
 	RsInfo() << est.str();
 
 	std::ostringstream raw;
@@ -695,12 +699,34 @@ void DhtRsCensus::lookups_locked(UdpBitDht *dht, rstime_t now)
 		std::sort(d.begin(), d.end());
 		int k = std::min<int>(LOOKUP_K, (int) d.size());
 
+		/* every node heard of near the target, answered or not (closest and
+		 * potential lists overlap: dedup by distance, unique per id). If this
+		 * estimate is far above the answered one, the gap is nodes that do not
+		 * answer us; if both stay close, the lookup does not discover enough. */
+		std::set<bdMetric> heardSet;
+		if (have)
+		{
+			for (const auto &c : q.mClosest) heardSet.insert(c.first);
+			for (const auto &c : q.mPotentialPeers) heardSet.insert(c.first);
+		}
+		std::vector<double> dh;
+		for (const bdMetric &m : heardSet) dh.push_back(metricFraction(m));
+		int kh = std::min<int>(LOOKUP_K, (int) dh.size());
+		double nHeard = (kh >= 2 && dh[kh - 1] > 0) ? (kh - 1) / dh[kh - 1] : 0;
+		/* heard of, closer than the k-th answered node, but silent */
+		uint32_t silentInside = 0;
+		if (k >= 1)
+			for (double x : dh)
+				if (x < d[k - 1]) silentInside++;
+		/* the k - 1 answered nodes closer than d[k - 1] are in dh too */
+		silentInside = silentInside > (uint32_t) (k - 1) ? silentInside - (k - 1) : 0;
+
 		if (k >= 2 && d[k - 1] > 0)
 		{
 			/* a measure query that hit libbitdht's 300 s cap also ends in a
 			 * "done" state: only an end before the cap counts as converged */
 			bool converged = done && q.mSearchTime <= 300;
-			LookupSample ls{now, (k - 1) / d[k - 1], k, (uint32_t) d.size(), rs, converged};
+			LookupSample ls{now, (k - 1) / d[k - 1], k, (uint32_t) d.size(), rs, converged, nHeard};
 			mLookupSamples.push_back(ls);
 			while (mLookupSamples.size() > LOOKUP_KEEP)
 				mLookupSamples.pop_front();
@@ -711,7 +737,10 @@ void DhtRsCensus::lookups_locked(UdpBitDht *dht, rstime_t now)
 			         << " closest=" << q.mClosest.size() << " answered=" << d.size()
 			         << " answered_rs=" << rs << " k=" << k
 			         << " d1=" << d[0] << " dk=" << d[k - 1]
-			         << " n=" << fmt(ls.n);
+			         << " n=" << fmt(ls.n)
+			         << " heard=" << dh.size() << " silent_inside=" << silentInside
+			         << " dk_heard=" << (kh >= 1 ? dh[kh - 1] : -1)
+			         << " n_heard=" << fmt(nHeard);
 		}
 		else
 		{
