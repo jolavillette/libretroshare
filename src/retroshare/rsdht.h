@@ -173,6 +173,30 @@ public:
     rstime_t mLastSeen;
 };
 
+/** Size of the DHT and of its RetroShare part, as ranges. 0 = not known yet.
+ * The low ends are counts of what we saw, the high ends estimates. */
+struct RsDhtSizeEstimate
+{
+	RsDhtSizeEstimate() : rsMin(0), rsMax(0), allMin(0), allMax(0),
+	    rsObservedSecs(0), allSamples(0) {}
+
+	/** RetroShare nodes seen in our DHT routing table over the last 24 h */
+	uint32_t rsMin;
+	/** Chao1 estimate over the last 7 days, the nodes we missed included */
+	uint32_t rsMax;
+	/** whole DHT, from random lookups: the nodes that answered us */
+	uint32_t allMin;
+	/** same lookups, every node heard of near the targets, the silent ones
+	 * included (most DHT nodes do not answer an unknown node) */
+	uint32_t allMax;
+
+	/** time the RS census was observed over the last 7 days, in seconds */
+	uint32_t rsObservedSecs;
+	/** lookups behind allMin / allMax (0 when this libbitdht cannot run
+	 * them: allMin = allMax = 0 then) */
+	uint32_t allSamples;
+};
+
 class RsDht
 {
 	public:
@@ -211,6 +235,9 @@ virtual bool    getOwnDhtId(std::string &ownDhtId) = 0;
 
 virtual bool	isAddressBanned(const struct sockaddr_storage& raddr) =0;
 virtual void	getListOfBannedIps(std::list<RsDhtFilteredPeer>& lst) =0;
+
+/** Estimated number of RetroShare nodes and of DHT nodes, as ranges */
+virtual void	getDhtSizeEstimate(RsDhtSizeEstimate& est) = 0;
 
 #if 0
 virtual std::string getPeerStatusString();

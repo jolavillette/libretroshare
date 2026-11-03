@@ -1097,6 +1097,7 @@ int p3BitDht::tick()
 {
 	doActions();
 	monitorConnections();
+	mSizeEstimator.tick(mUdpBitDht);
 
 	minuteTick();
 
