@@ -254,8 +254,16 @@ void DhtSizeEstimator::lookup_locked(UdpBitDht *dht, Kind &k, int kind, rstime_t
 			std::set<bdMetric> seen;
 			auto reporters = [&q](const bdMetric &m) -> uint32_t
 			{
+#ifdef BITDHT_QFLAGS_MEASURE_APPL
+				/* same libbitdht change as bdQuerySummary::mReporters */
 				auto it = q.mReporters.find(m);
 				return it == q.mReporters.end() ? 0 : it->second;
+#else
+				/* no reporter counts: every node heard of counts */
+				(void) q;
+				(void) m;
+				return MIN_REPORTERS;
+#endif
 			};
 			for (const auto &c : q.mClosest)
 			{
