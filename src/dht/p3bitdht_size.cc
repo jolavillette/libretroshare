@@ -56,7 +56,10 @@ static const uint32_t CHAPMAN_MIN_OVERLAP = 3;
 static const double   FORGED_DIST     = 9.094947017729282e-13;
 
 static const char    *FILE_NAME       = "dht-size.txt";
-static const char    *FILE_HEADER     = "# rs-dht-size v2";
+static const char    *FILE_HEADER     = "# rs-dht-size v3";
+/* v2: RS lookups could stray into the whole DHT (libbitdht before the
+ * localnet reply check), so its RS walk data are dropped on load */
+static const char    *FILE_HEADER_V2  = "# rs-dht-size v2";
 
 /* first 64 bits of an XOR distance, as a fraction of the id space */
 static double metricFraction(const bdMetric &m)
@@ -416,7 +419,7 @@ void DhtSizeEstimator::estimate_locked(rstime_t now)
 }
 
 /* Format:
- *   # rs-dht-size v2
+ *   # rs-dht-size v3
  *   S <first poll of the data kept>
  *   T <dht id> <last seen>              RS node of our routing table
  *   W <dht id> <last seen>              RS node an RS lookup met
@@ -456,7 +459,10 @@ void DhtSizeEstimator::load_locked()
 {
 	std::ifstream f(mFile);
 	std::string line;
-	if (!std::getline(f, line) || line != FILE_HEADER)
+	if (!std::getline(f, line))
+		return;
+	const bool v2 = (line == FILE_HEADER_V2);
+	if (!v2 && line != FILE_HEADER)
 		return; /* missing, or an older format: start afresh */
 
 	while (std::getline(f, line))
@@ -478,7 +484,7 @@ void DhtSizeEstimator::load_locked()
 		{
 			std::string id;
 			long long t = 0;
-			if ((is >> id >> t) && id.size() == 40)
+			if ((is >> id >> t) && id.size() == 40 && !(v2 && line[0] == 'W'))
 				(line[0] == 'T' ? mTableSeen : mWalkSeen)[id] = (rstime_t) t;
 			break;
 		}
@@ -488,7 +494,8 @@ void DhtSizeEstimator::load_locked()
 			long long t = 0;
 			Sample s{0, 0, 0, 0, 0};
 			if ((is >> kind >> t >> s.kA >> s.dA >> s.kH >> s.dH) &&
-			    kind >= 0 && kind < NKINDS && s.kA >= 2 && s.kH >= 2 && s.dA > 0 && s.dH > 0)
+			    kind >= 0 && kind < NKINDS && !(v2 && kind == KIND_RS) &&
+			    s.kA >= 2 && s.kH >= 2 && s.dA > 0 && s.dH > 0)
 			{
 				s.t = (rstime_t) t;
 				mKinds[kind].samples.push_back(s);
