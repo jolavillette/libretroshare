@@ -119,6 +119,10 @@ void TorControl::setTorStatus(TorControl::TorStatus n)
     RsDbg() << "Setting TorStatus=" << n ;
     mTorStatus = n;
 
+    // By now tor has a fresh consensus, so it knows whether it is outdated.
+    if(n == TorReady && isConnected())
+        getVersionStatus();
+
     if(rsEvents)
     {
         auto ev = std::make_shared<RsTorManagerEvent>();
@@ -151,6 +155,7 @@ TorControl::TorStatus TorControl::torStatus() const
 
 std::string TorControl::torVersion() const
 {
+    std::lock_guard<std::mutex> lock(mVersionWarningMtx);
     return mTorVersion;
 }
 
@@ -245,7 +250,15 @@ void TorControl::authenticateReply(TorControlCommand *sender)
 
     mSocket->registerEvent(ByteArray("STATUS_CLIENT"), clientEvents);
 
+    // STATUS_GENERAL carries DANGEROUS_VERSION, sent when a new consensus says
+    // our tor is obsolete or unrecommended.
+    TorControlCommand *generalEvents = new TorControlCommand;
+    generalEvents->set_replyLine_callback([this](int code, const ByteArray &data) { statusEvent(code,data);});
+
+    mSocket->registerEvent(ByteArray("STATUS_GENERAL"), generalEvents);
+
     getTorInfo();
+    getVersionStatus();	// tor may already hold a cached consensus that condemns it
     publishServices();
 
     // XXX Fix old configurations that would store unwanted options in torrc.
@@ -273,7 +286,10 @@ void TorControl::authenticate()
 void TorControl::socketDisconnected()
 {
     /* Clear some internal state */
-    mTorVersion.clear();
+    {
+        std::lock_guard<std::mutex> lock(mVersionWarningMtx);
+        mTorVersion.clear();
+    }
     mSocksAddress.clear();
     mSocksPort = 0;
     setTorStatus(TorControl::TorUnknown);
@@ -293,7 +309,10 @@ void TorControl::protocolInfoReply(TorControlCommand *sender)
     if (!info)
         return;
 
-    mTorVersion = info->torVersion();
+    {
+        std::lock_guard<std::mutex> lock(mVersionWarningMtx);
+        mTorVersion = info->torVersion();
+    }
 
     if (mStatus == TorControl::Authenticating)
     {
@@ -567,6 +586,96 @@ void TorControl::statusEvent(int /* code */, const ByteArray &data)
         tokens.pop_front();
         updateBootstrap(tokens);
     }
+    else if (tok2 == "DANGEROUS_VERSION")
+    {
+        // STATUS_GENERAL <severity> DANGEROUS_VERSION CURRENT=<v> REASON=NEW|OBSOLETE|UNRECOMMENDED RECOMMENDED="<list>"
+        std::string current, reason;
+
+        for(const auto& tok: tokens)
+        {
+            int equals = tok.indexOf('=');
+            if(equals < 0)
+                continue;
+
+            std::string key = tok.mid(0, equals).toString();
+            std::string value = unquotedString(tok.mid(equals + 1)).toString();
+
+            if(key == "CURRENT") current = value;
+            else if(key == "REASON") reason = value;
+        }
+        setVersionStatus(reason, current);
+    }
+}
+
+void TorControl::getVersionStatus()
+{
+    GetConfCommand *command = new GetConfCommand(GetConfCommand::GetInfo);
+
+    command->set_finished_callback( [this](TorControlCommand *sender)
+    {
+        GetConfCommand *cmd = dynamic_cast<GetConfCommand*>(sender);
+        if (!cmd)
+            return;
+
+        auto status = cmd->get("status/version/current");
+        if (!status.empty())
+            setVersionStatus(status.front(), std::string());
+    });
+
+    mSocket->sendCommand(command, command->build(std::list<std::string>{ "status/version/current" }));
+}
+
+void TorControl::setVersionStatus(const std::string& status, const std::string& current_version)
+{
+    // Values from GETINFO status/version/current (lower case) and from the
+    // DANGEROUS_VERSION event REASON (upper case).
+    std::string st;
+    for(char c: status)
+        st += (char)tolower((unsigned char)c);
+
+    std::string warning;
+
+    if (st == "obsolete" || st == "old" || st == "unrecommended")
+    {
+        std::string version = torVersion();
+        if (version.empty())
+            version = current_version;
+
+        warning = "Your Tor (" + (version.empty() ? std::string("unknown version") : version)
+                + ") is " + st + " according to the Tor network. It may stop working at any time:"
+                + " please install a recent Tor.";
+    }
+    else if (st == "unknown" || st.empty())
+        return;	// no consensus yet: keep what we knew
+
+    bool changed;
+    {
+        std::lock_guard<std::mutex> lock(mVersionWarningMtx);
+        changed = (warning != mTorVersionWarning);
+        mTorVersionWarning = warning;
+    }
+
+    if (!changed || warning.empty())
+        return;
+
+    RsWarn() << "torctrl: " << warning ;
+
+    if(rsEvents)
+    {
+        auto ev = std::make_shared<RsTorManagerEvent>();
+
+        ev->mTorManagerEventType = RsTorManagerEventCode::TOR_VERSION_OUTDATED;
+        ev->mTorConnectivityStatus  = torConnectivityStatus(mStatus);
+        ev->mTorStatus = ::torStatus(mTorStatus);
+        ev->mErrorMessage = warning;
+        rsEvents->postEvent(ev);
+    }
+}
+
+std::string TorControl::torVersionWarning() const
+{
+    std::lock_guard<std::mutex> lock(mVersionWarningMtx);
+    return mTorVersionWarning;
 }
 
 void TorControl::updateBootstrap(const std::list<ByteArray> &data)
