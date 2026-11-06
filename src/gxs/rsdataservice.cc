@@ -1428,8 +1428,16 @@ void RsDataService::msgMetaWarmupThreadBody()
     {
         auto slice_t0 = std::chrono::steady_clock::now();
 
+        // GXS-PROF: how long each slice holds mDbMutex, to tell whether slices
+        // overshoot their time budget and stall the readers.
+        auto prof_locked = slice_t0;
+        int64_t prof_hold_ms = 0;
+        uint32_t prof_rows = 0;
+        const uint32_t prof_asked = slice_rows;
+
         {
             RsStackMutex stack(mDbMutex);
+            prof_locked = std::chrono::steady_clock::now();
 
             if(mMsgMetaDataCache_ContainsAllDatabase)
                 return;
@@ -1476,7 +1484,18 @@ void RsDataService::msgMetaWarmupThreadBody()
                 mMsgMetaDataCache_ContainsAllDatabase = true;
                 done = true;
             }
+
+            prof_rows = n_rows;
+            prof_hold_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - prof_locked).count();
         }
+
+        if(prof_hold_ms >= GxsTickProfiler::slowThresholdMs())
+            RsWarn() << "GXS-PROF " << mDbName << " msg meta warm-up slice " << n_slices
+                     << ": " << prof_rows << " rows (" << prof_asked << " asked) held mDbMutex "
+                     << prof_hold_ms << " ms (waited "
+                     << std::chrono::duration_cast<std::chrono::milliseconds>(prof_locked - slice_t0).count()
+                     << " ms for it)" << std::endl;
 
         if(!done)
         {
