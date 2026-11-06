@@ -26,6 +26,7 @@
 #include "util/rstime.h"
 #include "util/rsdir.h"
 #include "util/rsprint.h"
+#include "util/rsstring.h"
 #include "retroshare/rsexpr.h"
 #include "dir_hierarchy.h"
 #include "filelist_io.h"
@@ -887,10 +888,7 @@ bool InternalFileHierarchyStorage::searchTerms(
 		for(auto& termIt : std::as_const(terms))
 		{
 			/* always ignore case */
-			if(tFilename.end() != std::search(
-			            tFilename.begin(), tFilename.end(),
-			            termIt.begin(), termIt.end(),
-			            RsRegularExpression::CompareCharIC() ))
+			if(utf8ContainsIgnoreCase(tFilename, termIt))
 			{
 				results.push_back(i);
 				break;

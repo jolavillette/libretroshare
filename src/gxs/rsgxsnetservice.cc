@@ -256,6 +256,7 @@
 #include "util/rsdir.h"
 #include "util/rstime.h"
 #include "util/rsmemory.h"
+#include "util/rsstring.h"
 #include "util/stacktrace.h"
 #include "util/rsdebug.h"
 #include "util/cxx17retrocompat.h"
@@ -5322,9 +5323,7 @@ TurtleRequestId RsGxsNetService::turtleSearchRequest(const std::string& match_st
 static bool termSearch(const std::string& src, const std::string& substring)
 {
 	/* always ignore case */
-	return src.end() != std::search(
-	            src.begin(), src.end(), substring.begin(), substring.end(),
-	            RsRegularExpression::CompareCharIC() );
+	return utf8ContainsIgnoreCase(src, substring);
 }
 
 
