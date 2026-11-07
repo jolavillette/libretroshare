@@ -276,6 +276,7 @@ void    p3BitDht::enable(bool on)
 void    p3BitDht::shutdown() /* blocking call */
 {
 	mUdpBitDht->stopDht();
+	mSizeEstimator.save();
 }
 
 

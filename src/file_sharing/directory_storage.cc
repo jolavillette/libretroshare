@@ -21,6 +21,8 @@
  *                                                                             *
  ******************************************************************************/
 #include <set>
+#include <chrono>
+#include <thread>
 
 #include "util/rstime.h"
 #include "serialiser/rstlvbinary.h"
@@ -89,14 +91,31 @@ std::string DirectoryStorage::DirIterator::name()      const { const InternalFil
 /*                                                 Directory Storage                                              */
 /******************************************************************************************************************/
 
-DirectoryStorage::DirectoryStorage(const RsPeerId &pid,const std::string& fname)
-    : mPeerId(pid), mDirStorageMtx("Directory storage "+pid.toStdString()),mLastSavedTime(0),mChanged(false),mFileName(fname)
+DirectoryStorage::DirectoryStorage(const RsPeerId &pid,const std::string& fname, bool load_now)
+    : mPeerId(pid), mDirStorageMtx("Directory storage "+pid.toStdString()),mLastSavedTime(0),mChanged(false),mLoaded(load_now),mLoading(false),mFileName(fname)
 {
 	{
 		RS_STACK_MUTEX(mDirStorageMtx) ;
 		mFileHierarchy = new InternalFileHierarchyStorage();
 	}
-    load(fname) ;
+    if(load_now)
+        load(fname) ;
+}
+
+bool DirectoryStorage::loadInBackground()
+{
+    InternalFileHierarchyStorage *h = new InternalFileHierarchyStorage() ;
+    bool ok = h->load(mFileName) ;
+
+    {
+        RS_STACK_MUTEX(mDirStorageMtx) ;
+        std::swap(mFileHierarchy, h) ;
+        mChanged = false ;
+        mLoaded = true ;
+    }
+    delete h ;
+    mLoading = false ;
+    return ok ;
 }
 
 DirectoryStorage::~DirectoryStorage()
@@ -207,17 +226,56 @@ void DirectoryStorage::print()
     mFileHierarchy->print();
 }
 
+// A linear search over a large list can take minutes when that list has to be paged back in. It releases the
+// storage mutex every SEARCH_SLICE_MS, so that the other users of this list (the GUI thread looking up a hash,
+// rs main handling a sync, all of them possibly under mFLSMtx) wait for one slice at most, not for the whole scan.
+
+static const uint32_t SEARCH_SLICE_MS = 20 ;
+
+template<class Slice>
+static void runSlicedSearch(
+        RsMutex& mtx, InternalFileHierarchyStorage *const & hierarchy,
+        std::list<DirectoryStorage::EntryIndex>& results, Slice slice )
+{
+    InternalFileHierarchyStorage::SearchCursor cursor ;
+    const InternalFileHierarchyStorage *scanned = nullptr ;
+
+    for(;;)
+    {
+        {
+            RS_STACK_MUTEX(mtx) ;
+
+            if(scanned != nullptr && scanned != hierarchy)	// reloaded in between: the indexes found so far belong to the old one
+            {
+                results.clear() ;
+                cursor = InternalFileHierarchyStorage::SearchCursor() ;
+            }
+            scanned = hierarchy ;
+
+            if(slice(hierarchy,cursor))
+                return ;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1)) ;	// the mutex is not fair: let the waiting threads in
+    }
+}
+
 int DirectoryStorage::searchTerms(
         const std::list<std::string>& terms,
         std::list<EntryIndex>& results ) const
 {
-    RS_STACK_MUTEX(mDirStorageMtx) ;
-    return mFileHierarchy->searchTerms(terms,results);
+    runSlicedSearch(mDirStorageMtx,mFileHierarchy,results,[&](const InternalFileHierarchyStorage *h,InternalFileHierarchyStorage::SearchCursor& c)
+    {
+        return h->searchTerms(terms,results,c,SEARCH_SLICE_MS) ;
+    });
+    return 0 ;
 }
 int DirectoryStorage::searchBoolExp(RsRegularExpression::Expression * exp, std::list<EntryIndex> &results) const
 {
-    RS_STACK_MUTEX(mDirStorageMtx) ;
-    return mFileHierarchy->searchBoolExp(exp,results);
+    runSlicedSearch(mDirStorageMtx,mFileHierarchy,results,[&](const InternalFileHierarchyStorage *h,InternalFileHierarchyStorage::SearchCursor& c)
+    {
+        return h->searchBoolExp(exp,results,c,SEARCH_SLICE_MS) ;
+    });
+    return 0 ;
 }
 
 bool DirectoryStorage::extractData(const EntryIndex& indx,DirDetails& d)
@@ -259,6 +317,7 @@ bool DirectoryStorage::extractData(const EntryIndex& indx,DirDetails& d)
         d.hash.clear() ;
         d.size   = dir_entry->dir_cumulated_size;//dir_entry->subdirs.size() + dir_entry->subfiles.size();
         d.count  = dir_entry->dir_cumulated_files;
+        d.uploads = dir_entry->dir_cumulated_uploads;
         d.max_mtime = dir_entry->dir_most_recent_time ;
         d.mtime     = dir_entry->dir_modtime ;
         d.name    = dir_entry->dir_name;
@@ -270,6 +329,8 @@ bool DirectoryStorage::extractData(const EntryIndex& indx,DirDetails& d)
             d.type = DIR_TYPE_PERSON ;
             d.name = mPeerId.toStdString();
         }
+
+
     }
     else if(type == InternalFileHierarchyStorage::FileStorageNode::TYPE_FILE)
     {
@@ -309,13 +370,13 @@ bool DirectoryStorage::getIndexFromDirHash(const RsFileHash& hash,EntryIndex& in
     return mFileHierarchy->getIndexFromDirHash(hash,index) ;
 }
 
-void DirectoryStorage::checkSave()
+void DirectoryStorage::checkSave(std::function<uint64_t(const RsFileHash&)> get_uploads)
 {
     rstime_t now = time(NULL);
 
     if(mChanged && mLastSavedTime + MIN_INTERVAL_BETWEEN_REMOTE_DIRECTORY_SAVE < now)
 	{
-        mFileHierarchy->recursUpdateCumulatedSize(mFileHierarchy->mRoot);
+        mFileHierarchy->recursUpdateCumulatedSize(mFileHierarchy->mRoot, get_uploads);
 
 	   {
 		  RS_STACK_MUTEX(mDirStorageMtx) ;
@@ -976,12 +1037,13 @@ bool LocalDirectoryStorage::serialiseDirEntry(
 /*                                           Remote Directory Storage                                              */
 /******************************************************************************************************************/
 
-RemoteDirectoryStorage::RemoteDirectoryStorage(const RsPeerId& pid,const std::string& fname)
-    : DirectoryStorage(pid,fname)
+RemoteDirectoryStorage::RemoteDirectoryStorage(const RsPeerId& pid,const std::string& fname, bool load_now)
+    : DirectoryStorage(pid,fname,load_now)
 {
     mLastSweepTime = time(NULL) - (RSRandom::random_u32() % DELAY_BETWEEN_REMOTE_DIRECTORIES_SWEEP) ;
 
-    std::cerr << "Loaded remote directory for peer " << pid << ", inited last sweep time to " << time(NULL) - mLastSweepTime << " secs ago." << std::endl;
+    if(load_now)
+        std::cerr << "Loaded remote directory for peer " << pid << ", inited last sweep time to " << time(NULL) - mLastSweepTime << " secs ago." << std::endl;
 #ifdef DEBUG_REMOTE_DIRECTORY_STORAGE
     mFileHierarchy->print();
 #endif

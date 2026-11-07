@@ -22,10 +22,12 @@
  ******************************************************************************/
 #include <sstream>
 #include <algorithm>
+#include <functional>
 
 #include "util/rstime.h"
 #include "util/rsdir.h"
 #include "util/rsprint.h"
+#include "util/rsstring.h"
 #include "retroshare/rsexpr.h"
 #include "dir_hierarchy.h"
 #include "filelist_io.h"
@@ -70,6 +72,13 @@ InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0)
 
     mTotalSize = 0 ;
     mTotalFiles = 0 ;
+}
+
+InternalFileHierarchyStorage::~InternalFileHierarchyStorage()
+{
+    // The nodes are owned here (load() already deletes them before re-filling the vector).
+    for(auto *n : mNodes)
+        delete n ;
 }
 
 bool InternalFileHierarchyStorage::getDirHashFromIndex(
@@ -156,6 +165,22 @@ int InternalFileHierarchyStorage::parentRow(DirectoryStorage::EntryIndex e)
     return mNodes[mNodes[e]->parent_index]->row;
 }
 
+// The row of a node is its position in the children of its parent, in the order getChildIndex() uses:
+// sub-directories first, then files. The GUI rebuilds the QModelIndex of a parent from it (see
+// parentRow()), so it must be recomputed whenever a children list is modified: additions append,
+// removals swap with the last element.
+
+void InternalFileHierarchyStorage::updateChildRows(DirEntry& d)
+{
+    for(uint32_t i=0;i<d.subdirs.size();++i)
+        if(mNodes[d.subdirs[i]] != NULL)
+            mNodes[d.subdirs[i]]->row = i ;
+
+    for(uint32_t i=0;i<d.subfiles.size();++i)
+        if(mNodes[d.subfiles[i]] != NULL)
+            mNodes[d.subfiles[i]]->row = d.subdirs.size() + i ;
+}
+
 // high level modification routines
 
 bool InternalFileHierarchyStorage::isIndexValid(DirectoryStorage::EntryIndex e) const
@@ -215,6 +240,8 @@ bool InternalFileHierarchyStorage::updateSubDirectoryList(
         mNodes.push_back(de) ;
     }
 
+    updateChildRows(d) ;
+
     return true;
 }
 
@@ -273,6 +300,7 @@ bool InternalFileHierarchyStorage::removeDirectory(DirectoryStorage::EntryIndex 
             parent_dir.subdirs.pop_back();
 
             recursRemoveDirectory(indx) ;
+            updateChildRows(parent_dir) ;
 #ifdef DEBUG_DIRECTORY_STORAGE
             print();
             std::string err ;
@@ -360,6 +388,9 @@ bool InternalFileHierarchyStorage::updateSubFilesList(
         mTotalSize  += it->second.size;
         mTotalFiles += 1;
     }
+
+    updateChildRows(d) ;
+
     return true;
 }
 bool InternalFileHierarchyStorage::updateHash(
@@ -613,19 +644,16 @@ bool InternalFileHierarchyStorage::updateDirEntry(
 
     // now update row and parent index for all subnodes
 
-    uint32_t n=0;
     for(uint32_t i=0;i<d.subdirs.size();++i)
     {
         static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_update_time = 0 ;	// force the update of the subdir.
 
         mNodes[d.subdirs[i]]->parent_index = indx ;
-        mNodes[d.subdirs[i]]->row = n++ ;
     }
     for(uint32_t i=0;i<d.subfiles.size();++i)
-    {
         mNodes[d.subfiles[i]]->parent_index = indx ;
-        mNodes[d.subfiles[i]]->row = n++ ;
-    }
+
+    updateChildRows(d) ;
 
 
     return true;
@@ -669,26 +697,36 @@ bool InternalFileHierarchyStorage::setTS(const DirectoryStorage::EntryIndex& ind
 
 // Do a complete recursive sweep of directory hierarchy and update cumulative size of directories
 
-uint64_t InternalFileHierarchyStorage::recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index)
+uint64_t InternalFileHierarchyStorage::recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index, std::function<uint64_t(const RsFileHash&)> get_uploads)
 {
     DirEntry& d(*static_cast<DirEntry*>(mNodes[dir_index])) ;
 
     uint64_t local_cumulative_size = 0;
     uint32_t local_cumulative_files = 0;
+    uint64_t local_cumulative_uploads = 0;
 
     for(uint32_t i=0;i<d.subfiles.size();++i)
         if(mNodes[d.subfiles[i]]) {		// normally not needed, but an extra-security
-            local_cumulative_size += static_cast<FileEntry*>(mNodes[d.subfiles[i]])->file_size;
+            FileEntry *f = static_cast<FileEntry*>(mNodes[d.subfiles[i]]);
+            local_cumulative_size += f->file_size;
             local_cumulative_files++;
+
+            if(get_uploads)
+                local_cumulative_uploads += get_uploads(f->file_hash);
         }
 
     for(uint32_t i=0;i<d.subdirs.size();++i) {
-        local_cumulative_size += recursUpdateCumulatedSize(d.subdirs[i]);
+        local_cumulative_size += recursUpdateCumulatedSize(d.subdirs[i], get_uploads);
         local_cumulative_files += static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_cumulated_files;
+        local_cumulative_uploads += static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_cumulated_uploads;
     }
 
     d.dir_cumulated_size = local_cumulative_size;
     d.dir_cumulated_files = local_cumulative_files;
+    d.dir_cumulated_uploads = local_cumulative_uploads;
+
+
+
     return local_cumulative_size;
 }
 // Do a complete recursive sweep over sub-directories and files, and update the lst modf TS. This could be also performed by a cleanup method.
@@ -806,63 +844,87 @@ private:
     const InternalFileHierarchyStorage::DirEntry& mDe ;
 };
 
-int InternalFileHierarchyStorage::searchBoolExp(
-        RsRegularExpression::Expression* exp,
-        std::list<DirectoryStorage::EntryIndex>& results ) const
-{
-	for(auto& it: std::as_const(mFileHashes))
-		if(mNodes[it.second])
-			if(exp->eval(
-			            DirectoryStorageExprFileEntry(
-			                *static_cast<const FileEntry*>(mNodes[it.second]),
-			                *static_cast<const DirEntry*>(mNodes[mNodes[it.second]->parent_index])
-			                                      ) ))
-			results.push_back(it.second);
+// Walks the hash table from where 'cursor' stopped, calling 'match' on each file index, for about 'budget_ms'.
+// Resuming by key (upper_bound) rather than with an iterator stays valid when the table was changed while the
+// caller had released the storage mutex: entries added or removed meanwhile are simply seen or not.
 
-    return 0;
+template<class Match>
+static bool scanFileHashes(
+        const std::map<RsFileHash,DirectoryStorage::EntryIndex>& hashes,
+        InternalFileHierarchyStorage::SearchCursor& cursor, uint32_t budget_ms, Match match )
+{
+	auto it = cursor.started ? hashes.upper_bound(cursor.last) : hashes.begin();
+	cursor.started = true;
+
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
+
+	for(uint32_t n=1; it != hashes.end(); ++it, ++n)
+	{
+		match(it->second);
+
+		if(n % 256 == 0 && std::chrono::steady_clock::now() > deadline)
+		{
+			cursor.last = it->first;
+			return false;
+		}
+	}
+	return true;
 }
 
-int InternalFileHierarchyStorage::searchTerms(
+bool InternalFileHierarchyStorage::searchBoolExp(
+        RsRegularExpression::Expression* exp,
+        std::list<DirectoryStorage::EntryIndex>& results,
+        SearchCursor& cursor, uint32_t budget_ms ) const
+{
+	return scanFileHashes(mFileHashes, cursor, budget_ms, [&](DirectoryStorage::EntryIndex i)
+	{
+		if(mNodes[i])
+			if(exp->eval(
+			            DirectoryStorageExprFileEntry(
+			                *static_cast<const FileEntry*>(mNodes[i]),
+			                *static_cast<const DirEntry*>(mNodes[mNodes[i]->parent_index])
+			                                      ) ))
+				results.push_back(i);
+	});
+}
+
+bool InternalFileHierarchyStorage::searchTerms(
         const std::list<std::string>& terms,
-        std::list<DirectoryStorage::EntryIndex>& results ) const
+        std::list<DirectoryStorage::EntryIndex>& results,
+        SearchCursor& cursor, uint32_t budget_ms ) const
 {
 	/* most entries are likely to be files, so we could do a linear search over
 	 * the entries tab. Instead we go through the table of hashes.*/
 
-	for(auto& it : std::as_const(mFileHashes))
+	return scanFileHashes(mFileHashes, cursor, budget_ms, [&](DirectoryStorage::EntryIndex i)
 	{
 		// node may be null for some hash waiting to be deleted
-		if(mNodes[it.second])
+		if(!mNodes[i])
+			return;
+
+		rs_view_ptr<FileEntry> tFileEntry = static_cast<FileEntry*>(mNodes[i]);
+
+		/* Most file will just have file name stored, but single file shared
+		 * without a shared dir will contain full path instead of just the
+		 * name, so purify it to perform the search */
+		std::string tFilename = tFileEntry->file_name;
+		if(tFileEntry->file_name.find("/") != std::string::npos)
 		{
-			rs_view_ptr<FileEntry> tFileEntry =
-			        static_cast<FileEntry*>(mNodes[it.second]);
+			std::string _tParentDir;
+			RsDirUtil::splitDirFromFile(
+			            tFileEntry->file_name, _tParentDir, tFilename );
+		}
 
-			/* Most file will just have file name stored, but single file shared
-			 * without a shared dir will contain full path instead of just the
-			 * name, so purify it to perform the search */
-			std::string tFilename = tFileEntry->file_name;
-			if(tFileEntry->file_name.find("/") != std::string::npos)
+		for(auto& termIt : std::as_const(terms))
+		{
+			/* always ignore case */
+			if(utf8ContainsIgnoreCase(tFilename, termIt))
 			{
-				std::string _tParentDir;
-				RsDirUtil::splitDirFromFile(
-				            tFileEntry->file_name, _tParentDir, tFilename );
-			}
-
-			for(auto& termIt : std::as_const(terms))
-			{
-				/* always ignore case */
-				if(tFilename.end() != std::search(
-				            tFilename.begin(), tFilename.end(),
-				            termIt.begin(), termIt.end(),
-				            RsRegularExpression::CompareCharIC() ))
-				{
-					results.push_back(it.second);
-					break;
-				}
+				results.push_back(i);
+				break;
 			}
 		}
-	}
-	return 0;
+	});
 }
 
 bool InternalFileHierarchyStorage::check(std::string& error_string) // checks consistency of storage.
@@ -1275,6 +1337,11 @@ bool InternalFileHierarchyStorage::load(const std::string& fname)
 
         if(!check(err_str))
             std::cerr << "(EE) Error while loading file hierarchy " << fname << std::endl;
+
+        // Lists saved by earlier versions carry wrong rows for local directories (see updateChildRows()).
+        for(uint32_t i=0;i<mNodes.size();++i)
+            if(mNodes[i] != NULL && mNodes[i]->type() == FileStorageNode::TYPE_DIR)
+                updateChildRows(*static_cast<DirEntry*>(mNodes[i])) ;
 
         recursUpdateCumulatedSize(mRoot);
 

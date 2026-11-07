@@ -63,7 +63,7 @@ public:
     class DirEntry: public FileStorageNode
     {
     public:
-        explicit DirEntry(const std::string& name) : dir_name(name), dir_cumulated_size(0), dir_cumulated_files(0), dir_modtime(0),dir_most_recent_time(0),dir_update_time(0) {}
+        explicit DirEntry(const std::string& name) : dir_name(name), dir_cumulated_size(0), dir_cumulated_files(0), dir_cumulated_uploads(0), dir_modtime(0),dir_most_recent_time(0),dir_update_time(0) {}
         virtual ~DirEntry() {}
 
         virtual uint32_t type() const { return FileStorageNode::TYPE_DIR ; }
@@ -74,6 +74,7 @@ public:
         RsFileHash  dir_hash ;
         uint64_t    dir_cumulated_size;
         uint32_t    dir_cumulated_files;
+        uint64_t    dir_cumulated_uploads;
 
         std::vector<DirectoryStorage::EntryIndex> subdirs ;
         std::vector<DirectoryStorage::EntryIndex> subfiles ;
@@ -85,6 +86,7 @@ public:
 
     // class stuff
     InternalFileHierarchyStorage() ;
+    ~InternalFileHierarchyStorage() ;
 
     bool load(const std::string& fname) ;
     bool save(const std::string& fname) ;
@@ -112,7 +114,7 @@ public:
 
     // Do a complete recursive sweep over sub-directories and files, and update the cumulative size.
 
-    uint64_t recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index);
+    uint64_t recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index, std::function<uint64_t(const RsFileHash&)> get_uploads = nullptr);
 
     // hash stuff
 
@@ -146,8 +148,14 @@ public:
     // search. SearchHash is logarithmic. The other two are linear.
 
     bool searchHash(const RsFileHash& hash, DirectoryStorage::EntryIndex &result);
-    int searchBoolExp(RsRegularExpression::Expression * exp, std::list<DirectoryStorage::EntryIndex> &results) const ;
-    int searchTerms(const std::list<std::string>& terms, std::list<DirectoryStorage::EntryIndex> &results) const ;		// does a logical OR between items of the list of terms
+    // The two linear searches are resumable, so that the caller can release the storage mutex between
+    // slices: each call goes on through the hash table from where 'cursor' stopped, for about 'budget_ms',
+    // and returns true once the whole table has been scanned.
+
+    struct SearchCursor { bool started = false ; RsFileHash last ; };
+
+    bool searchBoolExp(RsRegularExpression::Expression * exp, std::list<DirectoryStorage::EntryIndex> &results, SearchCursor& cursor, uint32_t budget_ms) const ;
+    bool searchTerms(const std::list<std::string>& terms, std::list<DirectoryStorage::EntryIndex> &results, SearchCursor& cursor, uint32_t budget_ms) const ;		// does a logical OR between items of the list of terms
 
     bool check(std::string& error_string)	;// checks consistency of storage.
 
@@ -170,6 +178,11 @@ private:
 
     void deleteNode(DirectoryStorage::EntryIndex);
     void deleteFileNode(DirectoryStorage::EntryIndex);
+
+    // Recomputes the row of every child of d (sub-directories first, then files). Must be called after
+    // any change to d.subdirs or d.subfiles.
+
+    void updateChildRows(DirEntry& d);
 
     // Removes the given subdirectory from the parent node and all its pendign subdirs. Files are kept, and will go during the cleaning
     // phase. That allows to keep file information when moving them around.

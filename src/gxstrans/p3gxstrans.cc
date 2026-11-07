@@ -19,6 +19,8 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.       *
  *                                                                             *
  *******************************************************************************/
+#include <algorithm>
+
 #include "util/rsdir.h"
 #include "gxstrans/p3gxstrans.h"
 #include "util/stacktrace.h"
@@ -192,10 +194,16 @@ void p3GxsTrans::handleResponse(uint32_t token, uint32_t req_type
 			const RsGroupMetaData& meta = grp->meta;
 			bool subscribed = IS_GROUP_SUBSCRIBED(meta.mSubscribeFlags);
 
-			// if mLastPost is 0, then the group is not subscribed, so it only has impact on shouldSubscribe.  In any case, a group
-			// with no information shouldn't be subscribed, so the olderThen() test is still valid in the case mLastPost=0.
+			// meta.mLastPost is the network statistic while the group is not subscribed and the local value once it is
+			// (RsGenExchange::getGroupData). Right after subscribing nothing is synced yet, so the local value is stale:
+			// the group looks old, gets unsubscribed, then re-subscribed on the network value, one DB write per flip,
+			// forever. Decide on the most recent of both so that both states see the same date.
+			rstime_t lastPost = meta.mLastPost;
+			RsGroupNetworkStats netStats;
+			if(RsGenExchange::getGroupNetworkStats(meta.mGroupId, netStats))
+				lastPost = std::max(lastPost, netStats.mLastGroupModificationTS);
 
-			bool old = olderThen( meta.mLastPost, UNUSED_GROUP_UNSUBSCRIBE_INTERVAL );
+			bool old = olderThen( lastPost, UNUSED_GROUP_UNSUBSCRIBE_INTERVAL );
 			uint32_t token;
 
 			bool shouldSubscribe   = false ;
@@ -407,6 +415,12 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 	    {
 		    RsNxsMsg* msg = *vit;
 
+            if(shouldStop())	// shutdown: keep freeing, stop analysing
+            {
+                delete msg;
+                continue;
+            }
+
             RsGxsTransSerializer s ;
             uint32_t size = msg->msg.bin_len;
             RsItem *item = s.deserialise(msg->msg.bin_data,&size);
@@ -440,6 +454,15 @@ void p3GxsTrans::GxsTransIntegrityCleanupThread::run()
 
 			delete item;
 	    }
+    }
+
+    if(shouldStop())
+    {
+        /* Interrupted by a shutdown: the scan is partial, so report nothing
+         * rather than statistics computed over a truncated message set. */
+        RS_STACK_MUTEX(mMtx) ;
+        mDone = true;
+        return;
     }
 
 	// From the collected information, build a list of group messages to delete.
@@ -479,6 +502,18 @@ bool p3GxsTrans::GxsTransIntegrityCleanupThread::isDone()
     RS_STACK_MUTEX(mMtx) ;
     return mDone ;
 }
+void p3GxsTrans::onStopRequested()
+{
+	RsGenExchange::onStopRequested();
+
+	/* Same reasoning as RsGenExchange::onStopRequested(): the cleanup thread
+	 * reads the data store, wait for it before this service counts as
+	 * stopped. Once its messages are loaded it tests shouldStop() for each of
+	 * them, and it never takes mPerUserStatsMutex. */
+	RS_STACK_MUTEX(mPerUserStatsMutex);
+	if(mCleanupThread) mCleanupThread->fullstop();
+}
+
 void p3GxsTrans::service_tick()
 {
 	GxsTokenQueue::checkRequests();
@@ -494,7 +529,7 @@ void p3GxsTrans::service_tick()
 
         if(mCleanupThread->isRunning())
             std::cerr << "Cleanup thread is already running. Not running it again!" << std::endl;
-        else
+        else if(!shouldStop())	// onStopRequested() would miss a thread started now
         {
 #ifdef DEBUG_GXSTRANS
             std::cerr << "Starting GxsIntegrity cleanup thread." << std::endl;

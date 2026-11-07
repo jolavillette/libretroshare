@@ -1097,6 +1097,20 @@ int p3BitDht::tick()
 {
 	doActions();
 	monitorConnections();
+	if (mSizeEstimator.due())
+	{
+		/* our friends the DHT finds: calibrates the size estimate */
+		std::vector<bdNodeId> friendsInDht;
+		{
+			RS_STACK_MUTEX(dhtMtx);
+			for (const auto &it : mPeers)
+				if (it.second.mPeerType == RsDhtPeerType::FRIEND &&
+				    (it.second.mDhtState == RsDhtPeerDht::ONLINE ||
+				     it.second.mDhtState == RsDhtPeerDht::UNREACHABLE))
+					friendsInDht.push_back(it.first);
+		}
+		mSizeEstimator.tick(mUdpBitDht, friendsInDht);
+	}
 
 	minuteTick();
 

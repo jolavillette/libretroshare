@@ -39,6 +39,11 @@ enum class RsTorManagerEventCode: uint8_t
     TOR_MANAGER_ERROR         = 0x04,
     CONFIGURATION_NEEDED      = 0x05,
     TOR_MANAGER_STOPPED       = 0x06,
+
+    /// The Tor network says the running tor is too old. mErrorMessage holds
+    /// a human readable explanation. Tor may keep working for a while, or may
+    /// already be unable to bootstrap.
+    TOR_VERSION_OUTDATED      = 0x07,
 };
 
 
@@ -189,6 +194,21 @@ public:
 
     static bool hasError();
     static std::string errorMessage();
+
+    /*!
+     * \brief torVersion
+     * \return Version of the running tor, as reported by its control port.
+     *         Empty until RS has talked to tor.
+     */
+    static std::string torVersion();
+
+    /*!
+     * \brief torVersionWarning
+     * \return Empty if the Tor network accepts the running tor version,
+     *         otherwise a human readable explanation (obsolete, unrecommended…).
+     *         Also sent as a TOR_VERSION_OUTDATED event when it first shows up.
+     */
+    static std::string torVersionWarning();
 
     static void setVerbose(bool v);
 
