@@ -243,9 +243,40 @@ void RsGenExchange::threadTick()
 	rstime::rs_usleep((int) (timeDelta * 1000 *1000)); // timeDelta sec
 }
 
+// RS_GXS_MEM_PROBE=<seconds>: one line per service and period, with the process RSS and the sizes of
+// the in-RAM meta caches, to tell how much of a growing process the GXS caches account for.
+static int gxsMemProbePeriod()
+{
+    static const int period = [] { const char* e = getenv("RS_GXS_MEM_PROBE"); return e ? atoi(e) : 0; }();
+    return period;
+}
+
+static long processRssKb()
+{
+#ifdef __linux__
+    long pages = 0, resident = 0;
+    FILE* f = fopen("/proc/self/statm", "r");
+    if(f)
+    {
+        if(fscanf(f, "%ld %ld", &pages, &resident) != 2) resident = 0;
+        fclose(f);
+    }
+    return resident * (sysconf(_SC_PAGESIZE) / 1024);
+#else
+    return 0;
+#endif
+}
+
 void RsGenExchange::tick()
 {
 	GxsTickProfiler prof(mServType, "RsGenExchange::tick()");
+
+    if(gxsMemProbePeriod() > 0 && time(nullptr) >= mLastMemProbe + gxsMemProbePeriod())
+    {
+        mLastMemProbe = time(nullptr);
+        RsWarn() << "GXS-MEM service 0x" << std::hex << mServType << std::dec << " rss_kb=" << processRssKb()
+                 << " " << mDataStore->debug_cacheSizeString();
+    }
 
 	// Meta Changes should happen first.
 	// This is important, as services want to change Meta, then get results.
