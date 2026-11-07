@@ -38,6 +38,9 @@
 #include "retroshare/rsgxsflags.h"
 #include "util/rsstring.h"
 
+#include <chrono>
+#include <vector>
+
 #define MSG_TABLE_NAME std::string("MESSAGES")
 #define GRP_TABLE_NAME std::string("GROUPS")
 #define DATABASE_RELEASE_TABLE_NAME std::string("DATABASE_RELEASE")
@@ -125,9 +128,12 @@ static int addColumn(std::list<std::string> &list, const std::string &attribute)
 
 RsDataService::RsDataService(const std::string &serviceDir, const std::string &dbName, uint16_t serviceType,
                              RsGxsSearchModule * /* mod */, const std::string& key)
-    : RsGeneralDataService(), mDbMutex("RsDataService"), mServiceDir(serviceDir), mDbName(dbName), mDbPath(mServiceDir + "/" + dbName), mServType(serviceType), mDb(NULL)
+    : RsGeneralDataService(), mDbMutex("RsDataService"), mServiceDir(serviceDir), mDbName(dbName), mDbPath(mServiceDir + "/" + dbName), mServType(serviceType), mDb(NULL), mPreReadStop(false)
 {
     bool isNewDatabase = !RsDirUtil::fileExists(mDbPath);
+
+    if(!isNewDatabase)
+        mPreReadThread = std::thread(&RsDataService::preReadDatabaseFile, this);
 
     mDb = new RetroDb(mDbPath, RetroDb::OPEN_READWRITE_CREATE, key);
     mUseCache = true;
@@ -209,6 +215,10 @@ RsDataService::RsDataService(const std::string &serviceDir, const std::string &d
 
 RsDataService::~RsDataService(){
 
+    mPreReadStop = true;
+    if(mPreReadThread.joinable())
+        mPreReadThread.join();
+
 #ifdef RS_DATA_SERVICE_DEBUG
     std::cerr << "RsDataService::~RsDataService()";
     std::cerr << std::endl;
@@ -216,6 +226,76 @@ RsDataService::~RsDataService(){
 
     mDb->closeDb();
     delete mDb;
+}
+
+void RsDataService::preReadDatabaseFile()
+{
+    // At startup every service reads the metadata of its groups and messages.
+    // Even served by the covering index, these reads land on pages scattered
+    // all over the file, one disk seek each: on rotating disks, with a cold page
+    // cache, they were measured at 20-50 s per database (2026-11-07: 9659 forum
+    // metas in 21 s, the boards 40 s), while reading the same files sequentially
+    // takes 3-4 s (~85 MB/s). Read the file once, front to back, so that the
+    // random reads that follow are served from the page cache. On an SSD or a
+    // warm cache this costs little. Skipped when the file is large compared to
+    // the available memory, where it would only evict other useful pages.
+
+    static const size_t CHUNK_SIZE = 4 * 1024 * 1024;
+
+    std::ifstream f(mDbPath, std::ios::binary | std::ios::ate);
+
+    if(!f)
+        return;
+
+    const uint64_t file_size = (uint64_t)f.tellg();
+    f.seekg(0);
+
+    uint64_t limit = 1024ull * 1024 * 1024;
+#ifdef __linux__
+    {
+        // MemAvailable is in kB. A quarter of it, at most, for one database.
+        std::ifstream mi("/proc/meminfo");
+        std::string key;
+        uint64_t value;
+
+        while(mi >> key >> value)
+        {
+            if(key == "MemAvailable:")
+            {
+                limit = value * 1024 / 4;
+                break;
+            }
+            mi.ignore(1024, '\n');
+        }
+    }
+#endif
+
+    if(file_size > limit)
+    {
+        RsInfo() << mDbName << ": not pre-reading the database file (" << file_size / (1024 * 1024)
+                 << " MB, over the " << limit / (1024 * 1024) << " MB limit)";
+        return;
+    }
+
+    auto t0 = std::chrono::steady_clock::now();
+    std::vector<char> buffer(CHUNK_SIZE);
+    uint64_t total = 0;
+
+    while(!mPreReadStop)
+    {
+        f.read(buffer.data(), buffer.size());
+        std::streamsize n = f.gcount();
+
+        if(n <= 0)
+            break;
+
+        total += n;
+    }
+
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+
+    RsInfo() << mDbName << ": pre-read " << total / (1024 * 1024) << " MB of the database file in "
+             << ms << " ms" << (mPreReadStop? " (interrupted)" : "");
 }
 
 static bool moveDataFromFileToDatabase(RetroDb *db, const std::string serviceDir, const std::string &tableName, const std::string &keyId, std::list<std::string> &files)

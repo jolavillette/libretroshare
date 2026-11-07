@@ -25,6 +25,9 @@
 #include "gxs/rsgds.h"
 #include "util/retrodb.h"
 
+#include <atomic>
+#include <thread>
+
 class MsgUpdate
 {
 public:
@@ -460,6 +463,13 @@ private:
     uint16_t mServType;
 
     RetroDb* mDb;
+
+    /// Reads the database file once, sequentially, right after opening it, so
+    /// that the random reads of the startup are served by the page cache. See
+    /// preReadDatabaseFile(). Joined in the destructor.
+    void preReadDatabaseFile();
+    std::thread mPreReadThread;
+    std::atomic<bool> mPreReadStop;
     
     // used to store metadata instead of reading it from the database.
     // The boolean variable below is also used to force re-reading when 
