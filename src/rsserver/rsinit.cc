@@ -39,6 +39,10 @@
 #include "util/argstream.h"
 #include "util/rsdebug.h"
 #include "util/rsdir.h"
+#include "util/retrodb.h"
+
+#include <chrono>
+#include <fstream>
 #include "util/rsrandom.h"
 #include "util/folderiterator.h"
 #include "util/rsstring.h"
@@ -725,6 +729,118 @@ bool RsInit::LoadCertificates(bool autoLoginNT,LoadCertificateStatus& error_code
 	
 	RsAccounts::storeSelectedAccount();
     return true;
+}
+
+// The GXS databases, as opened by RsServer::StartupRetroShare().
+static const char* const GXS_DATABASE_NAMES[] = {
+    "gxsid_db", "gxscircles_db", "gxsforums_db", "gxschannels_db", "posted_db",
+    "gxstrans_db", "wire_db", "wiki_db", "calendar_db", "photoV2_db" };
+
+static std::string gxsDatabaseDirectory()
+{
+	return RsAccounts::AccountDirectory() + "/gxs/";
+}
+
+static std::string gxsCompactionMarker()
+{
+	return gxsDatabaseDirectory() + "compact_on_next_start";
+}
+
+static uint64_t gxsFileSize(const std::string& path)
+{
+	std::ifstream f(path, std::ios::binary | std::ios::ate);
+	return f ? (uint64_t)f.tellg() : 0;
+}
+
+bool RsInit::setGxsDatabaseCompactionRequested(bool requested)
+{
+	if(RsAccounts::AccountDirectory().empty())
+		return false;
+
+	const std::string marker = gxsCompactionMarker();
+
+	if(requested)
+	{
+		RsDirUtil::checkCreateDirectory(gxsDatabaseDirectory());
+		std::ofstream f(marker);
+		return (bool)f;
+	}
+
+	return !RsDirUtil::fileExists(marker) || RsDirUtil::removeFile(marker);
+}
+
+bool RsInit::isGxsDatabaseCompactionRequested()
+{
+	return !RsAccounts::AccountDirectory().empty() && RsDirUtil::fileExists(gxsCompactionMarker());
+}
+
+uint64_t RsInit::gxsDatabasesSize()
+{
+	if(RsAccounts::AccountDirectory().empty())
+		return 0;
+
+	uint64_t total = 0;
+
+	for(const char* name : GXS_DATABASE_NAMES)
+		total += gxsFileSize(gxsDatabaseDirectory() + name);
+
+	return total;
+}
+
+bool RsInit::compactGxsDatabases(
+        const std::function<bool(const std::string&, uint64_t, uint64_t)>& progress )
+{
+	if(RsAccounts::AccountDirectory().empty() || !rsInitConfig)
+		return false;
+
+	setGxsDatabaseCompactionRequested(false);
+
+	const uint64_t total = gxsDatabasesSize();
+	uint64_t done = 0;
+	bool ok = true;
+
+	for(const char* name : GXS_DATABASE_NAMES)
+	{
+		const std::string path = gxsDatabaseDirectory() + name;
+
+		if(!RsDirUtil::fileExists(path))
+			continue;
+
+		const uint64_t size = gxsFileSize(path);
+
+		if(progress && !progress(name, done, total))
+		{
+			RsInfo() << "GXS database compaction stopped before " << name;
+			return false;
+		}
+
+		auto t0 = std::chrono::steady_clock::now();
+		bool db_ok = false;
+
+		{
+			RetroDb db(path, RetroDb::OPEN_READWRITE, rsInitConfig->gxs_passwd);
+
+			// VACUUM needs up to the size of the database in free disk
+			// space. When it fails (disk full...) the database is untouched.
+			db_ok = db.isOpen() && db.execSQL("VACUUM;");
+		}
+
+		auto s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
+
+		if(db_ok)
+			RsInfo() << "Compacted GXS database " << name << ": " << size / (1024 * 1024) << " MB -> "
+			         << gxsFileSize(path) / (1024 * 1024) << " MB in " << s << " s";
+		else
+			RsErr() << "Could not compact GXS database " << name << " (left as it was)";
+
+		ok = ok && db_ok;
+		done += size;
+	}
+
+	if(progress)
+		progress(std::string(), total, total);
+
+	return ok;
 }
 
 #ifdef RS_AUTOLOGIN
