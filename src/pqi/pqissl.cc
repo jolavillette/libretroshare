@@ -1496,6 +1496,17 @@ int 	pqissl::senddata(void *data, int len)
 			reset_locked();
 			return -1;
 		}
+		else if (err == SSL_ERROR_ZERO_RETURN)
+		{
+			/* The peer sent a TLS close_notify: a clean disconnection that
+			 * we noticed while writing, not an unhandled error. */
+			RsInfo() << "pqissl: " << PeerId() << " at "
+			         << sockaddr_storage_tostring(remote_addr)
+			         << " closed the connection (TLS close_notify)";
+			ERR_clear_error();
+			reset_locked();
+			return -1;
+		}
 		else if (err == SSL_ERROR_WANT_WRITE)
 		{
 			out += "SSL_write() SSL_ERROR_WANT_WRITE";
