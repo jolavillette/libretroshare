@@ -1511,7 +1511,7 @@ int 	pqissl::senddata(void *data, int len)
 		}
 		else
 		{
-			rs_sprintf_append(out, "SSL_write() UNKNOWN ERROR: %d\n", err);
+			rs_sprintf_append(out, "SSL_write() unhandled SSL error %d\n", err);
 			printSSLError(ssl_connection, tmppktlen, err, ERR_get_error(), out);
 			out += "\n\tResetting!";
 			std::cerr << out << std::endl;
@@ -1670,9 +1670,25 @@ int pqissl::readdata(void *data, int len)
 #endif
 				return -1;
 			}
+#ifdef SSL_R_UNEXPECTED_EOF_WHILE_READING
+			else if ( error == SSL_ERROR_SSL &&
+			          ERR_GET_REASON(err2) == SSL_R_UNEXPECTED_EOF_WHILE_READING )
+			{
+				/* OpenSSL 3 reports a peer that closed the TCP connection
+				 * without a TLS close_notify (crash, kill, NAT timeout...) as
+				 * SSL_ERROR_SSL. That is an ordinary disconnection, not an
+				 * unknown error: one line is enough. */
+				RsInfo() << "pqissl: " << PeerId() << " at "
+				         << sockaddr_storage_tostring(remote_addr)
+				         << " closed the connection without TLS close_notify";
+				ERR_clear_error();
+				reset_locked();
+				return -1;
+			}
+#endif
 			else
 			{
-				rs_sprintf_append(out, "SSL_read() UNKNOWN ERROR: %d Resetting!", error);
+				rs_sprintf_append(out, "SSL_read() unhandled SSL error %d, resetting", error);
 				rslog(RSL_ALERT, pqisslzone, out);
 				std::cerr << out << std::endl ;
 				std::cerr << ", SSL_read() output is " << tmppktlen << std::endl ;
