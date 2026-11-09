@@ -102,10 +102,15 @@ struct t_RsLogger : std::ostringstream
 		            static_cast<int>(CATEGORY),
 		            "RetroShare", str().c_str() );
 #else // def __ANDROID__
-		(*this) << std::endl;
-		std::cerr << str();
+		/* Many callers still end their message with std::endl: only add
+		 * the line terminator when it is missing, so they don't print an
+		 * empty line after every message. */
+		std::string msg = str();
+		if(msg.empty()) return; // already flushed
+		if(msg.back() != '\n') msg += '\n';
+		std::cerr << msg;
 #endif // def __ANDROID__
-		str() = "";
+		str(""); // str() returns a copy: assigning to it cleared nothing
 	}
 
 private:
