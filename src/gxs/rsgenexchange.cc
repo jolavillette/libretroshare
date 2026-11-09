@@ -2667,17 +2667,27 @@ void RsGenExchange::processGroupDelete()
 {
 	RS_STACK_MUTEX(mGenMtx);
 
+	if(mGroupDeletePublish.empty())
+		return;
+
     // get keys for group delete publish
 	typedef std::pair<bool, RsGxsGroupId> GrpNote;
 	std::map<uint32_t, GrpNote> toNotify;
 
+	// Remove all queued groups in a single call, hence a single DB
+	// transaction. One call per group meant one commit (and one fsync) per
+	// group, which kept mGenMtx locked for minutes when the identity cleaner
+	// queued hundreds of expired identities at once.
+	std::vector<RsGxsGroupId> grpIds;
+	grpIds.reserve(mGroupDeletePublish.size());
+
     for( auto vit = mGroupDeletePublish.begin();vit != mGroupDeletePublish.end(); ++vit)
 	{
-		std::vector<RsGxsGroupId> gprIds;
-		gprIds.push_back(vit->mGroupId);
-		mDataStore->removeGroups(gprIds);
+		grpIds.push_back(vit->mGroupId);
 		toNotify.insert(std::make_pair( vit->mToken, GrpNote(true, vit->mGroupId)));
 	}
+
+	mDataStore->removeGroups(grpIds);
 
 	std::list<RsGxsGroupId> grpDeleted;
     for(auto mit=toNotify.begin(); mit != toNotify.end(); ++mit)

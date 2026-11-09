@@ -555,7 +555,8 @@ void p3IdService::cleanUnusedKeys()
             return ;
         }
 
-        // grab at most 10 identities to delete. No need to send too many requests to the token queue at once.
+        // Collect every expired identity (no cap). They are all removed from the
+        // DB in a single transaction by RsGenExchange::processGroupDelete().
         IdCacheEntryCleaner idcec(mKeysTS,mMaxKeepKeysBanned) ;
 
         mKeyCache.applyToAllCachedEntries(idcec,&IdCacheEntryCleaner::processEntry);
