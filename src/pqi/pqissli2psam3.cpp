@@ -68,7 +68,10 @@ int pqissli2psam3::Initiate_Connection()
 
 		if (!mI2pAddrLong.empty()) {
 			// skip lookup, it is highly unlikely/impossible for a public key to change (isn't it?)
-			mState = pqisslSam3State::WAIT_LOOKUP;
+			// Go straight to DO_CONNECT: WAIT_LOOKUP waits for a lookup task
+			// that was never started, so every reconnection after the first
+			// one stalled there for ever.
+			mState = pqisslSam3State::DO_CONNECT;
 			break;
 		}
 
@@ -148,6 +151,9 @@ void pqissli2psam3::taskFinished(taskTicket *&ticket)
 			mI2pAddrLong = addr->publicKey;
 			mState = pqisslSam3State::DO_CONNECT;
 		} else {
+			// Leave WAIT_LOOKUP too: staying there made every later
+			// attempt wait for a task that would never come back.
+			mState = pqisslSam3State::NONE;
 			waiting = WAITING_FAIL_INTERFACE;
 		}
 
@@ -165,6 +171,9 @@ void pqissli2psam3::taskFinished(taskTicket *&ticket)
 			mConn = wrapper->connection;
 			mState = pqisslSam3State::DONE;
 		} else {
+			// Same as above for WAIT_CONNECT. The looked-up key is kept, so
+			// the next attempt skips the lookup.
+			mState = pqisslSam3State::NONE;
 			waiting = WAITING_FAIL_INTERFACE;
 		}
 
