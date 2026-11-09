@@ -925,7 +925,7 @@ bool RNPPGPHandler::getGPGDetailsFromBinaryBlock(const unsigned char *mem_block,
             rnp_identifier_iterator_destroy(it);
         }
 
-        RsDbg() << "Binary block contains key ID " << key_id.toStdString() ;
+        // RsDbg() << "Binary block contains key ID " << key_id.toStdString() ;
 
         RNP_KEY_HANDLE_STRUCT(key_handle);
         if(rnp_locate_key(tmp_ffi,RNP_IDENTIFIER_KEYID,key_id.toStdString().c_str(),&key_handle) != RNP_SUCCESS)
