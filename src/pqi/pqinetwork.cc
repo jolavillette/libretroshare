@@ -146,6 +146,14 @@ std::string socket_errorType(int err)
 	{
 		return std::string("EADDRNOTAVAIL");
 	}
+	else if (err == EACCES)
+	{
+		return std::string("EACCES");
+	}
+	else if (err == EPERM)
+	{
+		return std::string("EPERM");
+	}
 	//
 
 	return std::string("UNKNOWN ERROR CODE - ASK RS-DEVS TO ADD IT!");

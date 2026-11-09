@@ -968,14 +968,35 @@ int 	pqissl::Basic_Connection_Complete()
 
 			return -1;
 		}
-			
-		std::string out;
-		rs_sprintf(out, "Error: Connection Failed UNKNOWN ERROR: %d - %s", err, socket_errorType(err).c_str());
-		rslog(RSL_WARNING, pqisslzone, out);
+		else if ((err == EACCES) || (err == EPERM))
+		{
+			/* EACCES: the remote side (typically an IPv6 home router
+			 * firewall) answered with ICMPv6 "administratively prohibited"
+			 * or "reject route". EPERM: a local firewall rule refused it.
+			 * Either way this address is unreachable: try the next one. */
+#ifdef PQISSL_DEBUG
+			rslog(RSL_WARNING, pqisslzone, "pqissl::Basic_Connection_Complete() EACCES/EPERM: cert: " + PeerId().toStdString());
+#endif
+			net_internal_close(sockfd);
+			sockfd=-1;
+			waiting = WAITING_FAIL_INTERFACE;
 
+			return -1;
+		}
+
+		RsWarn() << "pqissl: connection to " << PeerId() << " at "
+		         << sockaddr_storage_tostring(remote_addr)
+		         << " failed with unexpected socket error " << err
+		         << " " << rs_errno_to_condition(err);
+
+		/* Report the failure like the other errors do. Closing the socket
+		 * without leaving WAITING_SOCK_CONNECT made the next tick call
+		 * reset_locked() with nothing left to close, so no
+		 * NET_CONNECT_FAILED was ever sent and p3LinkMgr kept the attempt
+		 * pending: the peer's other addresses were never tried. */
 		net_internal_close(sockfd);
 		sockfd=-1;
-		//reset(); // which will send Connect Failed,
+		waiting = WAITING_FAIL_INTERFACE;
 		return -1;
 	}
 
