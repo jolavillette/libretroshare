@@ -197,7 +197,16 @@ public class RetroShareServiceAndroid extends Service
             else webUiPasswd = loadOrCreateWebUiPasswd();
 
             sWebUiPasswd = webUiPasswd;
-            Log.i(TAG, "Web interface passwd: " + webUiPasswd);
+            /* Never log the passwd itself: logcat is readable through adb and
+             * ends up in bug reports. The embedding application gets it from
+             * getWebUiPasswd(). */
+            Log.i(
+                TAG,
+                "Web interface passwd set (" +
+                (args.containsKey(WEBUI_PASSWD_KEY) ?
+                     "supplied by the caller" :
+                     "kept in " + new File(getFilesDir(), WEBUI_PASSWD_FILE_NAME)) +
+                ")" );
             Log.i(
                 TAG,
                 "Web interface enabled, files at " + webUiDirectory +
