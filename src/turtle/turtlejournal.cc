@@ -28,11 +28,18 @@
 #include <iostream>
 #include <sstream>
 
+#include "retroshare/rsgossipdiscovery.h"
+#include "retroshare/rspeers.h"
 #include "turtle/rsturtleitem.h"
 #include "turtle/turtlejournal.h"
 
 static const uint32_t MAX_EVENTS_PER_TUNNEL = 24 ;	// first half kept, last half rolling
 static const uint32_t SUMMARY_LAPSE_MS      = 60000 ;
+static const uint32_t ITEM_RING_SIZE        = 16 ;      // fingerprints kept per tunnel
+static const uint64_t CAPTURE_MS            = 300000 ;  // every item written out for 5 min after the first mismatch
+static const uint32_t CAPTURE_MAX_ITEMS     = 3000 ;    // ...but at most this many per tunnel
+static const uint64_t FOLLOW_MS             = 1800000 ; // FOLLOW lines until 30 min after the last dropped item
+static const uint32_t MAX_BOUNCES_PER_REQ   = 32 ;
 
 static uint64_t nowMs()
 {
@@ -102,6 +109,36 @@ static uint32_t envUInt(const char *name,uint32_t def)
 	return (r > 0)?(uint32_t)r:def ;
 }
 
+uint64_t TurtleJournal::fingerprint(RsTurtleGenericTunnelItem *item)
+{
+	RsTurtleSerialiser ser ;
+	uint32_t size = ser.size(item) ;
+
+	if(size == 0)
+		return 0 ;
+
+	std::vector<uint8_t> buf(size) ;
+
+	if(!ser.serialise(item,buf.data(),&size))
+		return 0 ;
+
+	uint64_t h = 1469598103934665603ULL ;	// FNV-1a 64
+
+	for(uint32_t i=0;i<size;++i)
+	{
+		h ^= buf[i] ;
+		h *= 1099511628211ULL ;
+	}
+	return h ;
+}
+
+static std::string hex64(uint64_t v)
+{
+	std::ostringstream o ;
+	o << std::hex << std::setw(16) << std::setfill('0') << v ;
+	return o.str() ;
+}
+
 TurtleJournal& TurtleJournal::instance()
 {
 	static TurtleJournal j ;
@@ -111,6 +148,8 @@ TurtleJournal& TurtleJournal::instance()
 TurtleJournal::TurtleJournal()
     : mJournalMtx("TurtleJournal"),mLastSummaryMs(0)
 {
+	mPeers.push_back(TurtlePeerId()) ;	// index 0: null id, i.e. us
+
 	mEnabled        = envFlag("RS_TURTLE_JOURNAL") ;
 	mGuard          = envFlag("RS_TURTLE_GUARD") ;
 	mVerboseRouting = envFlag("RS_TURTLE_VERBOSE_ROUTING") ;
@@ -128,6 +167,33 @@ TurtleJournal::TurtleJournal()
 		std::cerr << ", dumping to \"" << mFileName << "\" (max " << mMaxIds << " ids, ttl " << mTtl << "s)" ;
 
 	std::cerr << std::endl ;
+}
+
+uint16_t TurtleJournal::peerIdx(const TurtlePeerId& p)
+{
+	if(p.isNull())
+		return 0 ;
+
+	std::map<TurtlePeerId,uint16_t>::const_iterator it(mPeerIdx.find(p)) ;
+
+	if(it != mPeerIdx.end())
+		return it->second ;
+
+	if(mPeers.size() >= 0xffff)	// cannot happen with friends only, but stay safe
+		return 0 ;
+
+	uint16_t idx = uint16_t(mPeers.size()) ;
+	mPeers.push_back(p) ;
+	mPeerIdx[p] = idx ;
+	return idx ;
+}
+
+std::string TurtleJournal::peerStr(uint16_t idx) const
+{
+	if(idx == 0 || idx >= mPeers.size())
+		return "us" ;
+
+	return mPeers[idx].toStdString() ;
 }
 
 //=============================================================================//
@@ -180,7 +246,8 @@ void TurtleJournal::trIn(TurtleTunnelRequestId rid,const TurtlePeerId& from,uint
 	r.partial_in = partial_in ;
 }
 
-void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& known_origin,uint32_t age)
+void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& /*known_origin*/,
+                             uint32_t /*age*/,uint16_t depth)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
@@ -189,9 +256,39 @@ void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,
 	if(!mEnabled)
 		return ;
 
-	// No tunnel id yet: recorded on the request only. Kept as an event on the
-	// pseudo id 0 so that it shows up in the request section of the dumps.
-	push(0,TR_BOUNCE,rid,age,from,known_origin) ;
+	// No tunnel id yet: recorded on the request, with the delay in ms, so that
+	// a dump can tell whether a peer had this request from somewhere else.
+
+	std::map<TurtleTunnelRequestId,RequestRecord>::iterator it(mRequests.find(rid)) ;
+
+	if(it == mRequests.end())
+		return ;
+
+	if(it->second.bounces.size() >= MAX_BOUNCES_PER_REQ)
+	{
+		++it->second.bounces_dropped ;
+		return ;
+	}
+
+	Bounce b ;
+	uint64_t now = nowMs() ;
+	b.dms   = uint32_t((now > it->second.ms)?(now - it->second.ms):0) ;
+	b.peer  = peerIdx(from) ;
+	b.depth = depth ;
+	it->second.bounces.push_back(b) ;
+}
+
+void TurtleJournal::trFwdTo(TurtleTunnelRequestId rid,const TurtlePeerId& to)
+{
+	RS_STACK_MUTEX(mJournalMtx) ;
+
+	if(!mEnabled)
+		return ;
+
+	std::map<TurtleTunnelRequestId,RequestRecord>::iterator it(mRequests.find(rid)) ;
+
+	if(it != mRequests.end())
+		it->second.fwd_to.push_back(peerIdx(to)) ;
 }
 
 void TurtleJournal::trFwd(TurtleTunnelRequestId rid,uint32_t partial_out,uint16_t n_peers)
@@ -341,7 +438,7 @@ void TurtleJournal::okHeld(TurtleTunnelId tid,TurtleTunnelRequestId rid,const Tu
 }
 
 void TurtleJournal::itemMismatch(TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& src,const TurtlePeerId& dst,
-                                 uint8_t item_subtype,uint32_t tunnel_age)
+                                 uint8_t item_subtype,uint32_t tunnel_age,uint64_t fp)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
@@ -357,11 +454,29 @@ void TurtleJournal::itemMismatch(TurtleTunnelId tid,const TurtlePeerId& from,con
 	push(tid,ITEM_MISMATCH,0,(uint32_t(item_subtype)<<16) | (tunnel_age & 0xffff),from,src) ;
 
 	TunnelRecord& rec(mTunnels[tid]) ;
+	uint64_t now = nowMs() ;
 
 	++rec.mismatch_count ;
 
 	if(first_this_lapse && rec.announced_after_mismatch)
 		++mCounters.mismatch_tunnels_announced ;
+
+	uint16_t from_idx = peerIdx(from) ;
+
+	if(!rec.watched)
+	{
+		rec.watched          = true ;
+		rec.src              = src ;
+		rec.dst              = dst ;
+	}
+	rec.last_reject_ms = now ;
+	++rec.f_rejected[from_idx] ;
+
+	recordItem(tid,rec,now,from_idx,0,item_subtype,fp,false) ;
+
+	// The first dropped item is shown in the dump below; capture the following ones.
+	if(rec.capture_until_ms == 0)
+		rec.capture_until_ms = now + CAPTURE_MS ;
 
 	// One full history per offending tunnel id, not per dropped item.
 
@@ -369,6 +484,87 @@ void TurtleJournal::itemMismatch(TurtleTunnelId tid,const TurtlePeerId& from,con
 	{
 		rec.dumped = true ;
 		dumpTunnel(tid) ;
+	}
+}
+
+void TurtleJournal::itemRouted(TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& to,
+                               uint8_t item_subtype,uint64_t fp)
+{
+	RS_STACK_MUTEX(mJournalMtx) ;
+
+	if(!mEnabled)
+		return ;
+
+	TunnelRecord& rec(mTunnels[tid]) ;
+	uint64_t now = nowMs() ;
+
+	if(rec.first_ms == 0)
+		rec.first_ms = now ;
+	rec.last_ms = now ;
+
+	if(rec.watched)
+	{
+		if(from.isNull())
+			++rec.f_local ;
+		else if(from == rec.src)
+			++rec.f_from_src ;
+		else if(from == rec.dst)
+			++rec.f_from_dst ;
+	}
+
+	recordItem(tid,rec,now,peerIdx(from),peerIdx(to),item_subtype,fp,true) ;
+}
+
+std::string TurtleJournal::copyOf(const TunnelRecord& rec,uint64_t fp,uint16_t from,uint64_t ms) const
+{
+	if(fp == 0)
+		return std::string() ;
+
+	// Earliest earlier item with the same fingerprint. The last ring entry is the
+	// item being examined itself when it has just been recorded: skip identical ms+from.
+
+	for(uint32_t i=0;i<rec.ring.size();++i)
+	{
+		const ItemSeen& s(rec.ring[i]) ;
+
+		if(s.fp != fp || (s.ms == ms && s.from == from))
+			continue ;
+
+		std::ostringstream o ;
+		o << ((s.from == from)?"  REPEAT of item from ":"  COPY of item from ") << peerStr(s.from)
+		  << " (" << (s.accepted?"accepted":"dropped") << ", " << int64_t(ms) - int64_t(s.ms) << " ms earlier)" ;
+		return o.str() ;
+	}
+	return std::string() ;
+}
+
+void TurtleJournal::recordItem(TurtleTunnelId tid,TunnelRecord& rec,uint64_t now,uint16_t from,uint16_t to,
+                               uint8_t subtype,uint64_t fp,bool accepted)
+{
+	ItemSeen s ;
+	s.ms       = now ;
+	s.fp       = fp ;
+	s.from     = from ;
+	s.to       = to ;
+	s.subtype  = subtype ;
+	s.accepted = accepted?1:0 ;
+
+	// Look for an earlier copy before inserting, so that the item does not match itself.
+	std::string copy = (now < rec.capture_until_ms && rec.captured < CAPTURE_MAX_ITEMS)?copyOf(rec,fp,from,now):std::string() ;
+
+	if(rec.ring.size() >= ITEM_RING_SIZE)
+		rec.ring.erase(rec.ring.begin()) ;
+	rec.ring.push_back(s) ;
+
+	if(now < rec.capture_until_ms && rec.captured < CAPTURE_MAX_ITEMS)
+	{
+		++rec.captured ;
+
+		std::ostringstream o ;
+		o << "CAP " << hex32(tid) << " " << timeStr(now) << " " << (accepted?"ACCEPTED":"DROPPED ")
+		  << " item=" << itemName(subtype) << " fp=" << hex64(fp)
+		  << " from=" << peerStr(from) << " to=" << (accepted?peerStr(to):std::string("-")) << copy << std::endl ;
+		mPendingDumps.push_back(o.str()) ;
 	}
 }
 
@@ -388,8 +584,15 @@ void TurtleJournal::tunnelClosed(TurtleTunnelId tid,const TurtlePeerId& src,cons
 
 	++mCounters.t_close ;
 
-	if(mEnabled)
-		push(tid,T_CLOSE,0,age,src,dst) ;
+	if(!mEnabled)
+		return ;
+
+	push(tid,T_CLOSE,0,age,src,dst) ;
+
+	TunnelRecord& rec(mTunnels[tid]) ;
+
+	if(rec.watched && rec.closed_ms == 0)
+		rec.closed_ms = nowMs() ;
 }
 
 //=============================================================================//
@@ -465,15 +668,132 @@ void TurtleJournal::dumpTunnel(TurtleTunnelId tid)
 		if(r == mRequests.end())
 			continue ;
 
-		o << "  request " << hex32(it->first) << " : from=" << r->second.origin
-		  << " depth=" << r->second.depth
-		  << " hash=" << r->second.hash
-		  << " partial " << hex32(r->second.partial_in) << " -> " << hex32(r->second.partial_out)
-		  << " forwarded to " << r->second.n_fwd << " peers"
-		  << " (" << timeStr(r->second.ms) << ")" << std::endl ;
+		const RequestRecord& req(r->second) ;
+
+		o << "  request " << hex32(it->first) << " : from=" << req.origin
+		  << " depth=" << req.depth
+		  << " hash=" << req.hash
+		  << " partial " << hex32(req.partial_in) << " -> " << hex32(req.partial_out)
+		  << " forwarded to " << req.n_fwd << " peers"
+		  << " (" << timeStr(req.ms) << ")" << std::endl ;
+
+		mPendingPeerInfo.insert(req.origin) ;
+
+		// For every peer that sent us a result for this request: did we forward the
+		// request to it, and did it send us the request itself (a bounce)? A peer that
+		// had the request from somewhere else first is not supposed to send us a result.
+
+		std::set<TurtlePeerId> responders ;
+
+		for(uint32_t i=0;i<rec.events.size();++i)
+			if(rec.events[i].rid == it->first && (rec.events[i].kind == OK_IN || rec.events[i].kind == OK_TWICE))
+				responders.insert(rec.events[i].p1) ;
+
+		for(std::set<TurtlePeerId>::const_iterator p(responders.begin());p!=responders.end();++p)
+		{
+			std::map<TurtlePeerId,uint16_t>::const_iterator pi(mPeerIdx.find(*p)) ;
+			uint16_t idx = (pi == mPeerIdx.end())?0xffff:pi->second ;
+
+			bool fwd = (std::find(req.fwd_to.begin(),req.fwd_to.end(),idx) != req.fwd_to.end()) ;
+
+			o << "    responder " << *p << ": request forwarded to it: " << (fwd?"yes":"NO")
+			  << ", request received from it: " ;
+
+			if(*p == req.origin)
+				o << "it is the ORIGIN" ;
+			else
+			{
+				bool any = false ;
+
+				for(uint32_t b=0;b<req.bounces.size();++b)
+					if(req.bounces[b].peer == idx)
+					{
+						o << (any?", ":"") << "bounce +" << req.bounces[b].dms << " ms depth " << req.bounces[b].depth ;
+						any = true ;
+					}
+
+				if(!any)
+					o << "never" << (req.bounces_dropped?" (bounce list capped)":"") ;
+			}
+			o << std::endl ;
+
+			mPendingPeerInfo.insert(*p) ;
+		}
+
+		o << "    forwarded to:" ;
+		for(uint32_t i=0;i<req.fwd_to.size();++i)
+			o << " " << peerStr(req.fwd_to[i]).substr(0,8) ;
+		o << std::endl ;
+
+		o << "    bounces (" << req.bounces.size() << (req.bounces_dropped?"+":"") << "):" ;
+		for(uint32_t i=0;i<req.bounces.size();++i)
+			o << " " << peerStr(req.bounces[i].peer).substr(0,8) << "@+" << req.bounces[i].dms << "ms/d" << req.bounces[i].depth ;
+		o << std::endl ;
 	}
 
+	// Items seen on this tunnel just before and at the first mismatch.
+
+	o << "  last items on this tunnel (fingerprint = hash of the serialised item):" << std::endl ;
+
+	for(uint32_t i=0;i<rec.ring.size();++i)
+	{
+		const ItemSeen& s(rec.ring[i]) ;
+
+		o << "    " << timeStr(s.ms) << " " << (s.accepted?"ACCEPTED":"DROPPED ") << " item=" << itemName(s.subtype)
+		  << " fp=" << hex64(s.fp) << " from=" << peerStr(s.from) << " to=" << (s.accepted?peerStr(s.to):std::string("-"))
+		  << copyOf(rec,s.fp,s.from,s.ms) << std::endl ;
+	}
+
+	for(uint32_t i=0;i<rec.events.size();++i)
+		if(rec.events[i].kind == ITEM_MISMATCH || rec.events[i].kind == OK_TWICE || rec.events[i].kind == T_CREATE)
+		{
+			mPendingPeerInfo.insert(rec.events[i].p1) ;
+			if(rec.events[i].kind == T_CREATE)
+				mPendingPeerInfo.insert(rec.events[i].p2) ;
+		}
+
+	o << "  every item of this tunnel is logged as CAP lines for " << CAPTURE_MS/1000
+	  << " s, then one FOLLOW line per minute until " << FOLLOW_MS/60000 << " min after the last dropped item." << std::endl ;
+
 	mPendingDumps.push_back(o.str()) ;
+}
+
+void TurtleJournal::followLines(uint64_t now,std::ostringstream& o)
+{
+	for(std::map<TurtleTunnelId,TunnelRecord>::iterator it(mTunnels.begin());it!=mTunnels.end();++it)
+	{
+		TunnelRecord& rec(it->second) ;
+
+		if(!rec.watched)
+			continue ;
+
+		o << "FOLLOW " << hex32(it->first) << " " << timeStr(now) << " last minute: from src=" << rec.f_from_src
+		  << " from dst=" << rec.f_from_dst << " emitted by us=" << rec.f_local << ", dropped:" ;
+
+		if(rec.f_rejected.empty())
+			o << " none" ;
+
+		for(std::map<uint16_t,uint32_t>::const_iterator r(rec.f_rejected.begin());r!=rec.f_rejected.end();++r)
+			o << " " << peerStr(r->first) << "=" << r->second ;
+
+		o << ", our entry: " ;
+
+		if(rec.closed_ms)
+			o << "expired " << (now - rec.closed_ms)/1000 << " s ago" ;
+		else
+			o << "alive" ;
+
+		o << " (src=" << rec.src << " dst=" << rec.dst << ")" << std::endl ;
+
+		rec.f_from_src = rec.f_from_dst = rec.f_local = 0 ;
+		rec.f_rejected.clear() ;
+
+		if(now > rec.last_reject_ms + FOLLOW_MS)
+		{
+			o << "FOLLOW " << hex32(it->first) << " ends: no dropped item for " << FOLLOW_MS/60000 << " min." << std::endl ;
+			rec.watched = false ;
+		}
+	}
 }
 
 void TurtleJournal::sweep(uint64_t now_ms)
@@ -481,7 +801,7 @@ void TurtleJournal::sweep(uint64_t now_ms)
 	uint64_t limit = (now_ms > (uint64_t)mTtl*1000)?(now_ms - (uint64_t)mTtl*1000):0 ;
 
 	for(std::map<TurtleTunnelId,TunnelRecord>::iterator it(mTunnels.begin());it!=mTunnels.end();)
-		if(it->second.last_ms < limit)
+		if(it->second.last_ms < limit && !it->second.watched)
 			it = mTunnels.erase(it) ;
 		else
 			++it ;
@@ -499,8 +819,11 @@ void TurtleJournal::sweep(uint64_t now_ms)
 		std::map<TurtleTunnelId,TunnelRecord>::iterator oldest(mTunnels.begin()) ;
 
 		for(std::map<TurtleTunnelId,TunnelRecord>::iterator it(mTunnels.begin());it!=mTunnels.end();++it)
-			if(it->second.last_ms < oldest->second.last_ms)
+			if(!it->second.watched && (oldest->second.watched || it->second.last_ms < oldest->second.last_ms))
 				oldest = it ;
+
+		if(oldest->second.watched)	// only watched records left
+			break ;
 
 		mTunnels.erase(oldest) ;
 	}
@@ -510,8 +833,10 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 {
 	std::vector<std::string> dumps ;
 	std::string              summary ;
+	std::string              follow ;
 	std::string              file_name ;
 	bool                     enabled ;
+	std::set<TurtlePeerId>   peers_to_name ;
 
 	{
 		RS_STACK_MUTEX(mJournalMtx) ;
@@ -526,9 +851,21 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 		if(mLastSummaryMs == 0)
 			mLastSummaryMs = now ;
 
+		for(std::set<TurtlePeerId>::const_iterator it(mPendingPeerInfo.begin());it!=mPendingPeerInfo.end();++it)
+			if(!it->isNull() && mPeerInfoDone.insert(*it).second)
+				peers_to_name.insert(*it) ;
+		mPendingPeerInfo.clear() ;
+
 		if(now >= mLastSummaryMs + SUMMARY_LAPSE_MS)
 		{
 			sweep(now) ;
+
+			if(mEnabled)
+			{
+				std::ostringstream fo ;
+				followLines(now,fo) ;
+				follow = fo.str() ;
+			}
 
 			const Counters& c(mCounters) ;
 
@@ -584,8 +921,25 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 	if(!summary.empty())
 		std::cerr << summary << std::endl ;
 
-	if(!enabled || (dumps.empty() && summary.empty()))
+	if(!enabled || (dumps.empty() && summary.empty() && follow.empty() && peers_to_name.empty()))
 		return ;
+
+	// Name and announced version of the peers involved, once per peer and per run.
+	// Off both mutexes: this calls into rsPeers and the gossip discovery service.
+
+	std::ostringstream pinfo ;
+
+	for(std::set<TurtlePeerId>::const_iterator it(peers_to_name.begin());it!=peers_to_name.end();++it)
+	{
+		std::string name = rsPeers ? rsPeers->getPeerName(*it) : std::string() ;
+		std::string version ;
+
+		if(!rsGossipDiscovery || !rsGossipDiscovery->getPeerVersion(*it,version))
+			version = "unknown" ;
+
+		pinfo << "PEER " << *it << " name=\"" << name << "\" version=\"" << version << "\""
+		      << (name.empty()?" (not a direct friend)":"") << std::endl ;
+	}
 
 	std::ofstream f(file_name.c_str(),std::ios::app) ;
 
@@ -594,6 +948,8 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 	for(uint32_t i=0;i<dumps.size();++i)
 		f << dumps[i] ;
+
+	f << pinfo.str() << follow ;
 
 	if(!summary.empty())
 		f << summary << std::endl ;

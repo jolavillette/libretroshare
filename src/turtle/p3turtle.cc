@@ -1342,7 +1342,8 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 			rstime_t tunnel_age = time(NULL) - (rstime_t)tunnel.time_stamp ;
 
 			TurtleJournal::instance().itemMismatch(item->tunnelId(),item->PeerId(),tunnel.local_src,tunnel.local_dst,
-			                                       item->PacketSubType(),(tunnel_age > 0)?uint32_t(tunnel_age):0) ;
+			                                       item->PacketSubType(),(tunnel_age > 0)?uint32_t(tunnel_age):0,
+			                                       TurtleJournal::instance().enabled()?TurtleJournal::fingerprint(item):0) ;
 
 			if(TurtleJournal::instance().verboseRouting())
 			{
@@ -1356,6 +1357,16 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 
 			delete item ;
 			return ;
+		}
+
+		// Journal: fingerprint of every accepted item, so that a later dropped item can be
+		// recognised as a copy of one that travelled on the real route.
+		if(TurtleJournal::instance().enabled())
+		{
+			const TurtlePeerId& next((item->PeerId() == tunnel.local_dst)?tunnel.local_src:tunnel.local_dst) ;
+
+			TurtleJournal::instance().itemRouted(item->tunnelId(),item->PeerId(),(next == _own_id)?TurtlePeerId():next,
+			                                     item->PacketSubType(),TurtleJournal::fingerprint(item)) ;
 		}
 
 		// Let's figure out whether this packet is for us or not.
@@ -1546,6 +1557,10 @@ void p3turtle::sendTurtleData(const RsPeerId& virtual_peer_id,RsTurtleGenericTun
 #ifdef P3TURTLE_DEBUG
 	std::cerr << "p3turtle: sending service packet to virtual peer id " << virtual_peer_id << ", hash=0x" << tunnel.hash << ", tunnel = " << HEX_PRINT(item->tunnel_id) << ", next peer=" << tunnel.local_dst << std::endl ;
 #endif
+	if(TurtleJournal::instance().enabled())
+		TurtleJournal::instance().itemRouted(tunnel_id,TurtlePeerId(),item->PeerId(),item->PacketSubType(),
+		                                     TurtleJournal::fingerprint(item)) ;
+
 	sendItem(item) ;
 }
 
@@ -1662,7 +1677,7 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 			std::cerr << "  This is a bouncing request. Ignoring and deleting item." << std::endl ;
 #endif
 			TurtleJournal::instance().trBounce(item->request_id,item->PeerId(),it->second.origin,
-			                                   uint32_t(time(NULL) - (rstime_t)it->second.time_stamp)) ;
+			                                   uint32_t(time(NULL) - (rstime_t)it->second.time_stamp),uint16_t(item->depth)) ;
 			return ;
 		}
 		// This is a new request. Let's add it to the request map, and forward
@@ -1875,6 +1890,8 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 					++(fwd_item->depth) ;		// increase tunnel depth
 
 				fwd_item->PeerId(*it) ;
+
+				TurtleJournal::instance().trFwdTo(item->request_id,*it) ;
 
 				{
 					RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/

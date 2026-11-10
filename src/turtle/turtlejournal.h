@@ -23,10 +23,13 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "turtle/turtletypes.h"
+
+class RsTurtleGenericTunnelItem ;
 #include "util/rsthreads.h"
 
 //=============================================================================//
@@ -56,6 +59,21 @@
 //                                endpoints (candidate fix, default: off)
 //   RS_TURTLE_VERBOSE_ROUTING=1  restore the historical one-block-per-dropped
 //                                item logging (default: off, aggregated)
+//
+// When the recorder is on, it also keeps, to explain where a duplicate tunnel
+// result comes from:
+//   - per tunnel request: the peers it was forwarded to, and every bounce
+//     (sender, depth, delay), so a dump tells whether we are the origin of the
+//     peer that later sends the duplicate result;
+//   - per tunnel: a fingerprint (64 bits hash of the serialised item) of the
+//     last items routed, so a dump tells whether the items of the offending
+//     peer are copies of items seen on the real route, and with which delay.
+//     For 5 minutes after the first mismatch every item of that tunnel is
+//     written to the dump file;
+//   - for 30 minutes after the last dropped item, one FOLLOW line per minute
+//     per broken tunnel: items accepted from each end, items dropped per
+//     sender, whether our own entry has expired;
+//   - the name and announced RetroShare version of every peer involved.
 //
 // PRIVACY NOTE: a transit node deliberately does not keep the file hash of the
 // tunnels it relays (p3turtle.cc clears TurtleTunnel::hash for transit
@@ -97,7 +115,8 @@ class TurtleJournal
 		//--------------------------- Tunnel requests ---------------------------//
 
 		void trIn      (TurtleTunnelRequestId rid,const TurtlePeerId& from,uint16_t depth,const TurtleFileHash& hash,uint32_t partial_in);
-		void trBounce  (TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& known_origin,uint32_t age);
+		void trBounce  (TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& known_origin,uint32_t age,uint16_t depth);
+		void trFwdTo   (TurtleTunnelRequestId rid,const TurtlePeerId& to);
 		void trFwd     (TurtleTunnelRequestId rid,uint32_t partial_out,uint16_t n_peers);
 		void trAnswered(TurtleTunnelRequestId rid,TurtleTunnelId tid,const TurtlePeerId& to,const TurtleFileHash& hash,
 		                bool overwrote,const TurtlePeerId& old_src,const TurtlePeerId& old_dst);
@@ -118,7 +137,16 @@ class TurtleJournal
 		//------------------------------- Routing -------------------------------//
 
 		void itemMismatch     (TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& src,const TurtlePeerId& dst,
-		                       uint8_t item_subtype,uint32_t tunnel_age);
+		                       uint8_t item_subtype,uint32_t tunnel_age,uint64_t fp);
+
+		/// An item accepted on a tunnel: from one end to the other, or to/from us.
+		/// A null `from` means we emitted it, a null `to` means it is for us.
+		void itemRouted       (TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& to,
+		                       uint8_t item_subtype,uint64_t fp);
+
+		/// 64 bits FNV-1a hash of the serialised item: identical for copies of the
+		/// same item, whoever relays them. Only computed when the recorder is on.
+		static uint64_t fingerprint(RsTurtleGenericTunnelItem *item) ;
 		void itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& from,uint8_t item_subtype);
 		void tunnelClosed     (TurtleTunnelId tid,const TurtlePeerId& src,const TurtlePeerId& dst,uint32_t age);
 
@@ -142,10 +170,23 @@ class TurtleJournal
 				TurtlePeerId p2 ;
 		};
 
+		class ItemSeen
+		{
+			public:
+				uint64_t ms ;
+				uint64_t fp ;
+				uint16_t from ;     // peer index, 0 = us
+				uint16_t to ;       // peer index, 0 = us
+				uint8_t  subtype ;
+				uint8_t  accepted ;
+		};
+
 		class TunnelRecord
 		{
 			public:
-				TunnelRecord() : first_ms(0),last_ms(0),mismatch_count(0),announced_after_mismatch(false),dumped(false) {}
+				TunnelRecord() : first_ms(0),last_ms(0),mismatch_count(0),announced_after_mismatch(false),dumped(false),
+				                 capture_until_ms(0),captured(0),watched(false),last_reject_ms(0),closed_ms(0),
+				                 f_from_src(0),f_from_dst(0),f_local(0) {}
 
 				uint64_t           first_ms ;
 				uint64_t           last_ms ;
@@ -154,12 +195,31 @@ class TurtleJournal
 				bool               announced_after_mismatch ; // a result was forwarded upstream while the endpoints differed
 				bool               dumped ;
 				std::vector<Event> events ;
+
+				std::vector<ItemSeen> ring ;                  // last routed items, oldest first
+				uint64_t           capture_until_ms ;         // every item is written out until then
+				uint32_t           captured ;
+
+				bool               watched ;                  // FOLLOW lines are printed for this tunnel
+				uint64_t           last_reject_ms ;
+				uint64_t           closed_ms ;                // our own entry expired at that time, 0 if alive
+				TurtlePeerId       src,dst ;                  // our endpoints when the first mismatch hit
+				uint32_t           f_from_src,f_from_dst,f_local ;  // FOLLOW counters for the current minute
+				std::map<uint16_t,uint32_t> f_rejected ;
+		};
+
+		class Bounce
+		{
+			public:
+				uint32_t dms ;      // ms after the request was first received
+				uint16_t peer ;
+				uint16_t depth ;
 		};
 
 		class RequestRecord
 		{
 			public:
-				RequestRecord() : ms(0),partial_in(0),partial_out(0),depth(0),n_fwd(0) {}
+				RequestRecord() : ms(0),partial_in(0),partial_out(0),depth(0),n_fwd(0),bounces_dropped(0) {}
 
 				uint64_t       ms ;
 				TurtlePeerId   origin ;
@@ -168,6 +228,9 @@ class TurtleJournal
 				uint32_t       partial_out ;
 				uint16_t       depth ;
 				uint16_t       n_fwd ;
+				std::vector<uint16_t> fwd_to ;   // peers this request was forwarded to (indices)
+				std::vector<Bounce>   bounces ;  // later copies of this request, capped
+				uint32_t       bounces_dropped ;
 		};
 
 		void push(TurtleTunnelId tid,uint8_t kind,uint32_t rid,uint32_t aux,
@@ -175,6 +238,13 @@ class TurtleJournal
 		void dumpTunnel(TurtleTunnelId tid);                        // mJournalMtx must be locked
 		void sweep(uint64_t now_ms);                                // mJournalMtx must be locked
 		std::string formatEvent(TurtleTunnelId tid,const Event& e) const;
+
+		uint16_t peerIdx(const TurtlePeerId& p);                    // mJournalMtx must be locked; 0 for a null id
+		std::string peerStr(uint16_t idx) const;                    // mJournalMtx must be locked
+		void recordItem(TurtleTunnelId tid,TunnelRecord& rec,uint64_t now,uint16_t from,uint16_t to,
+		                uint8_t subtype,uint64_t fp,bool accepted);  // mJournalMtx must be locked
+		std::string copyOf(const TunnelRecord& rec,uint64_t fp,uint16_t from,uint64_t ms) const;
+		void followLines(uint64_t now_ms,std::ostringstream& o);    // mJournalMtx must be locked
 
 		mutable RsMutex mJournalMtx ;
 
@@ -190,6 +260,11 @@ class TurtleJournal
 
 		std::vector<std::string> mPendingDumps ;
 		uint64_t                 mLastSummaryMs ;
+
+		std::map<TurtlePeerId,uint16_t> mPeerIdx ;
+		std::vector<TurtlePeerId>       mPeers ;          // index 0 = null id (us)
+		std::set<TurtlePeerId>          mPendingPeerInfo ;// peers to name in the dump file
+		std::set<TurtlePeerId>          mPeerInfoDone ;
 
 		//------------------------------ Counters -------------------------------//
 		// Always maintained, even when the recorder is disabled: they feed the
