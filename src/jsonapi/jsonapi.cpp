@@ -783,9 +783,11 @@ bool JsonApiServer::saveList(bool& cleanup, std::list<RsItem*>& saveItems)
 
     saveItems.push_back(itm);
 
-    std::cerr << "Saving auth tokens: " << std::endl;
-    for(auto it:mAuthTokenStorage.mAuthorizedTokens)
-        std::cerr << "  " << it.first << ":" << it.second << std::endl;
+	/* User names only: the passwords are the credentials themselves. */
+	std::cerr << "Saving auth tokens for:";
+	for(const auto& it: mAuthTokenStorage.mAuthorizedTokens)
+		std::cerr << " " << it.first;
+	std::cerr << std::endl;
     return true;
 }
 
@@ -822,9 +824,11 @@ bool JsonApiServer::loadList(std::list<RsItem*>& loadList)
 
         delete it;
     }
-    std::cerr << "Loaded auth tokens: " << std::endl;
-    for(auto it:mAuthTokenStorage.mAuthorizedTokens)
-        std::cerr << "  " << it.first << ":" << it.second << std::endl;
+	/* User names only: the passwords are the credentials themselves. */
+	std::cerr << "Loaded auth tokens for:";
+	for(const auto& it: mAuthTokenStorage.mAuthorizedTokens)
+		std::cerr << " " << it.first;
+	std::cerr << std::endl;
 	return true;
 }
 

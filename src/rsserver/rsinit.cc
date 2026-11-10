@@ -482,7 +482,7 @@ void RsInit::startupWebServices(const RsConfigOptions& conf,bool force_start_jso
         if(!conf.webUIPasswd.empty())
         {
             webui_passwd = conf.webUIPasswd;
-            RsInfo() << "    Using supplied web interface passwd \"" << conf.webUIPasswd << "\"" ;
+            RsInfo() << "    Using the supplied web interface passwd" ;
         }
         else
         {
@@ -491,7 +491,7 @@ void RsInit::startupWebServices(const RsConfigOptions& conf,bool force_start_jso
             if(passwd_it != tokens.end() && !passwd_it->second.empty())
             {
                 webui_passwd = passwd_it->second;
-                RsInfo() << "    Using supplied web interface passwd \"" << webui_passwd << "\"" ;
+                RsInfo() << "    Using the web interface passwd saved in the JSON API tokens" ;
             }
             else
                 RsInfo() << "    No supplied passwd for WEB Interface. Please use the appropriate commandline option." ;
