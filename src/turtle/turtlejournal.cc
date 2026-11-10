@@ -30,6 +30,7 @@
 
 #include "retroshare/rsgossipdiscovery.h"
 #include "retroshare/rspeers.h"
+#include "retroshare/rsrtt.h"
 #include "turtle/rsturtleitem.h"
 #include "turtle/turtlejournal.h"
 
@@ -340,6 +341,8 @@ void TurtleJournal::okIn(TurtleTunnelRequestId rid,TurtleTunnelId tid,const Turt
 	if(!mEnabled)
 		return ;
 
+	++mPeerStats[peerIdx(from)].ok_in ;
+
 	push(tid,OK_IN,rid,0,from,TurtlePeerId()) ;
 
 	// Bind the tunnel id to the hash and route of its tunnel request, which the
@@ -367,8 +370,14 @@ void TurtleJournal::okTwice(TurtleTunnelRequestId rid,TurtleTunnelId tid,const T
 
 	++mCounters.ok_twice ;
 
-	if(mEnabled)
-		push(tid,OK_TWICE,rid,0,from,TurtlePeerId()) ;
+	if(!mEnabled)
+		return ;
+
+	uint16_t idx = peerIdx(from) ;
+	++mPeerStats[idx].ok_twice ;
+	mSuspects[idx] = nowMs() ;
+
+	push(tid,OK_TWICE,rid,0,from,TurtlePeerId()) ;
 }
 
 void TurtleJournal::okLate(TurtleTunnelRequestId rid,TurtleTunnelId tid,const TurtlePeerId& from,uint32_t age)
@@ -387,8 +396,12 @@ void TurtleJournal::tunnelCreated(TurtleTunnelId tid,TurtleTunnelRequestId rid,c
 
 	++mCounters.t_create ;
 
-	if(mEnabled)
-		push(tid,T_CREATE,rid,0,src,dst) ;
+	if(!mEnabled)
+		return ;
+
+	++mPeerStats[peerIdx(dst)].t_via ;
+
+	push(tid,T_CREATE,rid,0,src,dst) ;
 }
 
 void TurtleJournal::tunnelFound(TurtleTunnelId tid,TurtleTunnelRequestId rid,
@@ -472,6 +485,9 @@ void TurtleJournal::itemMismatch(TurtleTunnelId tid,const TurtlePeerId& from,con
 	rec.last_reject_ms = now ;
 	++rec.f_rejected[from_idx] ;
 
+	++mPeerStats[from_idx].drop_from ;
+	mSuspects[from_idx] = now ;
+
 	recordItem(tid,rec,now,from_idx,0,item_subtype,fp,false) ;
 
 	// The first dropped item is shown in the dump below; capture the following ones.
@@ -512,7 +528,12 @@ void TurtleJournal::itemRouted(TurtleTunnelId tid,const TurtlePeerId& from,const
 			++rec.f_from_dst ;
 	}
 
-	recordItem(tid,rec,now,peerIdx(from),peerIdx(to),item_subtype,fp,true) ;
+	uint16_t from_idx = peerIdx(from) ;
+
+	if(from_idx != 0)
+		++mPeerStats[from_idx].acc_from ;
+
+	recordItem(tid,rec,now,from_idx,peerIdx(to),item_subtype,fp,true) ;
 }
 
 std::string TurtleJournal::copyOf(const TunnelRecord& rec,uint64_t fp,uint16_t from,uint64_t ms) const
@@ -837,6 +858,8 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 	std::string              file_name ;
 	bool                     enabled ;
 	std::set<TurtlePeerId>   peers_to_name ;
+	std::vector<std::pair<TurtlePeerId,PeerTurtleStat> > suspects ;
+	uint64_t                 tick_now = 0 ;
 
 	{
 		RS_STACK_MUTEX(mJournalMtx) ;
@@ -865,6 +888,20 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				std::ostringstream fo ;
 				followLines(now,fo) ;
 				follow = fo.str() ;
+
+				// Suspect peers: their minute of turtle activity, resolved off mutex below.
+
+				for(std::map<uint16_t,uint64_t>::iterator it(mSuspects.begin());it!=mSuspects.end();)
+					if(now > it->second + FOLLOW_MS)
+						it = mSuspects.erase(it) ;
+					else
+					{
+						suspects.push_back(std::make_pair(mPeers[it->first],mPeerStats[it->first])) ;
+						++it ;
+					}
+
+				mPeerStats.clear() ;
+				tick_now = now ;
 			}
 
 			const Counters& c(mCounters) ;
@@ -921,8 +958,46 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 	if(!summary.empty())
 		std::cerr << summary << std::endl ;
 
-	if(!enabled || (dumps.empty() && summary.empty() && follow.empty() && peers_to_name.empty()))
+	if(!enabled || (dumps.empty() && summary.empty() && follow.empty() && peers_to_name.empty() && suspects.empty()))
 		return ;
+
+	// Suspect peers: link state, RTT and clock offset, turtle activity. Off both mutexes.
+
+	std::ostringstream pstate ;
+
+	for(uint32_t i=0;i<suspects.size();++i)
+	{
+		const TurtlePeerId& id(suspects[i].first) ;
+		const PeerTurtleStat& st(suspects[i].second) ;
+
+		int online = rsPeers ? (rsPeers->isOnline(id)?1:0) : -1 ;
+
+		std::map<TurtlePeerId,int>::iterator lo(mLastOnline.find(id)) ;
+		int before = (lo == mLastOnline.end())?-1:lo->second ;
+		mLastOnline[id] = online ;
+
+		pstate << "PEERSTATE " << timeStr(tick_now) << " " << id << " online=" << ((online == 1)?"yes":((online == 0)?"NO":"?")) ;
+
+		if(before != -1 && before != online)
+			pstate << " (went " << ((online == 1)?"ONLINE":"OFFLINE") << " during the last minute)" ;
+
+		std::list<RsRttPongResult> pongs ;
+
+		if(rsRtt && rsRtt->getPongResults(id,1,pongs) > 0 && !pongs.empty())
+		{
+			const RsRttPongResult& p(pongs.back()) ;
+			double age = double(tick_now)/1000.0 - p.mTS ;
+
+			pstate << std::fixed << std::setprecision(3) << " rtt=" << p.mRTT << "s offset=" << p.mOffset
+			       << "s (pong " << std::setprecision(0) << age << " s ago)" ;
+		}
+		else
+			pstate << " rtt=?" ;
+
+		pstate << " | turtle last minute: results from it=" << st.ok_in << " (duplicates=" << st.ok_twice
+		       << "), tunnels created through it=" << st.t_via << ", items accepted from it=" << st.acc_from
+		       << ", items dropped from it=" << st.drop_from << std::endl ;
+	}
 
 	// Name and announced version of the peers involved, once per peer and per run.
 	// Off both mutexes: this calls into rsPeers and the gossip discovery service.
@@ -949,7 +1024,7 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 	for(uint32_t i=0;i<dumps.size();++i)
 		f << dumps[i] ;
 
-	f << pinfo.str() << follow ;
+	f << pinfo.str() << follow << pstate.str() ;
 
 	if(!summary.empty())
 		f << summary << std::endl ;

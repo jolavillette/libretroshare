@@ -73,7 +73,13 @@ class RsTurtleGenericTunnelItem ;
 //   - for 30 minutes after the last dropped item, one FOLLOW line per minute
 //     per broken tunnel: items accepted from each end, items dropped per
 //     sender, whether our own entry has expired;
-//   - the name and announced RetroShare version of every peer involved.
+//   - the name and announced RetroShare version of every peer involved;
+//   - for every "suspect" peer (one that sent us a dropped item or a duplicate
+//     result in the last 30 minutes), one PEERSTATE line per minute: online or
+//     not (and the transitions), last RTT and clock offset measured by the RTT
+//     service, and its turtle activity with us in that minute: results it
+//     sent, duplicates, tunnels created through it, items accepted from it
+//     and items dropped from it.
 //
 // PRIVACY NOTE: a transit node deliberately does not keep the file hash of the
 // tunnels it relays (p3turtle.cc clears TurtleTunnel::hash for transit
@@ -260,6 +266,18 @@ class TurtleJournal
 
 		std::vector<std::string> mPendingDumps ;
 		uint64_t                 mLastSummaryMs ;
+
+		class PeerTurtleStat
+		{
+			public:
+				PeerTurtleStat() : ok_in(0),ok_twice(0),t_via(0),acc_from(0),drop_from(0) {}
+
+				uint32_t ok_in,ok_twice,t_via,acc_from,drop_from ;
+		};
+
+		std::map<uint16_t,PeerTurtleStat> mPeerStats ;   // current minute, all peers
+		std::map<uint16_t,uint64_t>       mSuspects ;    // peer index -> last dropped item / duplicate result (ms)
+		std::map<TurtlePeerId,int>        mLastOnline ;  // only touched from tick(): -1 unknown, 0 offline, 1 online
 
 		std::map<TurtlePeerId,uint16_t> mPeerIdx ;
 		std::vector<TurtlePeerId>       mPeers ;          // index 0 = null id (us)
