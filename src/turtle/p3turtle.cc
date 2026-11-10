@@ -98,6 +98,7 @@ static const int MAX_TR_FORWARD_PER_SEC                =  20 ;
 static const int MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT    = 100 ;
 static const int MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT    =  10 ;
 static const int DISTANCE_SQUEEZING_POWER              =   8 ;
+static const rstime_t TURTLE_ROUTING_ANOMALY_REPORT_PERIOD =  60 ; /// period of the aggregated routing anomaly report
 
 #define HEX_PRINT(a) std::hex << a << std::dec
 
@@ -125,6 +126,11 @@ p3turtle::p3turtle(p3ServiceControl *sc,p3LinkMgr *lm)
 	_last_tunnel_management_time = 0 ;
 	_last_tunnel_campaign_time = 0 ;
 	_last_tunnel_speed_estimate_time = 0 ;
+
+	_nb_mismatching_items_dropped = 0 ;
+	_nb_duplicate_tunnel_results = 0 ;
+	_nb_colliding_tunnel_results = 0 ;
+	_last_routing_anomaly_report_time = time(NULL) ;
 
 	_traffic_info.reset() ;
 	_max_tr_up_rate = MAX_TR_FORWARD_PER_SEC ;
@@ -249,6 +255,24 @@ int p3turtle::tick()
 			//
 			_traffic_info = _traffic_info*0.9 + _traffic_info_buffer* (0.1 / (float)TIME_BETWEEN_TUNNEL_MANAGEMENT_CALLS) ;
 			_traffic_info_buffer.reset() ;
+		}
+	}
+
+	{
+		RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
+
+		if(now >= _last_routing_anomaly_report_time + TURTLE_ROUTING_ANOMALY_REPORT_PERIOD)
+		{
+			if(_nb_mismatching_items_dropped + _nb_duplicate_tunnel_results + _nb_colliding_tunnel_results > 0)
+				RsWarn() << "p3turtle: over the last " << now - _last_routing_anomaly_report_time << " s: "
+				         << _nb_mismatching_items_dropped << " tunnel items dropped (sender is neither end of the tunnel), "
+				         << _nb_duplicate_tunnel_results << " tunnel results received twice, "
+				         << _nb_colliding_tunnel_results << " tunnel results colliding with an existing tunnel id (not forwarded)." ;
+
+			_nb_mismatching_items_dropped = 0 ;
+			_nb_duplicate_tunnel_results = 0 ;
+			_nb_colliding_tunnel_results = 0 ;
+			_last_routing_anomaly_report_time = now ;
 		}
 	}
 
@@ -1301,26 +1325,29 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 
 		TurtleTunnel& tunnel(it->second) ;
 
-		// Only file data transfer updates tunnels time_stamp field, to avoid maintaining tunnel that are incomplete.
-		if(item->shouldStampTunnel())
-			tunnel.time_stamp = time(NULL) ;
-
-		tunnel.transfered_bytes += RsTurtleSerialiser().size(item);
-
 		if(item->PeerId() == tunnel.local_dst)
 			item->setTravelingDirection(RsTurtleGenericTunnelItem::DIRECTION_CLIENT) ;
 		else if(item->PeerId() == tunnel.local_src)
 			item->setTravelingDirection(RsTurtleGenericTunnelItem::DIRECTION_SERVER) ;
 		else
 		{
-			std::cerr << "(EE) p3turtle::routeGenericTunnelItem(): item mismatches tunnel src/dst ids." << std::endl;
-			std::cerr << "(EE)          tunnel.local_src = " << tunnel.local_src << std::endl;
-			std::cerr << "(EE)          tunnel.local_dst = " << tunnel.local_dst << std::endl;
-			std::cerr << "(EE)            item->PeerId() = " << item->PeerId()    << std::endl;
-			std::cerr << "(EE) This item is probably lost while tunnel route got redefined. Deleting this item." << std::endl ;
+			// The sender is not on this tunnel's route. Count it for the periodic report, and do not
+			// stamp the tunnel: such items must not keep an otherwise unused tunnel alive.
+#ifdef P3TURTLE_DEBUG
+			std::cerr << "(EE) p3turtle::routeGenericTunnelItem(): item mismatches tunnel src/dst ids. tunnel="
+			          << HEX_PRINT(item->tunnelId()) << " src=" << tunnel.local_src << " dst=" << tunnel.local_dst
+			          << " from=" << item->PeerId() << std::endl;
+#endif
+			++_nb_mismatching_items_dropped ;
 			delete item ;
 			return ;
 		}
+
+		// Only file data transfer updates tunnels time_stamp field, to avoid maintaining tunnel that are incomplete.
+		if(item->shouldStampTunnel())
+			tunnel.time_stamp = time(NULL) ;
+
+		tunnel.transfered_bytes += RsTurtleSerialiser().size(item);
 
 		// Let's figure out whether this packet is for us or not.
 
@@ -1869,7 +1896,14 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 		}
 		if(it->second.responses.find(item->tunnel_id) != it->second.responses.end())
 		{
-			std::cerr << "p3turtle: ERROR: received a tunnel response twice. That should not happen." << std::endl;
+			// Each hop perturbs the partial tunnel id, so a tunnel id is unique for a given route: a
+			// second result with the same id is a copy of the first one, not a second route, whichever
+			// peer it comes from. Its sender is therefore not accepted as an end of the tunnel.
+#ifdef P3TURTLE_DEBUG
+			std::cerr << "p3turtle: received a tunnel response twice. req=" << HEX_PRINT(item->request_id)
+			          << " tunnel=" << HEX_PRINT(item->tunnel_id) << " from=" << item->PeerId() << std::endl;
+#endif
+			++_nb_duplicate_tunnel_results ;
 			return ;
 		}
 		else
@@ -1884,6 +1918,15 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "Tunnel id " << HEX_PRINT(item->tunnel_id) << " is already there. Not storing." << std::endl ;
 #endif
+			// The id is already used by a tunnel with other endpoints (tunnel ids are 32 bits, two
+			// different requests can collide). The existing entry is kept, so this route cannot be
+			// served: forwarding the result upstream would make the upstream peer send items that
+			// routeGenericTunnelItem() then drops. Do not advertise it.
+			if(tunnel.local_src != it->second.origin || tunnel.local_dst != item->PeerId())
+			{
+				++_nb_colliding_tunnel_results ;
+				return ;
+			}
 		}
 		else
 		{

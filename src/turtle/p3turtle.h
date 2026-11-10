@@ -439,6 +439,13 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		rstime_t _last_tunnel_campaign_time ;
 		rstime_t _last_tunnel_speed_estimate_time ;
 
+		/// Routing anomalies, counted and reported once per minute instead of one log block per
+		/// item: a misbehaving neighbour can otherwise flood the log for hours.
+		uint32_t _nb_mismatching_items_dropped ;  // generic items from a peer that is neither end of the tunnel
+		uint32_t _nb_duplicate_tunnel_results ;   // tunnel ok received twice for the same request and tunnel id
+		uint32_t _nb_colliding_tunnel_results ;   // tunnel ok whose id is already used with other endpoints
+		rstime_t _last_routing_anomaly_report_time ;
+
 		std::list<pqipeer> _online_peers;
 
 		/// used to force digging new tunnels
