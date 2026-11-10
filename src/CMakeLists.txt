@@ -293,6 +293,7 @@ list(
 	pqi/p3linkmgr.cc
 	pqi/pqihandler.cc
 	pqi/pqistreamer.cc
+	pqi/pqiechoprobe.cc
 	pqi/p3netmgr.cc
 	pqi/p3peermgr.cc
 	pqi/pqinetwork.cc
@@ -338,6 +339,7 @@ list(
 	pqi/pqissl.h
 	pqi/pqistore.h
 	pqi/pqistreamer.h
+	pqi/pqiechoprobe.h
 	pqi/pqithreadstreamer.h
 	pqi/sslfns.h )
 if(RS_USE_I2P_SAM3)

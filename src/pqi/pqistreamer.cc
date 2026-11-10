@@ -20,6 +20,7 @@
  *                                                                             *
  *******************************************************************************/
 #include "pqi/pqistreamer.h"
+#include "pqi/pqiechoprobe.h"
 
 #include <sys/time.h>             // for gettimeofday
 #include <stdlib.h>               // for free, realloc, exit
@@ -417,6 +418,8 @@ int	pqistreamer::queue_outpqi_locked(RsItem *pqi,uint32_t& pktsize)
 
 	if (mRsSerialiser->serialise(pqi, ptr, &pktsize))
 	{
+		PqiEchoProbe::instance().sent(PeerId(),ptr,pktsize) ;	// debugging probe, off by default
+
 		locked_storeInOutputQueue(ptr,pktsize,pqi->priority_level()) ;
 
 		if (!(mBio_flags & BIN_FLAGS_NO_DELETE))
@@ -1041,6 +1044,8 @@ continue_packet:
 		    pkt = mRsSerialiser->deserialise(block, &pktlen);
 		    if (pkt == NULL)
 			    is_error = true;
+		    else
+			    PqiEchoProbe::instance().received(PeerId(),block,pktlen) ;	// debugging probe, off by default
 	    }
 
 	    if (pkt != NULL)
@@ -1153,6 +1158,9 @@ RsItem *pqistreamer::addPartialPacket(const void *block, uint32_t len, uint32_t 
 		    std::cerr << " => deserialising: mem=" << RsUtil::BinToHex((char*)rec.mem,std::min(8u,rec.size)) << std::endl;
 #endif
 		    RsItem *item = mRsSerialiser->deserialise(rec.mem, &rec.size);
+
+		    if(item != NULL)
+			    PqiEchoProbe::instance().received(PeerId(),rec.mem,rec.size) ;	// debugging probe, off by default
 
 		    total_len = rec.size ;
 		    free(rec.mem) ;
