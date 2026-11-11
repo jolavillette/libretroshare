@@ -183,6 +183,17 @@ class PqiEchoProbe
 				uint32_t max_ms ;
 				uint32_t over5,over20 ;
 		};
+		// Link stall / resume on the receiving side: a friend silent for more than
+		// RESUME_GAP_MS, then a burst.
+		class Resume
+		{
+			public:
+				Resume() : start_ms(0),gap_ms(0),n(0),n_tr(0),n_ok(0),n_data(0),n_other_turtle(0) {}
+				uint64_t start_ms,gap_ms ;
+				uint32_t n,n_tr,n_ok,n_data,n_other_turtle ;
+		};
+		void noteReceived(uint16_t idx,uint64_t now,uint16_t service,uint8_t subtype) ;	// mMtx must be locked
+
 		static int delayClass(uint16_t service,uint8_t subtype) ;
 		static const char *delayClassName(int c) ;
 
@@ -231,6 +242,8 @@ class PqiEchoProbe
 		std::unordered_map<const void*,Queued>         mQueued ;
 		std::map<std::pair<uint16_t,int>,QDelayStat>  mQDelay ;    // (peer, class), current minute
 		uint32_t mQWaitLinesThisLapse ;
+		std::map<uint16_t,uint64_t> mLastRx ;     // per friend, last item received (any service)
+		std::map<uint16_t,Resume>   mResumes ;    // bursts being counted
 		uint32_t mQStale ;          // dequeued pointer whose bytes no longer match: not counted
 		uint32_t mQMatched ;
 };

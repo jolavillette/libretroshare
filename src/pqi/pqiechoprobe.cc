@@ -270,11 +270,11 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 
 	if(ignoredService(service))
 	{
+		RS_STACK_MUTEX(mMtx) ;
 		if(outgoing)	// the buffer may reuse the address of an item tracked for queue delay
-		{
-			RS_STACK_MUTEX(mMtx) ;
 			mQueued.erase(data) ;
-		}
+		else			// heartbeats & co still prove the link is alive
+			noteReceived(peerIdx(peer),nowMs(),service,subtype) ;
 		return ;
 	}
 
@@ -379,6 +379,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 		else
 		{
 			++st.in ;
+
+			noteReceived(idx,now,service,subtype) ;
 
 			uint64_t rseq = ++mRecvSeq[idx] ;
 
@@ -834,4 +836,52 @@ void PqiEchoProbe::dequeued(const RsPeerId& /*to*/,const void *data)
 		}
 		mQueued.erase(q) ;
 	}
+}
+
+//=============================================================================//
+//                       Link stall / resume (receiving side)                  //
+//=============================================================================//
+
+static const uint64_t RESUME_GAP_MS    = 20000 ;   // silence that counts as a stall
+static const uint64_t RESUME_WINDOW_MS = 3000 ;    // burst counted for this long after the silence
+
+void PqiEchoProbe::noteReceived(uint16_t idx,uint64_t now,uint16_t service,uint8_t subtype)
+{
+	// close a finished burst count
+	std::map<uint16_t,Resume>::iterator r(mResumes.find(idx)) ;
+	if(r != mResumes.end() && now > r->second.start_ms + RESUME_WINDOW_MS)
+	{
+		std::ostringstream o ;
+		o << "RESUME " << timeStr(r->second.start_ms) << " from=" << mPeers[idx] << " after " << r->second.gap_ms/1000
+		  << " s of silence: " << r->second.n << " items in the next " << RESUME_WINDOW_MS/1000 << " s (tunnel requests "
+		  << r->second.n_tr << ", tunnel ok " << r->second.n_ok << ", tunnel data " << r->second.n_data
+		  << ", other turtle " << r->second.n_other_turtle << ")" << std::endl ;
+		mPending.push_back(o.str()) ;
+		mResumes.erase(r) ;
+		r = mResumes.end() ;
+	}
+
+	std::map<uint16_t,uint64_t>::iterator l(mLastRx.find(idx)) ;
+
+	if(l != mLastRx.end() && now > l->second + RESUME_GAP_MS && r == mResumes.end())
+	{
+		Resume& nr(mResumes[idx]) ;
+		nr.start_ms = now ;
+		nr.gap_ms   = now - l->second ;
+		r = mResumes.find(idx) ;
+	}
+
+	if(r != mResumes.end())
+	{
+		++r->second.n ;
+		if(service == 0x0014)
+		{
+			if(subtype == 0x03) ++r->second.n_tr ;
+			else if(subtype == 0x04) ++r->second.n_ok ;
+			else if(subtype == 0x0a || subtype == 0x16) ++r->second.n_data ;
+			else ++r->second.n_other_turtle ;
+		}
+	}
+
+	mLastRx[idx] = now ;
 }
