@@ -413,6 +413,25 @@ void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,
 	}
 	b.depth = depth ;
 	it->second.bounces.push_back(b) ;
+
+	// A copy arriving more than a minute after we first saw the request: who held it?
+	// Its depth tells how far it travelled; whether we forwarded the request to this
+	// friend tells whether the friend had our own copy long before.
+	if(b.dms > 60000 && mRebornLinesThisLapse < MAX_REBORN_LINES)
+	{
+		++mRebornLinesThisLapse ;
+
+		const RequestRecord& r(it->second) ;
+		bool fwd_to_it = (std::find(r.fwd_to.begin(),r.fwd_to.end(),b.peer) != r.fwd_to.end()) ;
+
+		std::ostringstream o ;
+		o << "LATEBOUNCE " << timeStr(now) << " req=" << hex32(rid) << " from=" << from << " +" << b.dms/1000
+		  << "s depth=" << depth << " | we got it first from " << r.origin << " at depth " << r.depth
+		  << ", forwarded to " << r.n_fwd << " friends (this one: " << (fwd_to_it?"yes":"NO") << "), "
+		  << r.bounces.size()-1 << " earlier copies" << std::endl ;
+		mPendingDumps.push_back(o.str()) ;
+		mPendingPeerInfo.insert(from) ;
+	}
 }
 
 void TurtleJournal::trFwdTo(TurtleTunnelRequestId rid,const TurtlePeerId& to)
