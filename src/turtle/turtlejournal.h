@@ -23,6 +23,8 @@
 
 #include <cstdint>
 #include <map>
+#include <unordered_map>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -109,7 +111,8 @@ class TurtleJournal
 			OK_HELD          = 13,	// tunnel result NOT forwarded (guard)
 			ITEM_MISMATCH    = 14,	// item dropped: sender is not an endpoint
 			ITEM_UNKNOWN_TID = 15,	// item dropped: unknown tunnel id
-			T_CLOSE          = 16	// tunnel entry removed
+			T_CLOSE          = 16,	// tunnel entry removed
+			OK_FROM_ORIGIN   = 17	// tunnel result sent by the friend the request came from
 		};
 
 		static TurtleJournal& instance();
@@ -243,6 +246,19 @@ class TurtleJournal
 				uint16_t depth ;
 		};
 
+		// Every request id accepted as new in the last hour, to see a request come
+		// back after the router forgot it (TUNNEL_REQUESTS_LIFE_TIME): the router
+		// then takes it for a new request, with whoever brought it back as origin.
+		class RidSeen
+		{
+			public:
+				uint64_t first_ms ;
+				uint64_t last_ms ;
+				uint32_t hash4 ;      // first 4 bytes of the file hash: tells a reborn request from a collision
+				uint16_t first_from ; // peer index
+				uint16_t times ;
+		};
+
 		class RequestRecord
 		{
 			public:
@@ -286,6 +302,11 @@ class TurtleJournal
 		std::map<TurtleTunnelRequestId,RequestRecord> mRequests ;
 
 		std::vector<std::string> mPendingDumps ;
+
+		std::unordered_map<uint32_t,RidSeen>          mRidHistory ;
+		std::deque<std::pair<uint64_t,uint32_t> >     mRidOrder ;     // (first ms, rid), oldest first
+		uint32_t mRebornLinesThisLapse ;
+		uint32_t mSelfLoopLinesThisLapse ;
 		uint64_t                 mLastSummaryMs ;
 
 		class PeerTurtleStat
@@ -316,6 +337,7 @@ class TurtleJournal
 				void clear()
 				{
 					tr_in = tr_bounce = tr_fwd = tr_answered = 0 ;
+					tr_reborn = tr_rid_collision = ok_from_origin = 0 ;
 					ok_in = ok_no_request = ok_twice = ok_late = 0 ;
 					t_create = t_overwrite = t_found_match = t_found_mismatch = t_close = 0 ;
 					ok_fwd_after_mismatch = ok_held = 0 ;
@@ -327,6 +349,7 @@ class TurtleJournal
 				}
 
 				uint64_t tr_in,tr_bounce,tr_fwd,tr_answered ;
+				uint64_t tr_reborn,tr_rid_collision,ok_from_origin ;
 				uint64_t ok_in,ok_no_request,ok_twice,ok_late ;
 				uint64_t t_create,t_overwrite,t_found_match,t_found_mismatch,t_close ;
 				uint64_t ok_fwd_after_mismatch,ok_held ;

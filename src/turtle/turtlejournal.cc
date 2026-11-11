@@ -41,6 +41,9 @@ static const uint64_t CAPTURE_MS            = 300000 ;  // every item written ou
 static const uint32_t CAPTURE_MAX_ITEMS     = 3000 ;    // ...but at most this many per tunnel
 static const uint64_t FOLLOW_MS             = 1800000 ; // FOLLOW lines until 30 min after the last dropped item
 static const uint32_t MAX_BOUNCES_PER_REQ   = 32 ;
+static const uint64_t RID_HISTORY_MS        = 3600000 ; // request ids remembered for 1 h (the router forgets them after 600 s)
+static const uint32_t MAX_REBORN_LINES      = 100 ;     // per minute
+static const uint32_t MAX_SELFLOOP_LINES    = 100 ;     // per minute
 
 static uint64_t nowMs()
 {
@@ -218,6 +221,9 @@ TurtleJournal& TurtleJournal::instance()
 TurtleJournal::TurtleJournal()
     : mJournalMtx("TurtleJournal"),mLastSummaryMs(0)
 {
+	mRebornLinesThisLapse   = 0 ;
+	mSelfLoopLinesThisLapse = 0 ;
+
 	mPeers.push_back(TurtlePeerId()) ;	// index 0: null id, i.e. us
 
 	mEnabled        = envFlag("RS_TURTLE_JOURNAL") ;
@@ -307,9 +313,63 @@ void TurtleJournal::trIn(TurtleTunnelRequestId rid,const TurtlePeerId& from,uint
 	if(!mEnabled)
 		return ;
 
+	uint64_t now = nowMs() ;
+
+	// The router only calls this for a request id it does not know (any more). If we
+	// accepted the same id before, either the request came back after the router
+	// forgot it (same file hash), or two requests share the id (different hash).
+
+	while(!mRidOrder.empty() && mRidOrder.front().first + RID_HISTORY_MS < now)
+	{
+		std::unordered_map<uint32_t,RidSeen>::iterator h(mRidHistory.find(mRidOrder.front().second)) ;
+		if(h != mRidHistory.end() && h->second.first_ms == mRidOrder.front().first)
+			mRidHistory.erase(h) ;
+		mRidOrder.pop_front() ;
+	}
+
+	const uint8_t *hb = hash.toByteArray() ;
+	uint32_t hash4 = (uint32_t(hb[0]) << 24) | (uint32_t(hb[1]) << 16) | (uint32_t(hb[2]) << 8) | uint32_t(hb[3]) ;
+	uint16_t from_idx = peerIdx(from) ;
+
+	std::unordered_map<uint32_t,RidSeen>::iterator h(mRidHistory.find(rid)) ;
+
+	if(h == mRidHistory.end())
+	{
+		RidSeen rs ;
+		rs.first_ms = rs.last_ms = now ; rs.hash4 = hash4 ; rs.first_from = from_idx ; rs.times = 1 ;
+		mRidHistory[rid] = rs ;
+		mRidOrder.push_back(std::make_pair(now,rid)) ;
+	}
+	else
+	{
+		bool same = (h->second.hash4 == hash4) ;
+
+		if(same) ++mCounters.tr_reborn ; else ++mCounters.tr_rid_collision ;
+		if(h->second.times < 0xffff) ++h->second.times ;
+
+		if(mRebornLinesThisLapse < MAX_REBORN_LINES)
+		{
+			++mRebornLinesThisLapse ;
+
+			std::map<TurtleTunnelRequestId,RequestRecord>::const_iterator old(mRequests.find(rid)) ;
+
+			std::ostringstream o ;
+			o << (same?"REBORN ":"RID_COLLISION ") << timeStr(now) << " req=" << hex32(rid) << " hash=" << hash
+			  << " accepted as new again from " << peerStr(from_idx) << " depth=" << depth
+			  << ", " << (now - h->second.last_ms)/1000 << " s after the previous time, "
+			  << (now - h->second.first_ms)/1000 << " s after the first time (first from " << peerStr(h->second.first_from)
+			  << ", " << h->second.times << " times now)" ;
+			if(old != mRequests.end())
+				o << "; previous origin " << old->second.origin ;
+			o << std::endl ;
+			mPendingDumps.push_back(o.str()) ;
+		}
+		h->second.last_ms = now ;
+	}
+
 	RequestRecord& r(mRequests[rid]) ;
 
-	r.ms         = nowMs() ;
+	r.ms         = now ;
 	r.origin     = from ;
 	r.hash       = hash ;
 	r.depth      = depth ;
@@ -421,6 +481,39 @@ void TurtleJournal::okIn(TurtleTunnelRequestId rid,TurtleTunnelId tid,const Turt
 
 	if(it != mRequests.end() && mTunnels[tid].hash.isNull())
 		mTunnels[tid].hash = it->second.hash ;
+
+	// The friend the request came from sends us a result for it: the router would
+	// store this tunnel with that friend at both ends, and bounce every item of it
+	// back to that friend.
+
+	if(it != mRequests.end() && it->second.origin == from)
+	{
+		++mCounters.ok_from_origin ;
+		push(tid,OK_FROM_ORIGIN,rid,0,from,TurtlePeerId()) ;
+
+		if(mSelfLoopLinesThisLapse < MAX_SELFLOOP_LINES)
+		{
+			++mSelfLoopLinesThisLapse ;
+			std::unordered_map<uint32_t,RidSeen>::const_iterator h(mRidHistory.find(rid)) ;
+
+			std::ostringstream o ;
+			o << "SELFLOOP " << timeStr(nowMs()) << " tunnel=" << hex32(tid) << " req=" << hex32(rid)
+			  << " result received from " << from << ", the friend that sent us this request "
+			  << (nowMs() - it->second.ms)/1000 << " s ago" ;
+			if(h != mRidHistory.end() && h->second.times > 1)
+				o << " (request accepted " << h->second.times << " times, first " << (nowMs() - h->second.first_ms)/1000
+				  << " s ago from " << peerStr(h->second.first_from) << ")" ;
+			o << std::endl ;
+			mPendingDumps.push_back(o.str()) ;
+		}
+
+		TunnelRecord& rec(mTunnels[tid]) ;
+		if(!rec.dumped)
+		{
+			rec.dumped = true ;
+			dumpTunnel(tid) ;
+		}
+	}
 }
 
 void TurtleJournal::okNoRequest(TurtleTunnelRequestId rid,TurtleTunnelId tid,const TurtlePeerId& from)
@@ -719,6 +812,7 @@ std::string TurtleJournal::formatEvent(TurtleTunnelId /*tid*/,const Event& e) co
 		case OK_IN:            o << "OK_IN            req=" << hex32(e.rid) << " from=" << e.p1 ; break ;
 		case OK_NO_REQUEST:    o << "OK_NO_REQUEST    req=" << hex32(e.rid) << " from=" << e.p1 << " (dropped: request unknown)" ; break ;
 		case OK_TWICE:         o << "OK_TWICE         req=" << hex32(e.rid) << " from=" << e.p1 << " (dropped: already answered)" ; break ;
+		case OK_FROM_ORIGIN:   o << "OK_FROM_ORIGIN   req=" << hex32(e.rid) << " from=" << e.p1 << " (the friend that sent us the request)" ; break ;
 		case OK_LATE:          o << "OK_LATE          req=" << hex32(e.rid) << " from=" << e.p1 << " (dropped: request " << e.aux << "s old)" ; break ;
 		case T_CREATE:         o << "T_CREATE         req=" << hex32(e.rid) << " {src=" << e.p1 << ", dst=" << e.p2 << "}" ; break ;
 		case T_FOUND_MATCH:    o << "T_FOUND_MATCH    req=" << hex32(e.rid) << " id already known, same endpoints {src=" << e.p1 << ", dst=" << e.p2 << "}" ; break ;
@@ -1004,7 +1098,7 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 			const Counters& c(mCounters) ;
 
-			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held)
+			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin)
 			{
 				std::ostringstream o ;
 
@@ -1022,7 +1116,9 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				  << c.ok_held << " held by the guard), " << c.ok_twice << " duplicate, "
 				  << c.ok_late << " late, " << c.ok_no_request << " orphan. "
 				  << "Tunnel requests: " << c.tr_in << " in, " << c.tr_bounce << " bouncing, "
-				  << c.tr_answered << " answered here (" << c.t_overwrite << " overwriting an existing id). "
+				  << c.tr_answered << " answered here (" << c.t_overwrite << " overwriting an existing id), "
+				  << c.tr_reborn << " reborn (accepted again after the router forgot them), " << c.tr_rid_collision << " id collisions. "
+				  << "Results from the request's own origin: " << c.ok_from_origin << ". "
 				  << "Tables: " << live_tunnels << " tunnels, " << live_requests << " requests, "
 				  << c.t_close << " tunnels closed." ;
 
@@ -1060,6 +1156,8 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 			}
 
 			mCounters.clear() ;
+			mRebornLinesThisLapse = 0 ;
+			mSelfLoopLinesThisLapse = 0 ;
 			mLastSummaryMs = now ;
 		}
 	}
