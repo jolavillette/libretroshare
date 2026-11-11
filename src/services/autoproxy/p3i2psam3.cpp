@@ -696,15 +696,20 @@ void p3I2pSam3::establishConnection(taskTicket *ticket)
 		 * run it on a private copy and link the result into the real session
 		 * afterwards, under the locks. */
 		std::unique_ptr<Sam3Session> ses(new Sam3Session);
+		bool haveSession = false;
 		{
 			RS_STACK_MUTEX(mLock);
-			if (!mSetting.session) {
-				RS_WARN("no session found!");
-				rsAutoProxyMonitor::taskError(ticket);
-				return;
+			if (mSetting.session) {
+				RS_STACK_MUTEX(mLockSam3Access);
+				*ses = *mSetting.session;
+				haveSession = true;
 			}
-			RS_STACK_MUTEX(mLockSam3Access);
-			*ses = *mSetting.session;
+		}
+		// Report outside the locks: taskError() runs the caller's callback.
+		if (!haveSession) {
+			RS_WARN("no session found!");
+			rsAutoProxyMonitor::taskError(ticket);
+			return;
 		}
 		ses->connlist = nullptr;
 		ses->silent = false;
