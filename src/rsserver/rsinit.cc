@@ -820,9 +820,15 @@ bool RsInit::compactGxsDatabases(
 		{
 			RetroDb db(path, RetroDb::OPEN_READWRITE, rsInitConfig->gxs_passwd);
 
-			// VACUUM needs up to the size of the database in free disk
-			// space. When it fails (disk full...) the database is untouched.
-			db_ok = db.isOpen() && db.execSQL("VACUUM;");
+			// VACUUM builds a full copy of the database in a temporary
+			// database. SQLCipher is usually built with SQLITE_TEMP_STORE=2,
+			// which keeps temporary databases in memory: that would cost the
+			// size of the database in RAM. Force it to a file instead (in
+			// SQLITE_TMPDIR, /var/tmp or /tmp), which needs up to the size of
+			// the database in free disk space there. When VACUUM fails (disk
+			// full...) the database is untouched.
+			db_ok = db.isOpen() && db.execSQL("PRAGMA temp_store=FILE;")
+			        && db.execSQL("VACUUM;");
 		}
 
 		auto s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
