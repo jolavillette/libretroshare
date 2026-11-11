@@ -382,6 +382,20 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 
 			noteReceived(idx,now,service,subtype) ;
 
+			// tunnel request: 8 bytes header, 20 bytes hash, 32 bits request id (big endian), ...
+			if(service == 0x0014 && subtype == 0x03 && size == 38)
+			{
+				uint32_t rid = (uint32_t(d[28]) << 24) | (uint32_t(d[29]) << 16) | (uint32_t(d[30]) << 8) | uint32_t(d[31]) ;
+				std::pair<uint32_t,uint16_t> key(rid,idx) ;
+				if(mTrArrival.insert(std::make_pair(key,now)).second)
+					mTrArrivalOrder.push_back(std::make_pair(now,key)) ;
+				while(!mTrArrivalOrder.empty() && mTrArrivalOrder.front().first + 900000 < now)
+				{
+					mTrArrival.erase(mTrArrivalOrder.front().second) ;
+					mTrArrivalOrder.pop_front() ;
+				}
+			}
+
 			uint64_t rseq = ++mRecvSeq[idx] ;
 
 			int kind = -1 ;
@@ -884,4 +898,19 @@ void PqiEchoProbe::noteReceived(uint16_t idx,uint64_t now,uint16_t service,uint8
 	}
 
 	mLastRx[idx] = now ;
+}
+
+uint64_t PqiEchoProbe::trArrival(uint32_t rid,const RsPeerId& from)
+{
+	if(!mEnabled)
+		return 0 ;
+
+	RS_STACK_MUTEX(mMtx) ;
+
+	std::map<RsPeerId,uint16_t>::const_iterator p(mPeerIdx.find(from)) ;
+	if(p == mPeerIdx.end())
+		return 0 ;
+
+	std::map<std::pair<uint32_t,uint16_t>,uint64_t>::const_iterator it(mTrArrival.find(std::make_pair(rid,p->second))) ;
+	return (it == mTrArrival.end())?0:it->second ;
 }

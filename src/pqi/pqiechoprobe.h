@@ -95,6 +95,11 @@ class PqiEchoProbe
 		/// written: measures how long it waited in our own QoS queue.
 		void dequeued(const RsPeerId& to,const void *data) ;
 
+		/// When a tunnel request (rid) from this friend reached the pqi layer, in ms
+		/// since epoch, 0 if unknown. Lets the turtle journal measure how late the
+		/// router processes what was received.
+		uint64_t trArrival(uint32_t rid,const RsPeerId& from) ;
+
 	private:
 		PqiEchoProbe() ;
 
@@ -242,6 +247,8 @@ class PqiEchoProbe
 		std::unordered_map<const void*,Queued>         mQueued ;
 		std::map<std::pair<uint16_t,int>,QDelayStat>  mQDelay ;    // (peer, class), current minute
 		uint32_t mQWaitLinesThisLapse ;
+		std::map<std::pair<uint32_t,uint16_t>,uint64_t>        mTrArrival ;   // (rid, friend) -> first arrival ms
+		std::deque<std::pair<uint64_t,std::pair<uint32_t,uint16_t> > > mTrArrivalOrder ;
 		std::map<uint16_t,uint64_t> mLastRx ;     // per friend, last item received (any service)
 		std::map<uint16_t,Resume>   mResumes ;    // bursts being counted
 		uint32_t mQStale ;          // dequeued pointer whose bytes no longer match: not counted
