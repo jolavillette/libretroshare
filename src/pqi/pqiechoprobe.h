@@ -119,6 +119,7 @@ class PqiEchoProbe
 				uint64_t seq ;        // rank in our outgoing stream to that friend
 				uint32_t size ;
 				uint32_t tunnel_id ;  // turtle tunnel items only, else 0
+				uint32_t ft_inner ;   // encrypted file transfer payload: clear size of the inner ft item, else 0
 				uint16_t service ;
 				uint8_t  subtype ;
 		};

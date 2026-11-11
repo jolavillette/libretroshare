@@ -275,6 +275,13 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 	if(isTunnelItem(service,subtype) && size >= 12)
 		tunnel_id = (uint32_t(d[8]) << 24) | (uint32_t(d[9]) << 16) | (uint32_t(d[10]) << 8) | uint32_t(d[11]) ;
 
+	// Generic (fast) data: header, tunnel id, 32 bits length, payload. An encrypted file
+	// transfer payload starts with 0xae 0xad, a format byte, a 12 bytes IV and the clear
+	// size of the inner ft item, little endian (ftServer::encryptItem).
+	uint32_t ft_inner = 0 ;
+	if(service == 0x0014 && (subtype == 0x0a || subtype == 0x16) && size >= 36 && d[16] == 0xae && d[17] == 0xad)
+		ft_inner = uint32_t(d[32]) | (uint32_t(d[33]) << 8) | (uint32_t(d[34]) << 16) | (uint32_t(d[35]) << 24) ;
+
 	std::string to_write ;
 
 	{
@@ -301,7 +308,7 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 
 			SentRec r ;
 			r.ms = now ; r.fp = fp ; r.seq = ++mSendSeq[idx] ; r.size = size ;
-			r.tunnel_id = tunnel_id ; r.service = service ; r.subtype = subtype ;
+			r.tunnel_id = tunnel_id ; r.ft_inner = ft_inner ; r.service = service ; r.subtype = subtype ;
 
 			std::deque<SentRec>& log(mSentLog[idx]) ;
 			log.push_back(r) ;
@@ -645,6 +652,10 @@ std::string PqiEchoProbe::watchReport(const Watch& w)
 		  << " seq=" << wi.s.seq << " " << subtypeName(wi.s.service,wi.s.subtype) << " size=" << wi.s.size ;
 		if(wi.s.tunnel_id != 0)
 			o << " tunnel=0x" << std::hex << std::setw(8) << std::setfill('0') << wi.s.tunnel_id << std::dec ;
+		if(wi.s.ft_inner != 0)
+			o << " enc-ft inner=" << wi.s.ft_inner
+			  << ((wi.s.ft_inner == 24)?"(file_request|1-word file_map)":(wi.s.ft_inner == 16)?"(map_req|crc_req)":
+			      (wi.s.ft_inner == 36)?"(chunk_crc|4-word file_map)":(wi.s.ft_inner >= 1024)?"(file_data)":"") ;
 		if(wi.s.fp == w.trigger_fp)
 			o << " [trigger]" ;
 
