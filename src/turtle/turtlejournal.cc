@@ -34,6 +34,15 @@
 #include "turtle/rsturtleitem.h"
 #include "turtle/turtlejournal.h"
 
+// The echo probe (lib branch debug/peer-echo-probe) knows when a tunnel request
+// reached the pqi layer; without it, the processing lag is simply not measured.
+#if __has_include("pqi/pqiechoprobe.h")
+#	include "pqi/pqiechoprobe.h"
+static uint64_t probeTrArrival(uint32_t rid,const TurtlePeerId& from) { return PqiEchoProbe::instance().trArrival(rid,from) ; }
+#else
+static uint64_t probeTrArrival(uint32_t,const TurtlePeerId&) { return 0 ; }
+#endif
+
 static const uint32_t MAX_EVENTS_PER_TUNNEL = 24 ;	// first half kept, last half rolling
 static const uint32_t SUMMARY_LAPSE_MS      = 60000 ;
 static const uint32_t ITEM_RING_SIZE        = 16 ;      // fingerprints kept per tunnel
@@ -223,6 +232,7 @@ TurtleJournal::TurtleJournal()
 {
 	mRebornLinesThisLapse   = 0 ;
 	mSelfLoopLinesThisLapse = 0 ;
+	mTrLagN = mTrLagMax = mTrLagOver5 = 0 ;
 
 	mPeers.push_back(TurtlePeerId()) ;	// index 0: null id, i.e. us
 
@@ -314,6 +324,17 @@ void TurtleJournal::trIn(TurtleTunnelRequestId rid,const TurtlePeerId& from,uint
 		return ;
 
 	uint64_t now = nowMs() ;
+
+	{
+		uint64_t arr = probeTrArrival(rid,from) ;
+		if(arr != 0 && now > arr)
+		{
+			uint64_t lag = now - arr ;
+			++mTrLagN ;
+			if(lag > mTrLagMax) mTrLagMax = lag ;
+			if(lag > 5000) ++mTrLagOver5 ;
+		}
+	}
 
 	// The router only calls this for a request id it does not know (any more). If we
 	// accepted the same id before, either the request came back after the router
@@ -414,6 +435,15 @@ void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,
 	b.depth = depth ;
 	it->second.bounces.push_back(b) ;
 
+	uint64_t arr = probeTrArrival(rid,from) ;
+	uint64_t lag = (arr != 0 && now > arr)?(now - arr):0 ;
+	if(arr != 0)
+	{
+		++mTrLagN ;
+		if(lag > mTrLagMax) mTrLagMax = lag ;
+		if(lag > 5000) ++mTrLagOver5 ;
+	}
+
 	// A copy arriving more than a minute after we first saw the request: who held it?
 	// Its depth tells how far it travelled; whether we forwarded the request to this
 	// friend tells whether the friend had our own copy long before.
@@ -428,7 +458,9 @@ void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,
 		o << "LATEBOUNCE " << timeStr(now) << " req=" << hex32(rid) << " from=" << from << " +" << b.dms/1000
 		  << "s depth=" << depth << " | we got it first from " << r.origin << " at depth " << r.depth
 		  << ", forwarded to " << r.n_fwd << " friends (this one: " << (fwd_to_it?"yes":"NO") << "), "
-		  << r.bounces.size()-1 << " earlier copies" << std::endl ;
+		  << r.bounces.size()-1 << " earlier copies; reached our pqi layer "
+		  << ((arr == 0)?std::string("? (unknown)"):(std::to_string(lag/1000) + "." + std::to_string((lag%1000)/100) + " s before the router processed it"))
+		  << std::endl ;
 		mPendingDumps.push_back(o.str()) ;
 		mPendingPeerInfo.insert(from) ;
 	}
@@ -1153,6 +1185,15 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				follow = fo.str() ;
 
 				// Suspect peers: their minute of turtle activity, resolved off mutex below.
+
+				// How late the router processes tunnel requests after they reach pqi.
+				{
+					std::ostringstream lo ;
+					lo << "TRLAG " << timeStr(now) << " last minute: " << mTrLagN << " tunnel requests timed, max "
+					   << mTrLagMax << " ms between pqi arrival and router processing, " << mTrLagOver5 << " over 5 s" << std::endl ;
+					mPendingDumps.push_back(lo.str()) ;
+					mTrLagN = mTrLagMax = mTrLagOver5 = 0 ;
+				}
 
 				// Friends delivering requests or results late (slow or Tor links).
 

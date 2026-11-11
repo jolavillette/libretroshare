@@ -307,6 +307,7 @@ class TurtleJournal
 		std::deque<std::pair<uint64_t,uint32_t> >     mRidOrder ;     // (first ms, rid), oldest first
 		uint32_t mRebornLinesThisLapse ;
 		uint32_t mSelfLoopLinesThisLapse ;
+		uint64_t mTrLagN,mTrLagMax,mTrLagOver5 ;   // pqi arrival -> router processing of tunnel requests, current minute
 		uint64_t                 mLastSummaryMs ;
 
 		class PeerTurtleStat
