@@ -20,12 +20,14 @@
  *                                                                             *
  *******************************************************************************/
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <set>
 #include <sstream>
 
 #include "pqi/pqiechoprobe.h"
@@ -35,6 +37,13 @@ static const uint32_t MAX_SAMPLES_PER_KEY       = 3 ;     // per friend, kind an
 static const uint32_t MAX_SAMPLES_PER_LAPSE     = 300 ;
 static const uint32_t MIN_ITEM_SIZE             = 17 ;    // header is 8 bytes; tiny items match by nature
 static const size_t   MAX_FINGERPRINTS          = 2000000 ;
+static const uint64_t BURST_HALF_WIDTH_MS       = 1000 ;  // burst = items sent to the same friend within 1 s of the echoed one
+static const uint64_t WATCH_DURATION_MS         = 120000 ;
+static const uint32_t MAX_OPEN_WATCHES          = 30 ;
+static const uint32_t MAX_WATCHES_PER_LAPSE     = 10 ;    // tunnel ok and data items
+static const uint32_t MAX_MINOR_WATCHES_PER_LAPSE = 3 ;   // file transfer, file map, chunk crc items
+static const uint32_t MAX_ITEMS_PER_WATCH       = 400 ;
+static const uint32_t MAX_UNRETURNED_LINES      = 40 ;
 
 static uint64_t nowMs()
 {
@@ -63,7 +72,8 @@ PqiEchoProbe& PqiEchoProbe::instance()
 }
 
 PqiEchoProbe::PqiEchoProbe()
-    : mMtx("PqiEchoProbe"),mLastFlushMs(0),mSamplesThisLapse(0)
+    : mMtx("PqiEchoProbe"),mLastFlushMs(0),mSamplesThisLapse(0),
+      mNextWatchId(1),mWatchesThisLapse(0),mMinorWatchesThisLapse(0)
 {
 	const char *e = getenv("RS_ECHO_PROBE") ;
 	mEnabled = (e != NULL && e[0] != '\0' && e[0] != '0') ;
@@ -157,6 +167,56 @@ std::string PqiEchoProbe::serviceName(uint16_t s)
 	return o.str() ;
 }
 
+// Turtle items routed by tunnel id: tunnel ok, generic data, generic fast data,
+// and the file transfer items (request, data, map, map request, chunk crc). All
+// of them start with the 32 bits tunnel id right after the 8 bytes header.
+
+bool PqiEchoProbe::isTunnelItem(uint16_t service,uint8_t subtype)
+{
+	if(service != 0x0014)
+		return false ;
+
+	switch(subtype)
+	{
+		case 0x04: case 0x07: case 0x08: case 0x0a: case 0x10: case 0x11: case 0x14: case 0x15: case 0x16:
+			return true ;
+		default:
+			return false ;
+	}
+}
+
+std::string PqiEchoProbe::subtypeName(uint16_t service,uint8_t subtype)
+{
+	std::ostringstream o ;
+	o << serviceName(service) << "/0x" << std::hex << std::setw(2) << std::setfill('0') << int(subtype) << std::dec ;
+
+	if(service == 0x0014)
+	{
+		const char *n = NULL ;
+		switch(subtype)
+		{
+			case 0x01: n = "search" ; break ;
+			case 0x02: n = "search_result" ; break ;
+			case 0x03: n = "open_tunnel" ; break ;
+			case 0x04: n = "tunnel_ok" ; break ;
+			case 0x07: n = "file_request" ; break ;
+			case 0x08: n = "file_data" ; break ;
+			case 0x09: n = "regexp_search" ; break ;
+			case 0x0a: n = "generic_data" ; break ;
+			case 0x0b: n = "generic_search" ; break ;
+			case 0x0c: n = "generic_search_result" ; break ;
+			case 0x10: n = "file_map" ; break ;
+			case 0x11: n = "file_map_request" ; break ;
+			case 0x14: n = "chunk_crc" ; break ;
+			case 0x15: n = "chunk_crc_request" ; break ;
+			case 0x16: n = "generic_fast_data" ; break ;
+			default: break ;
+		}
+		if(n) o << "(" << n << ")" ;
+	}
+	return o.str() ;
+}
+
 uint16_t PqiEchoProbe::peerIdx(const RsPeerId& p)
 {
 	std::map<RsPeerId,uint16_t>::const_iterator it(mPeerIdx.find(p)) ;
@@ -211,6 +271,10 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 	uint64_t fp = hash(d,size) ;	// off mutex
 	uint64_t now = nowMs() ;
 
+	uint32_t tunnel_id = 0 ;
+	if(isTunnelItem(service,subtype) && size >= 12)
+		tunnel_id = (uint32_t(d[8]) << 24) | (uint32_t(d[9]) << 16) | (uint32_t(d[10]) << 8) | uint32_t(d[11]) ;
+
 	std::string to_write ;
 
 	{
@@ -235,6 +299,26 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 		{
 			++st.out ;
 
+			SentRec r ;
+			r.ms = now ; r.fp = fp ; r.seq = ++mSendSeq[idx] ; r.size = size ;
+			r.tunnel_id = tunnel_id ; r.service = service ; r.subtype = subtype ;
+
+			std::deque<SentRec>& log(mSentLog[idx]) ;
+			log.push_back(r) ;
+			while(!log.empty() && log.front().ms + mWindowMs + BURST_HALF_WIDTH_MS < now)
+				log.pop_front() ;
+
+			// a burst opened less than a second after its trigger item was sent is still collecting
+
+			for(std::map<uint32_t,Watch>::iterator w(mWatches.begin());w!=mWatches.end();++w)
+				if(w->second.to == idx && now <= w->second.t0 + BURST_HALF_WIDTH_MS && w->second.items.size() < MAX_ITEMS_PER_WATCH)
+				{
+					WatchItem wi ;
+					wi.s = r ;
+					w->second.items.push_back(wi) ;
+					mWatchFp.insert(std::make_pair(fp,std::make_pair(w->first,uint32_t(w->second.items.size()-1)))) ;
+				}
+
 			if(s.sent_ms == 0)
 			{
 				s.sent_ms = now ;
@@ -244,6 +328,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 		else
 		{
 			++st.in ;
+
+			uint64_t rseq = ++mRecvSeq[idx] ;
 
 			int kind = -1 ;
 			uint64_t ref_ms = 0 ;
@@ -262,6 +348,31 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 			{
 				s.recv_ms = now ;
 				s.recv_from = idx ;
+			}
+
+			if(kind == ECHO && isTunnelItem(service,subtype))
+				openWatch(ref_peer,idx,ref_ms,now,fp,service,subtype) ;
+
+			// is it an item of a burst we are watching?
+
+			std::pair<std::unordered_multimap<uint64_t,std::pair<uint32_t,uint32_t> >::iterator,
+			          std::unordered_multimap<uint64_t,std::pair<uint32_t,uint32_t> >::iterator> rg(mWatchFp.equal_range(fp)) ;
+
+			for(std::unordered_multimap<uint64_t,std::pair<uint32_t,uint32_t> >::iterator f(rg.first);f!=rg.second;++f)
+			{
+				std::map<uint32_t,Watch>::iterator w(mWatches.find(f->second.first)) ;
+				if(w == mWatches.end() || f->second.second >= w->second.items.size())
+					continue ;
+
+				WatchItem& wi(w->second.items[f->second.second]) ;
+				if(wi.back_count < 0xffff)
+					++wi.back_count ;
+				if(wi.back_ms == 0)
+				{
+					wi.back_ms = now ;
+					wi.back_from = idx ;
+					wi.back_seq = rseq ;
+				}
 			}
 
 			if(kind >= 0)
@@ -286,6 +397,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 			}
 		}
 
+		closeWatches(now,false) ;
+
 		if(mLastFlushMs == 0)
 			mLastFlushMs = now ;
 
@@ -299,6 +412,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 
 			mStats.clear() ;
 			mSamplesThisLapse = 0 ;
+			mWatchesThisLapse = 0 ;
+			mMinorWatchesThisLapse = 0 ;
 			mLastFlushMs = now ;
 		}
 	}
@@ -345,6 +460,205 @@ std::string PqiEchoProbe::summary(uint64_t now)
 
 	if(shown == 0)
 		o << "  no echo, duplicate or repeat from any friend" << std::endl ;
+
+	return o.str() ;
+}
+
+//=============================================================================//
+//                              Burst follow-up                                //
+//=============================================================================//
+
+void PqiEchoProbe::openWatch(uint16_t to,uint16_t from,uint64_t t0,uint64_t now,uint64_t fp,uint16_t service,uint8_t subtype)
+{
+	// one burst per friend and second: the other echoes of the same burst are part of it
+
+	for(std::map<uint32_t,Watch>::const_iterator w(mWatches.begin());w!=mWatches.end();++w)
+		if(w->second.to == to && t0 + BURST_HALF_WIDTH_MS >= w->second.t0 && t0 <= w->second.t0 + BURST_HALF_WIDTH_MS)
+			return ;
+
+	if(mWatches.size() >= MAX_OPEN_WATCHES)
+		return ;
+
+	bool major = (subtype == 0x04 || subtype == 0x0a || subtype == 0x16) ;
+
+	if(major)
+	{
+		if(mWatchesThisLapse >= MAX_WATCHES_PER_LAPSE) return ;
+		++mWatchesThisLapse ;
+	}
+	else
+	{
+		if(mMinorWatchesThisLapse >= MAX_MINOR_WATCHES_PER_LAPSE) return ;
+		++mMinorWatchesThisLapse ;
+	}
+
+	uint32_t id = mNextWatchId++ ;
+	Watch& w(mWatches[id]) ;
+
+	w.id = id ; w.to = to ; w.trigger_from = from ; w.t0 = t0 ; w.trigger_ms = now ;
+	w.trigger_fp = fp ; w.trigger_service = service ; w.trigger_subtype = subtype ;
+
+	const std::deque<SentRec>& log(mSentLog[to]) ;
+
+	for(std::deque<SentRec>::const_iterator it(log.begin());it!=log.end() && w.items.size() < MAX_ITEMS_PER_WATCH;++it)
+		if(it->ms + BURST_HALF_WIDTH_MS >= t0 && it->ms <= t0 + BURST_HALF_WIDTH_MS)
+		{
+			WatchItem wi ;
+			wi.s = *it ;
+			w.items.push_back(wi) ;
+			mWatchFp.insert(std::make_pair(it->fp,std::make_pair(id,uint32_t(w.items.size()-1)))) ;
+		}
+}
+
+void PqiEchoProbe::closeWatches(uint64_t now,bool all)
+{
+	for(std::map<uint32_t,Watch>::iterator w(mWatches.begin());w!=mWatches.end();)
+	{
+		if(!all && now < w->second.trigger_ms + WATCH_DURATION_MS)
+		{
+			++w ;
+			continue ;
+		}
+
+		mPending.push_back(watchReport(w->second)) ;
+
+		for(uint32_t i=0;i<w->second.items.size();++i)
+		{
+			std::pair<std::unordered_multimap<uint64_t,std::pair<uint32_t,uint32_t> >::iterator,
+			          std::unordered_multimap<uint64_t,std::pair<uint32_t,uint32_t> >::iterator> rg(mWatchFp.equal_range(w->second.items[i].s.fp)) ;
+
+			for(std::unordered_multimap<uint64_t,std::pair<uint32_t,uint32_t> >::iterator f(rg.first);f!=rg.second;)
+				if(f->second.first == w->first)
+					f = mWatchFp.erase(f) ;
+				else
+					++f ;
+		}
+		mWatches.erase(w++) ;
+	}
+}
+
+std::string PqiEchoProbe::watchReport(const Watch& w)
+{
+	std::ostringstream o ;
+
+	uint32_t n = 0, back = 0 ;
+	uint32_t n_tun = 0, back_tun = 0, n_turtle = 0, back_turtle = 0, n_other = 0, back_other = 0 ;
+	std::map<uint16_t,uint32_t> via ;
+	std::map<uint16_t,std::vector<uint64_t> > rseqs ;          // per returning friend, ranks in its stream
+	std::vector<uint64_t> back_send_seqs ;
+	std::vector<std::pair<uint64_t,uint64_t> > send_back ;     // (send seq, back ms) of returned items
+	uint64_t first_back = 0, last_back = 0, first_sent = 0, last_sent = 0 ;
+	std::set<uint32_t> tunnels, back_tunnels ;
+
+	for(uint32_t i=0;i<w.items.size();++i)
+	{
+		const WatchItem& wi(w.items[i]) ;
+		bool tun = isTunnelItem(wi.s.service,wi.s.subtype) ;
+		bool returned = (wi.back_ms != 0) ;
+
+		++n ;
+		if(tun) { ++n_tun ; tunnels.insert(wi.s.tunnel_id) ; }
+		else if(wi.s.service == 0x0014) ++n_turtle ;
+		else ++n_other ;
+
+		if(returned)
+		{
+			++back ;
+			if(tun) { ++back_tun ; back_tunnels.insert(wi.s.tunnel_id) ; }
+			else if(wi.s.service == 0x0014) ++back_turtle ;
+			else ++back_other ;
+
+			++via[wi.back_from] ;
+			rseqs[wi.back_from].push_back(wi.back_seq) ;
+			back_send_seqs.push_back(wi.s.seq) ;
+			send_back.push_back(std::make_pair(wi.s.seq,wi.back_ms)) ;
+
+			if(first_back == 0 || wi.back_ms < first_back) first_back = wi.back_ms ;
+			if(wi.back_ms > last_back) last_back = wi.back_ms ;
+			if(first_sent == 0 || wi.s.ms < first_sent) first_sent = wi.s.ms ;
+			if(wi.s.ms > last_sent) last_sent = wi.s.ms ;
+		}
+	}
+
+	o << "BURST #" << w.id << " " << timeStr(w.trigger_ms) << " to=" << mPeers[w.to]
+	  << " trigger " << subtypeName(w.trigger_service,w.trigger_subtype)
+	  << " fp=" << std::hex << std::setw(16) << std::setfill('0') << w.trigger_fp << std::dec
+	  << " sent to it at " << timeStr(w.t0) << ", echoed by " << mPeers[w.trigger_from]
+	  << " " << (w.trigger_ms - w.t0) << " ms later" << std::endl ;
+
+	o << "  burst = items sent to " << mPeers[w.to] << " within " << BURST_HALF_WIDTH_MS << " ms of the trigger: " << n
+	  << ", returned within " << WATCH_DURATION_MS/1000 << " s: " << back
+	  << " | turtle tunnel items " << back_tun << "/" << n_tun << " (tunnels " << back_tunnels.size() << "/" << tunnels.size() << ")"
+	  << ", other turtle " << back_turtle << "/" << n_turtle
+	  << ", other services " << back_other << "/" << n_other << std::endl ;
+
+	if(back > 0)
+	{
+		o << "  returned via:" ;
+		for(std::map<uint16_t,uint32_t>::const_iterator v(via.begin());v!=via.end();++v)
+			o << " " << mPeers[v->first] << "=" << v->second ;
+		o << std::endl ;
+
+		// is what came back one contiguous piece of our stream to U, in the same order?
+
+		std::sort(back_send_seqs.begin(),back_send_seqs.end()) ;
+		uint32_t runs = 1 ;
+		for(uint32_t i=1;i<back_send_seqs.size();++i)
+			if(back_send_seqs[i] != back_send_seqs[i-1]+1)
+				++runs ;
+
+		std::sort(send_back.begin(),send_back.end()) ;
+		bool same_order = true ;
+		for(uint32_t i=1;i<send_back.size();++i)
+			if(send_back[i].second < send_back[i-1].second)
+				same_order = false ;
+
+		o << "  in our stream to " << mPeers[w.to] << ": returned items form " << runs << " contiguous run(s), "
+		  << (same_order?"same order":"order CHANGED")
+		  << "; sent over " << (last_sent - first_sent) << " ms, came back over " << (last_back - first_back) << " ms"
+		  << ", delay " << (first_back - first_sent) << ".." << (last_back - first_sent) << " ms" << std::endl ;
+
+		for(std::map<uint16_t,std::vector<uint64_t> >::iterator r(rseqs.begin());r!=rseqs.end();++r)
+		{
+			std::vector<uint64_t>& v(r->second) ;
+			std::sort(v.begin(),v.end()) ;
+			uint64_t span = v.back() - v.front() + 1 ;
+			o << "  in the stream from " << mPeers[r->first] << ": " << v.size() << " returned item(s) over " << span
+			  << " consecutive incoming item(s) (" << (span - v.size()) << " other items interleaved)" << std::endl ;
+		}
+	}
+
+	uint32_t unreturned_shown = 0, unreturned_hidden = 0 ;
+
+	for(uint32_t i=0;i<w.items.size();++i)
+	{
+		const WatchItem& wi(w.items[i]) ;
+		bool returned = (wi.back_ms != 0) ;
+
+		if(!returned && !isTunnelItem(wi.s.service,wi.s.subtype))
+		{
+			if(unreturned_shown >= MAX_UNRETURNED_LINES) { ++unreturned_hidden ; continue ; }
+			++unreturned_shown ;
+		}
+
+		o << "    " << ((wi.s.ms >= w.t0)?"+":"-") << ((wi.s.ms >= w.t0)?(wi.s.ms - w.t0):(w.t0 - wi.s.ms)) << "ms"
+		  << " seq=" << wi.s.seq << " " << subtypeName(wi.s.service,wi.s.subtype) << " size=" << wi.s.size ;
+		if(wi.s.tunnel_id != 0)
+			o << " tunnel=0x" << std::hex << std::setw(8) << std::setfill('0') << wi.s.tunnel_id << std::dec ;
+		if(wi.s.fp == w.trigger_fp)
+			o << " [trigger]" ;
+
+		if(returned)
+			o << " -> BACK from " << mPeers[wi.back_from] << " +" << (wi.back_ms - wi.s.ms) << " ms (in-seq " << wi.back_seq << ")"
+			  << ((wi.back_count > 1)?" x":"") ;
+		else
+			o << " -> not back" ;
+		if(returned && wi.back_count > 1)
+			o << wi.back_count ;
+		o << std::endl ;
+	}
+	if(unreturned_hidden > 0)
+		o << "    ... " << unreturned_hidden << " more non tunnel items, not back" << std::endl ;
 
 	return o.str() ;
 }

@@ -59,6 +59,15 @@
 // control, service info, RTT, slicing probe) and items of 16 bytes or less are
 // ignored: they would match all the time without meaning anything.
 //
+// Burst follow-up: when a turtle tunnel item (tunnel ok, data, file transfer
+// items) comes back as an ECHO, i.e. a friend B sends us an item we had sent to
+// another friend U, the probe takes every item we sent to U within one second of
+// that one (the burst), watches for two minutes which of them come back, from
+// whom and in which order, then writes a BURST block. That tells whether a whole
+// block of our stream to U is replayed (transport) or only some tunnel items
+// come back (turtle routing). At most 10 bursts are opened per minute (3 for
+// file maps and chunk maps, which echo routinely).
+//
 // Output: one summary block per minute (friends with at least one ECHO, DUP or
 // REPEAT, broken down by service) and at most a few sample lines per friend,
 // service and kind. Peer ids only: names are resolved by the turtle journal
@@ -102,10 +111,53 @@ class PqiEchoProbe
 				std::map<uint32_t,uint32_t> samples ;    // (kind<<16|service) -> samples written this lapse
 		};
 
+		class SentRec
+		{
+			public:
+				uint64_t ms ;
+				uint64_t fp ;
+				uint64_t seq ;        // rank in our outgoing stream to that friend
+				uint32_t size ;
+				uint32_t tunnel_id ;  // turtle tunnel items only, else 0
+				uint16_t service ;
+				uint8_t  subtype ;
+		};
+
+		class WatchItem
+		{
+			public:
+				WatchItem() : back_ms(0),back_seq(0),back_from(0),back_count(0) {}
+
+				SentRec  s ;
+				uint64_t back_ms ;    // first time it came back, 0 if never
+				uint64_t back_seq ;   // rank in the incoming stream of the friend that sent it back
+				uint16_t back_from ;
+				uint16_t back_count ;
+		};
+
+		class Watch
+		{
+			public:
+				uint32_t id ;
+				uint16_t to ;             // the friend U we sent the burst to
+				uint16_t trigger_from ;   // the friend B that echoed the trigger item
+				uint64_t t0 ;             // when we sent the trigger item to U
+				uint64_t trigger_ms ;     // when B sent it back
+				uint64_t trigger_fp ;
+				uint16_t trigger_service ;
+				uint8_t  trigger_subtype ;
+				std::vector<WatchItem> items ;
+		};
+
 		void record(bool outgoing,const RsPeerId& peer,const void *data,uint32_t size) ;
 		uint16_t peerIdx(const RsPeerId& p) ;      // mMtx must be locked
 		void expire(uint64_t now) ;                // mMtx must be locked
 		std::string summary(uint64_t now) ;        // mMtx must be locked
+		void openWatch(uint16_t to,uint16_t from,uint64_t t0,uint64_t now,uint64_t fp,uint16_t service,uint8_t subtype) ;	// mMtx locked
+		void closeWatches(uint64_t now,bool all) ;                     // mMtx must be locked
+		std::string watchReport(const Watch& w) ;                      // mMtx must be locked
+		static bool isTunnelItem(uint16_t service,uint8_t subtype) ;
+		static std::string subtypeName(uint16_t service,uint8_t subtype) ;
 
 		static uint64_t hash(const uint8_t *d,uint32_t size) ;
 		static bool ignoredService(uint16_t service) ;
@@ -127,4 +179,13 @@ class PqiEchoProbe
 		std::vector<std::string>    mPending ;                // sample lines not written yet
 		uint64_t                    mLastFlushMs ;
 		uint32_t                    mSamplesThisLapse ;
+
+		std::map<uint16_t,std::deque<SentRec> > mSentLog ;   // per friend, last window
+		std::map<uint16_t,uint64_t>             mSendSeq ;
+		std::map<uint16_t,uint64_t>             mRecvSeq ;
+		std::map<uint32_t,Watch>                mWatches ;
+		std::unordered_multimap<uint64_t,std::pair<uint32_t,uint32_t> > mWatchFp ;   // fp -> (watch, item)
+		uint32_t mNextWatchId ;
+		uint32_t mWatchesThisLapse ;
+		uint32_t mMinorWatchesThisLapse ;
 };
