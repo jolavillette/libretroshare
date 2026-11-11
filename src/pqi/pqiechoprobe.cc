@@ -76,7 +76,7 @@ PqiEchoProbe& PqiEchoProbe::instance()
 PqiEchoProbe::PqiEchoProbe()
     : mMtx("PqiEchoProbe"),mLastFlushMs(0),mSamplesThisLapse(0),
       mNextWatchId(1),mWatchesThisLapse(0),mMinorWatchesThisLapse(0),
-      mMultiSendThisLapse(0),mMultiSendLinesThisLapse(0),mQWaitLinesThisLapse(0)
+      mMultiSendThisLapse(0),mMultiSendLinesThisLapse(0),mQWaitLinesThisLapse(0),mQStale(0),mQMatched(0)
 {
 	const char *e = getenv("RS_ECHO_PROBE") ;
 	mEnabled = (e != NULL && e[0] != '\0' && e[0] != '0') ;
@@ -269,7 +269,14 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 	uint8_t  subtype = d[3] ;
 
 	if(ignoredService(service))
+	{
+		if(outgoing)	// the buffer may reuse the address of an item tracked for queue delay
+		{
+			RS_STACK_MUTEX(mMtx) ;
+			mQueued.erase(data) ;
+		}
 		return ;
+	}
 
 	uint64_t fp = hash(d,size) ;	// off mutex
 	uint64_t now = nowMs() ;
@@ -312,7 +319,7 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 
 			{
 				Queued q ;
-				q.ms = now ; q.size = size ; q.peer = idx ; q.service = service ; q.subtype = subtype ;
+				q.ms = now ; q.fp = fp ; q.size = size ; q.peer = idx ; q.service = service ; q.subtype = subtype ;
 				mQueued[data] = q ;
 			}
 
@@ -471,6 +478,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 			mMultiSendThisLapse = 0 ;
 			mMultiSendLinesThisLapse = 0 ;
 			mQWaitLinesThisLapse = 0 ;
+			mQStale = 0 ;
+			mQMatched = 0 ;
 			mQDelay.clear() ;
 
 			// items dropped from a queue (connection reset) never leave it: forget them after 15 min
@@ -538,7 +547,8 @@ std::string PqiEchoProbe::summary(uint64_t now)
 				  << ": n=" << q->second.n << " avg=" << (q->second.n?q->second.sum_ms/q->second.n:0) << "ms max=" << q->second.max_ms
 				  << "ms >5s=" << q->second.over5 << " >20s=" << q->second.over20 << std::endl ;
 			}
-		o << "  output queue: " << mQueued.size() << " items waiting or untracked, " << shown_q << " friend/class pairs with a wait above 5 s" << std::endl ;
+		o << "  output queue: " << mQueued.size() << " items waiting or untracked, " << shown_q << " friend/class pairs with a wait above 5 s, "
+		  << mQMatched << " items measured, " << mQStale << " stale pointers ignored" << std::endl ;
 	}
 
 	return o.str() ;
@@ -792,6 +802,15 @@ void PqiEchoProbe::dequeued(const RsPeerId& /*to*/,const void *data)
 		std::unordered_map<const void*,Queued>::iterator q(mQueued.find(data)) ;
 		if(q == mQueued.end())
 			return ;
+
+		// Same pointer, same item? (the address may have been reused by another buffer)
+		if(hash((const uint8_t*)data,q->second.size) != q->second.fp)
+		{
+			++mQStale ;
+			mQueued.erase(q) ;
+			return ;
+		}
+		++mQMatched ;
 
 		uint32_t wait = uint32_t((now > q->second.ms)?(now - q->second.ms):0) ;
 		int c = delayClass(q->second.service,q->second.subtype) ;

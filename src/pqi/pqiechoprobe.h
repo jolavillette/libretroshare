@@ -168,6 +168,7 @@ class PqiEchoProbe
 		{
 			public:
 				uint64_t ms ;
+				uint64_t fp ;         // to make sure the pointer still holds the same item when it leaves
 				uint32_t size ;
 				uint16_t peer ;
 				uint16_t service ;
@@ -230,4 +231,6 @@ class PqiEchoProbe
 		std::unordered_map<const void*,Queued>         mQueued ;
 		std::map<std::pair<uint16_t,int>,QDelayStat>  mQDelay ;    // (peer, class), current minute
 		uint32_t mQWaitLinesThisLapse ;
+		uint32_t mQStale ;          // dequeued pointer whose bytes no longer match: not counted
+		uint32_t mQMatched ;
 };
