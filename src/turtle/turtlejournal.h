@@ -142,17 +142,37 @@ class TurtleJournal
 
 		//------------------------------- Routing -------------------------------//
 
+		/// What a relay can tell about a tunnel item without decrypting it: the
+		/// fingerprint, the serialised size and, for generic data items, the clear
+		/// prefix of their payload. Encrypted file transfer payloads start with
+		/// 0xae 0xad, a format byte, a 12 bytes IV and the clear size of the inner
+		/// file transfer item (ftserver.cc encryptItem), which tells its kind.
+		class ItemDesc
+		{
+			public:
+				ItemDesc() : fp(0),size(0),inner(0),payload(PAYLOAD_NONE) {}
+
+				enum : uint8_t { PAYLOAD_NONE = 0, PAYLOAD_ENCRYPTED_FT = 1, PAYLOAD_CLEAR_ITEM = 2, PAYLOAD_OPAQUE = 3 } ;
+
+				uint64_t fp ;
+				uint32_t size ;     // serialised turtle item, header included
+				uint32_t inner ;    // encrypted ft: inner item size; clear item: service<<8|subtype; opaque: first 4 bytes
+				uint8_t  payload ;
+		};
+		static std::string payloadStr(const ItemDesc& d) ;
+
 		void itemMismatch     (TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& src,const TurtlePeerId& dst,
-		                       uint8_t item_subtype,uint32_t tunnel_age,uint64_t fp);
+		                       uint8_t item_subtype,uint32_t tunnel_age,const ItemDesc& d);
 
 		/// An item accepted on a tunnel: from one end to the other, or to/from us.
 		/// A null `from` means we emitted it, a null `to` means it is for us.
 		void itemRouted       (TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& to,
-		                       uint8_t item_subtype,uint64_t fp);
+		                       uint8_t item_subtype,const ItemDesc& d);
 
-		/// 64 bits FNV-1a hash of the serialised item: identical for copies of the
-		/// same item, whoever relays them. Only computed when the recorder is on.
-		static uint64_t fingerprint(RsTurtleGenericTunnelItem *item) ;
+		/// 64 bits FNV-1a hash of the serialised item (identical for copies of the
+		/// same item, whoever relays them), its size and payload prefix. Only
+		/// computed when the recorder is on.
+		static ItemDesc fingerprint(RsTurtleGenericTunnelItem *item) ;
 		void itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& from,uint8_t item_subtype);
 		void tunnelClosed     (TurtleTunnelId tid,const TurtlePeerId& src,const TurtlePeerId& dst,uint32_t age);
 
@@ -181,6 +201,7 @@ class TurtleJournal
 			public:
 				uint64_t ms ;
 				uint64_t fp ;
+				ItemDesc d ;
 				uint16_t from ;     // peer index, 0 = us
 				uint16_t to ;       // peer index, 0 = us
 				uint8_t  subtype ;
@@ -248,7 +269,7 @@ class TurtleJournal
 		uint16_t peerIdx(const TurtlePeerId& p);                    // mJournalMtx must be locked; 0 for a null id
 		std::string peerStr(uint16_t idx) const;                    // mJournalMtx must be locked
 		void recordItem(TurtleTunnelId tid,TunnelRecord& rec,uint64_t now,uint16_t from,uint16_t to,
-		                uint8_t subtype,uint64_t fp,bool accepted);  // mJournalMtx must be locked
+		                uint8_t subtype,const ItemDesc& d,bool accepted);  // mJournalMtx must be locked
 		std::string copyOf(const TunnelRecord& rec,uint64_t fp,uint16_t from,uint64_t ms) const;
 		void followLines(uint64_t now_ms,std::ostringstream& o);    // mJournalMtx must be locked
 
@@ -302,6 +323,7 @@ class TurtleJournal
 					mismatch_peers.clear() ;
 					mismatch_tunnels.clear() ;
 					mismatch_tunnels_announced = 0 ;
+					mismatch_payloads.clear() ;
 				}
 
 				uint64_t tr_in,tr_bounce,tr_fwd,tr_answered ;
@@ -313,6 +335,7 @@ class TurtleJournal
 				std::map<TurtlePeerId,uint64_t> mismatch_peers ;   // who sends the dropped items
 				std::map<TurtleTunnelId,uint64_t> mismatch_tunnels ;// which tunnel ids are hit
 				uint64_t mismatch_tunnels_announced ;              // ...among which, how many we announced upstream
+				std::map<std::string,uint64_t> mismatch_payloads ; // what the dropped items carry (recorder on only)
 		};
 
 		Counters mCounters ;

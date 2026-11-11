@@ -110,18 +110,19 @@ static uint32_t envUInt(const char *name,uint32_t def)
 	return (r > 0)?(uint32_t)r:def ;
 }
 
-uint64_t TurtleJournal::fingerprint(RsTurtleGenericTunnelItem *item)
+TurtleJournal::ItemDesc TurtleJournal::fingerprint(RsTurtleGenericTunnelItem *item)
 {
+	ItemDesc d ;
 	RsTurtleSerialiser ser ;
 	uint32_t size = ser.size(item) ;
 
 	if(size == 0)
-		return 0 ;
+		return d ;
 
 	std::vector<uint8_t> buf(size) ;
 
 	if(!ser.serialise(item,buf.data(),&size))
-		return 0 ;
+		return d ;
 
 	uint64_t h = 1469598103934665603ULL ;	// FNV-1a 64
 
@@ -130,7 +131,75 @@ uint64_t TurtleJournal::fingerprint(RsTurtleGenericTunnelItem *item)
 		h ^= buf[i] ;
 		h *= 1099511628211ULL ;
 	}
-	return h ;
+	d.fp   = h ;
+	d.size = size ;
+
+	// Generic (fast) data: 8 bytes header, 32 bits tunnel id, 32 bits length, payload.
+
+	uint8_t st = buf[3] ;
+
+	if((st == RS_TURTLE_SUBTYPE_GENERIC_DATA || st == RS_TURTLE_SUBTYPE_GENERIC_FAST_DATA) && size >= 16)
+	{
+		uint32_t len = (uint32_t(buf[12]) << 24) | (uint32_t(buf[13]) << 16) | (uint32_t(buf[14]) << 8) | uint32_t(buf[15]) ;
+		const uint8_t *p = buf.data() + 16 ;
+
+		if(len > size - 16)
+			len = size - 16 ;
+
+		if(len >= 20 && p[0] == 0xae && p[1] == 0xad)
+		{
+			d.payload = ItemDesc::PAYLOAD_ENCRYPTED_FT ;
+			d.inner   = uint32_t(p[16]) | (uint32_t(p[17]) << 8) | (uint32_t(p[18]) << 16) | (uint32_t(p[19]) << 24) ;	// little endian
+		}
+		else if(len >= 8 && p[0] == 0x02)
+		{
+			d.payload = ItemDesc::PAYLOAD_CLEAR_ITEM ;
+			d.inner   = (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]) ;
+		}
+		else if(len >= 4)
+		{
+			d.payload = ItemDesc::PAYLOAD_OPAQUE ;
+			d.inner   = (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | uint32_t(p[3]) ;
+		}
+	}
+	return d ;
+}
+
+// Inner file transfer items, serialised with their 8 bytes header (ftturtlefiletransferitem.cc):
+// file request 24, file map request 16, chunk crc request 16, chunk crc 36,
+// file map 20 + 4 per word, file data 24 + chunk size.
+
+std::string TurtleJournal::payloadStr(const ItemDesc& d)
+{
+	std::ostringstream o ;
+
+	switch(d.payload)
+	{
+		case ItemDesc::PAYLOAD_ENCRYPTED_FT:
+		{
+			uint32_t n = d.inner ;
+			o << "encrypted-ft inner=" << n << " (" ;
+			if(n == 16)      o << "file_map_request or chunk_crc_request" ;
+			else if(n == 24) o << "file_request or 1-word file_map" ;
+			else if(n == 36) o << "chunk_crc or 4-word file_map" ;
+			else if(n >= 1024) o << "file_data, " << (n - 24) << " bytes of file" ;
+			else if(n > 20 && (n - 20) % 4 == 0) o << "file_map of " << (n - 20)/4 << " words, or small file_data" ;
+			else if(n > 24) o << "file_data, " << (n - 24) << " bytes of file" ;
+			else o << "unknown" ;
+			o << ")" ;
+			break ;
+		}
+		case ItemDesc::PAYLOAD_CLEAR_ITEM:
+			o << "clear item service=0x" << std::hex << std::setw(4) << std::setfill('0') << (d.inner >> 8)
+			  << "/0x" << std::setw(2) << (d.inner & 0xff) << std::dec ;
+			break ;
+		case ItemDesc::PAYLOAD_OPAQUE:
+			o << "opaque, starts 0x" << std::hex << std::setw(8) << std::setfill('0') << d.inner << std::dec ;
+			break ;
+		default:
+			break ;
+	}
+	return o.str() ;
 }
 
 static std::string hex64(uint64_t v)
@@ -451,11 +520,20 @@ void TurtleJournal::okHeld(TurtleTunnelId tid,TurtleTunnelRequestId rid,const Tu
 }
 
 void TurtleJournal::itemMismatch(TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& src,const TurtlePeerId& dst,
-                                 uint8_t item_subtype,uint32_t tunnel_age,uint64_t fp)
+                                 uint8_t item_subtype,uint32_t tunnel_age,const ItemDesc& d)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
 	++mCounters.item_mismatch ;
+
+	if(d.size != 0)
+	{
+		std::ostringstream k ;
+		k << itemName(item_subtype) << " " << d.size << "B" ;
+		std::string ps = payloadStr(d) ;
+		if(!ps.empty()) k << " " << ps ;
+		++mCounters.mismatch_payloads[k.str()] ;
+	}
 	++mCounters.mismatch_peers[from] ;
 
 	bool first_this_lapse = (mCounters.mismatch_tunnels.find(tid) == mCounters.mismatch_tunnels.end()) ;
@@ -488,7 +566,7 @@ void TurtleJournal::itemMismatch(TurtleTunnelId tid,const TurtlePeerId& from,con
 	++mPeerStats[from_idx].drop_from ;
 	mSuspects[from_idx] = now ;
 
-	recordItem(tid,rec,now,from_idx,0,item_subtype,fp,false) ;
+	recordItem(tid,rec,now,from_idx,0,item_subtype,d,false) ;
 
 	// The first dropped item is shown in the dump below; capture the following ones.
 	if(rec.capture_until_ms == 0)
@@ -504,7 +582,7 @@ void TurtleJournal::itemMismatch(TurtleTunnelId tid,const TurtlePeerId& from,con
 }
 
 void TurtleJournal::itemRouted(TurtleTunnelId tid,const TurtlePeerId& from,const TurtlePeerId& to,
-                               uint8_t item_subtype,uint64_t fp)
+                               uint8_t item_subtype,const ItemDesc& d)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
@@ -533,7 +611,7 @@ void TurtleJournal::itemRouted(TurtleTunnelId tid,const TurtlePeerId& from,const
 	if(from_idx != 0)
 		++mPeerStats[from_idx].acc_from ;
 
-	recordItem(tid,rec,now,from_idx,peerIdx(to),item_subtype,fp,true) ;
+	recordItem(tid,rec,now,from_idx,peerIdx(to),item_subtype,d,true) ;
 }
 
 std::string TurtleJournal::copyOf(const TunnelRecord& rec,uint64_t fp,uint16_t from,uint64_t ms) const
@@ -560,11 +638,13 @@ std::string TurtleJournal::copyOf(const TunnelRecord& rec,uint64_t fp,uint16_t f
 }
 
 void TurtleJournal::recordItem(TurtleTunnelId tid,TunnelRecord& rec,uint64_t now,uint16_t from,uint16_t to,
-                               uint8_t subtype,uint64_t fp,bool accepted)
+                               uint8_t subtype,const ItemDesc& d,bool accepted)
 {
+	uint64_t fp = d.fp ;
 	ItemSeen s ;
 	s.ms       = now ;
 	s.fp       = fp ;
+	s.d        = d ;
 	s.from     = from ;
 	s.to       = to ;
 	s.subtype  = subtype ;
@@ -583,8 +663,12 @@ void TurtleJournal::recordItem(TurtleTunnelId tid,TunnelRecord& rec,uint64_t now
 
 		std::ostringstream o ;
 		o << "CAP " << hex32(tid) << " " << timeStr(now) << " " << (accepted?"ACCEPTED":"DROPPED ")
-		  << " item=" << itemName(subtype) << " fp=" << hex64(fp)
-		  << " from=" << peerStr(from) << " to=" << (accepted?peerStr(to):std::string("-")) << copy << std::endl ;
+		  << " item=" << itemName(subtype) << " size=" << d.size << " fp=" << hex64(fp)
+		  << " from=" << peerStr(from) << " to=" << (accepted?peerStr(to):std::string("-")) << copy ;
+		std::string ps = payloadStr(d) ;
+		if(!ps.empty())
+			o << " [" << ps << "]" ;
+		o << std::endl ;
 		mPendingDumps.push_back(o.str()) ;
 	}
 }
@@ -664,7 +748,17 @@ void TurtleJournal::dumpTunnel(TurtleTunnelId tid)
 	  << " recorded events (times are UTC) ===" << std::endl ;
 
 	if(!rec.hash.isNull())
-		o << "  hash of the tunnel request that created this id: " << rec.hash << std::endl ;
+	{
+		o << "  hash of the tunnel request that created this id: " << rec.hash ;
+
+		// GRouter hashes are the destination key id, two zero bytes and the client service id
+		// (p3GRouter::makeTunnelHash). GxsTunnel hashes are 4 random bytes and the destination
+		// GXS id; file transfer hashes look random.
+		const uint8_t *hb = rec.hash.toByteArray() ;
+		if(hb[16] == 0 && hb[17] == 0)
+			o << " (GRouter, client service 0x" << std::hex << std::setw(4) << std::setfill('0') << ((uint32_t(hb[18]) << 8) | hb[19]) << std::dec << ")" ;
+		o << std::endl ;
+	}
 
 	if(rec.events.size() >= MAX_EVENTS_PER_TUNNEL)
 		o << "  (history capped: some intermediate events were dropped)" << std::endl ;
@@ -761,8 +855,12 @@ void TurtleJournal::dumpTunnel(TurtleTunnelId tid)
 		const ItemSeen& s(rec.ring[i]) ;
 
 		o << "    " << timeStr(s.ms) << " " << (s.accepted?"ACCEPTED":"DROPPED ") << " item=" << itemName(s.subtype)
-		  << " fp=" << hex64(s.fp) << " from=" << peerStr(s.from) << " to=" << (s.accepted?peerStr(s.to):std::string("-"))
-		  << copyOf(rec,s.fp,s.from,s.ms) << std::endl ;
+		  << " size=" << s.d.size << " fp=" << hex64(s.fp) << " from=" << peerStr(s.from) << " to=" << (s.accepted?peerStr(s.to):std::string("-"))
+		  << copyOf(rec,s.fp,s.from,s.ms) ;
+		std::string ps = payloadStr(s.d) ;
+		if(!ps.empty())
+			o << " [" << ps << "]" ;
+		o << std::endl ;
 	}
 
 	for(uint32_t i=0;i<rec.events.size();++i)
@@ -938,6 +1036,19 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 						top.push_back(std::make_pair(it->second,it->first)) ;
 
 					std::sort(top.rbegin(),top.rend()) ;
+
+					if(!c.mismatch_payloads.empty())
+					{
+						std::vector<std::pair<uint64_t,std::string> > kinds ;
+						for(std::map<std::string,uint64_t>::const_iterator it(c.mismatch_payloads.begin());it!=c.mismatch_payloads.end();++it)
+							kinds.push_back(std::make_pair(it->second,it->first)) ;
+						std::sort(kinds.rbegin(),kinds.rend()) ;
+
+						o << " Dropped items carry:" ;
+						for(uint32_t i=0;i<kinds.size() && i<5;++i)
+							o << " [" << kinds[i].second << "]=" << kinds[i].first ;
+						o << "." ;
+					}
 
 					o << " Top senders of dropped items:" ;
 

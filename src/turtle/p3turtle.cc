@@ -1343,7 +1343,7 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 
 			TurtleJournal::instance().itemMismatch(item->tunnelId(),item->PeerId(),tunnel.local_src,tunnel.local_dst,
 			                                       item->PacketSubType(),(tunnel_age > 0)?uint32_t(tunnel_age):0,
-			                                       TurtleJournal::instance().enabled()?TurtleJournal::fingerprint(item):0) ;
+			                                       TurtleJournal::instance().enabled()?TurtleJournal::fingerprint(item):TurtleJournal::ItemDesc()) ;
 
 			if(TurtleJournal::instance().verboseRouting())
 			{
