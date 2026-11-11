@@ -1894,6 +1894,21 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #endif
 			return ;
 		}
+
+		// Is this result too old?
+		// Tunnel Requests younger than TUNNEL_REQUESTS_LIFE_TIME are kept in the cache, so that they are not duplicated if they bounce in the network
+		// Nevertheless results received for Tunnel Requests older than TUNNEL_REQUESTS_RESULT_TIME are considered obsolete and discarded.
+		// This must be checked before the tunnel is stored: a late result is not forwarded upstream, so a
+		// tunnel stored for it would be unknown to the upstream peer, and we would still forward to it every
+		// item the downstream peer sends through that tunnel.
+		if (time(NULL) > it->second.time_stamp + TUNNEL_REQUESTS_RESULT_TIME)
+		{
+#ifdef P3TURTLE_DEBUG
+			RsDbg() << "TURTLE p3turtle::handleTunnelResult Tunnel Request is known, but result arrives too late, dropping";
+#endif
+			return;
+		}
+
 		if(it->second.responses.find(item->tunnel_id) != it->second.responses.end())
 		{
 			// Each hop perturbs the partial tunnel id, so a tunnel id is unique for a given route: a
@@ -1940,17 +1955,6 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "  storing tunnel info. src=" << tunnel.local_src << ", dst=" << tunnel.local_dst << ", id=" << item->tunnel_id << std::endl ;
 #endif
-		}
-
-		// Is this result too old?
-		// Tunnel Requests younger than TUNNEL_REQUESTS_LIFE_TIME are kept in the cache, so that they are not duplicated if they bounce in the network
-		// Nevertheless results received for Tunnel Requests older than TUNNEL_REQUESTS_RESULT_TIME are considered obsolete and discarded
-		if (time(NULL) > it->second.time_stamp + TUNNEL_REQUESTS_RESULT_TIME)
-		{
-#ifdef P3TURTLE_DEBUG
-			RsDbg() << "TURTLE p3turtle::handleTunnelResult Tunnel Request is known, but result arrives too late, dropping";
-#endif
-			return;
 		}
 
 		// Is this result's target actually ours ?
