@@ -154,17 +154,13 @@ private:
             , accepts_fast_turtle_items(false)
             , already_probed_for_fast_items(false)
   #endif
-        {
-            memset(aes_key, 0, GXS_TUNNEL_AES_KEY_SIZE);
-        }
+        {}
 
         rstime_t last_contact ; 		// used to keep track of working connexion
         rstime_t last_keep_alive_sent ;	// last time we sent a keep alive packet.
 
-        unsigned char aes_key[GXS_TUNNEL_AES_KEY_SIZE] ;      // key of virtual_peer_id, the tunnel we send on. Incoming data is decrypted with the key of the tunnel it comes from (GxsTunnelDHInfo::aes_key).
-
         uint32_t status ;                                     // info: do we have a tunnel ?
-        RsPeerId virtual_peer_id;                             // given by the turtle router. Identifies the tunnel we send on: the last one that was keyed, or that delivered data.
+        RsPeerId virtual_peer_id;                             // the tunnel we send on, chosen by locked_selectVirtualPeer(). Keys live in GxsTunnelDHInfo.
         RsGxsId to_gxs_id;                                    // gxs id we're talking to
         RsGxsId own_gxs_id ;                                  // gxs id we're using to talk.
         RsTurtleGenericTunnelItem::Direction direction ;      // specifiec wether we are client(managing the tunnel) or server.
@@ -182,13 +178,14 @@ private:
     class GxsTunnelDHInfo
     {
     public:
-        GxsTunnelDHInfo() : dh(0), direction(0), status(0), last_dh_restart(0), dropped_packets(0)
+        GxsTunnelDHInfo() : dh(0), direction(0), status(0), last_dh_restart(0), dropped_packets(0), last_contact(0)
         {
             memset(aes_key, 0, GXS_TUNNEL_AES_KEY_SIZE);
         }
 
         DH *dh ;
         unsigned char aes_key[GXS_TUNNEL_AES_KEY_SIZE] ; // key agreed on this tunnel. Valid once status is KEY_AVAILABLE.
+        rstime_t last_contact ;         // when the key was agreed, then last time data was decrypted on this tunnel
         RsGxsId gxs_id ;
         RsGxsId own_gxs_id ;
         RsGxsTunnelId tunnel_id ; // this is a proxy, since we cna always recompute that from the two previous values.
@@ -228,6 +225,7 @@ private:
     
     void startClientGxsTunnelConnection(const RsGxsId &to_gxs_id, const RsGxsId& from_gxs_id, uint32_t service_id, RsGxsTunnelId &tunnel_id) ;
     void locked_restartDHSession(const RsPeerId &virtual_peer_id, const RsGxsId &own_gxs_id) ;
+    bool locked_selectVirtualPeer(const RsGxsTunnelId& tunnel_id, GxsTunnelPeerInfo& info) ;
 
     // utility functions
 

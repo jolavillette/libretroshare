@@ -129,11 +129,18 @@ RsServiceInfo p3GxsTunnelService::getServiceInfo()
 
 void p3GxsTunnelService::flush()
 {
-    // Flush pending DH items. This is a higher priority, so we deal with them first.
-    
-#ifdef DEBUG_GXS_TUNNEL    
+#ifdef DEBUG_GXS_TUNNEL
     std::cerr << "p3GxsTunnelService::flush() flushing pending items." << std::endl;
 #endif
+    // Choose the tunnel each contact sends on, before anything is sent.
+    {
+	    RS_STACK_MUTEX(mGxsTunnelMtx); /********** STACK LOCKED MTX ******/
+
+	    for(std::map<RsGxsTunnelId,GxsTunnelPeerInfo>::iterator it(_gxs_tunnel_contacts.begin());it!=_gxs_tunnel_contacts.end();++it)
+		    locked_selectVirtualPeer(it->first,it->second) ;
+    }
+
+    // Flush pending DH items. This is a higher priority, so we deal with them first.
     {
 	    RS_STACK_MUTEX(mGxsTunnelMtx); /********** STACK LOCKED MTX ******/
 
@@ -621,6 +628,29 @@ void p3GxsTunnelService::locked_restartDHSession(const RsPeerId& virtual_peer_id
         std::cerr << "  (EE) Cannot send DH public key. Something went wrong." << std::endl;
 }
 
+// Chooses the tunnel a contact sends on: among the keyed tunnels of that contact, the one the peer was last heard on,
+// ties broken by the largest virtual peer id. Each end answers on the tunnel the other talks on, so both settle on one
+// tunnel and the others die of inactivity; a tunnel that died without a CLOSING item is left as soon as the peer shows
+// up on another one. Returns false when there is nothing to send on.
+
+bool p3GxsTunnelService::locked_selectVirtualPeer(const RsGxsTunnelId& tunnel_id,GxsTunnelPeerInfo& info)
+{
+    TurtleVirtualPeerId best ;
+    rstime_t best_time = 0 ;
+
+    for(std::map<TurtleVirtualPeerId,GxsTunnelDHInfo>::const_iterator it(_gxs_tunnel_virtual_peer_ids.begin());it!=_gxs_tunnel_virtual_peer_ids.end();++it)
+        if(it->second.tunnel_id == tunnel_id && it->second.status == RS_GXS_TUNNEL_DH_STATUS_KEY_AVAILABLE
+                && (best.isNull() || it->second.last_contact > best_time || (it->second.last_contact == best_time && best < it->first)))
+        {
+            best = it->first ;
+            best_time = it->second.last_contact ;
+        }
+
+    info.virtual_peer_id = best ;
+
+    return !best.isNull() ;
+}
+
 void p3GxsTunnelService::removeVirtualPeer(const TurtleFileHash& hash,const TurtleVirtualPeerId& virtual_peer_id)
 {
     bool tunnel_dn = false ;
@@ -659,25 +689,11 @@ void p3GxsTunnelService::removeVirtualPeer(const TurtleFileHash& hash,const Turt
             std::cerr << "(EE) Cannot find tunnel id " << tunnel_id << " in contact list. Weird." << std::endl;
             return ;
         }
-        if(it2->second.virtual_peer_id == virtual_peer_id)
+        // The tunnel we send on is gone: another tunnel of this contact takes over, if any.
+        if(it2->second.virtual_peer_id == virtual_peer_id && !locked_selectVirtualPeer(tunnel_id,it2->second))
         {
-            // The tunnel we send on is gone. Another keyed tunnel for the same pair of identities takes over, if any.
-            std::map<TurtleVirtualPeerId,GxsTunnelDHInfo>::const_iterator alt = _gxs_tunnel_virtual_peer_ids.begin() ;
-
-            while(alt != _gxs_tunnel_virtual_peer_ids.end() && !(alt->second.tunnel_id == tunnel_id && alt->second.status == RS_GXS_TUNNEL_DH_STATUS_KEY_AVAILABLE))
-                ++alt ;
-
-            if(alt != _gxs_tunnel_virtual_peer_ids.end())
-            {
-                it2->second.virtual_peer_id = alt->first ;
-                memcpy(it2->second.aes_key,alt->second.aes_key,GXS_TUNNEL_AES_KEY_SIZE) ;
-            }
-            else
-            {
-                it2->second.status = RS_GXS_TUNNEL_STATUS_TUNNEL_DN ;
-                it2->second.virtual_peer_id.clear() ;
-                tunnel_dn = true ;
-            }
+            it2->second.status = RS_GXS_TUNNEL_STATUS_TUNNEL_DN ;
+            tunnel_dn = true ;
         }
         
         for(std::set<uint32_t>::const_iterator it(it2->second.client_services.begin());it!=it2->second.client_services.end();++it)
@@ -892,13 +908,7 @@ bool p3GxsTunnelService::handleEncryptedData(const uint8_t *data_bytes,uint32_t 
         it2->second.status = RS_GXS_TUNNEL_STATUS_CAN_TALK ;
         it2->second.last_contact = time(NULL) ;
 
-        // The peer talks on this tunnel, so it is alive at both ends: answer on it. This is how both ends converge on
-        // one tunnel when several exist, and how we leave a tunnel the peer gave up on without a CLOSING item.
-        if(it2->second.virtual_peer_id != virtual_peer_id)
-        {
-            it2->second.virtual_peer_id = virtual_peer_id ;
-            memcpy(it2->second.aes_key,aes_key,GXS_TUNNEL_AES_KEY_SIZE) ;
-        }
+        it->second.last_contact = it2->second.last_contact ;	// this tunnel is alive, see locked_selectVirtualPeer()
 
 #ifdef DEBUG_GXS_TUNNEL
         std::cerr << "(II) Decrypted data: size=" << decrypted_size << std::endl;
@@ -1064,17 +1074,16 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
     GxsTunnelPeerInfo& pinfo(_gxs_tunnel_contacts[tunnel_id]) ;
 
     // Now hash the key buffer into a 16 bytes key. The key belongs to this tunnel: several tunnels may serve the same
-    // pair of identities, each keyed by its own DH session. The contact sends on the tunnel keyed last, which is the
-    // one most recently known to be alive at both ends; the others stay usable for what the peer sends on them.
+    // pair of identities, each keyed by its own DH session. Which one the contact sends on is decided separately, by
+    // locked_selectVirtualPeer(); the others stay usable for what the peer sends on them.
 
     assert(GXS_TUNNEL_AES_KEY_SIZE <= Sha1CheckSum::SIZE_IN_BYTES) ;
     memcpy(it->second.aes_key, RsDirUtil::sha1sum(key_buff,size).toByteArray(),GXS_TUNNEL_AES_KEY_SIZE) ;
-    memcpy(pinfo.aes_key, it->second.aes_key, GXS_TUNNEL_AES_KEY_SIZE) ;
+    it->second.last_contact = time(NULL) ;
 
     pinfo.last_contact = time(NULL) ;
     pinfo.last_keep_alive_sent = time(NULL) ;
     pinfo.status = RS_GXS_TUNNEL_STATUS_CAN_TALK ;
-    pinfo.virtual_peer_id = vpid ;
     pinfo.direction = it->second.direction ;
     pinfo.own_gxs_id = own_id ;
     pinfo.to_gxs_id = item->signature.keyId;	// this is already set for client side but not for server side.
@@ -1083,7 +1092,7 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
 
 #ifdef DEBUG_GXS_TUNNEL
     std::cerr << "  DH key computed. Tunnel is now secured!" << std::endl;
-    std::cerr << "  Key computed: " << RsUtil::BinToHex((char*)pinfo.aes_key,16) << std::endl;
+    std::cerr << "  Key computed: " << RsUtil::BinToHex((char*)it->second.aes_key,16) << std::endl;
     std::cerr << "  Sending a ACK packet." << std::endl;
 #endif
 
@@ -1352,10 +1361,22 @@ bool p3GxsTunnelService::locked_sendEncryptedTunnelData(RsGxsTunnelItem *item)
 		return false;
 	}
 
-    it->second.total_sent += rssize ;	// counts the size of clear data that is sent
-    
-    memcpy(aes_key,it->second.aes_key,GXS_TUNNEL_AES_KEY_SIZE) ;
     RsPeerId virtual_peer_id = it->second.virtual_peer_id ;
+
+    // The key is the one agreed on the tunnel we send on.
+    std::map<TurtleVirtualPeerId,GxsTunnelDHInfo>::const_iterator it2 = _gxs_tunnel_virtual_peer_ids.find(virtual_peer_id) ;
+
+    if(it2 == _gxs_tunnel_virtual_peer_ids.end() || it2->second.status != RS_GXS_TUNNEL_DH_STATUS_KEY_AVAILABLE)
+    {
+#ifdef DEBUG_GXS_TUNNEL
+        std::cerr << "(EE) No keyed tunnel to send on for tunnel id " << tunnel_id << ". Cannot send message!" << std::endl;
+#endif
+        return false;
+    }
+
+    it->second.total_sent += rssize ;	// counts the size of clear data that is sent
+
+    memcpy(aes_key,it2->second.aes_key,GXS_TUNNEL_AES_KEY_SIZE) ;
 
     while(IV == 0) IV = RSRandom::random_u64() ; // make a random 8 bytes IV, that is not 0
 
@@ -1584,8 +1605,6 @@ void p3GxsTunnelService::startClientGxsTunnelConnection(const RsGxsId& to_gxs_id
     info.direction = RsTurtleGenericTunnelItem::DIRECTION_SERVER ;
     info.virtual_peer_id.clear();
     info.client_services.insert(service_id) ;
-
-    memset(info.aes_key,0,GXS_TUNNEL_AES_KEY_SIZE) ;
 
     {
         RsStackMutex stack(mGxsTunnelMtx); /********** STACK LOCKED MTX ******/
