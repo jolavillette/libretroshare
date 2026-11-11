@@ -312,9 +312,11 @@ class TurtleJournal
 		class PeerTurtleStat
 		{
 			public:
-				PeerTurtleStat() : ok_in(0),ok_twice(0),t_via(0),acc_from(0),drop_from(0) {}
+				PeerTurtleStat() : ok_in(0),ok_twice(0),t_via(0),acc_from(0),drop_from(0),
+				                   bounces(0),slow_bounces(0),max_bounce_ms(0),ok_late(0) {}
 
 				uint32_t ok_in,ok_twice,t_via,acc_from,drop_from ;
+				uint32_t bounces,slow_bounces,max_bounce_ms,ok_late ;   // how late this friend delivers requests / results
 		};
 
 		std::map<uint16_t,PeerTurtleStat> mPeerStats ;   // current minute, all peers
@@ -338,6 +340,7 @@ class TurtleJournal
 				{
 					tr_in = tr_bounce = tr_fwd = tr_answered = 0 ;
 					tr_reborn = tr_rid_collision = ok_from_origin = 0 ;
+					mirror_here = self_tunnel = 0 ;
 					ok_in = ok_no_request = ok_twice = ok_late = 0 ;
 					t_create = t_overwrite = t_found_match = t_found_mismatch = t_close = 0 ;
 					ok_fwd_after_mismatch = ok_held = 0 ;
@@ -350,6 +353,7 @@ class TurtleJournal
 
 				uint64_t tr_in,tr_bounce,tr_fwd,tr_answered ;
 				uint64_t tr_reborn,tr_rid_collision,ok_from_origin ;
+				uint64_t mirror_here,self_tunnel ;   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
 				uint64_t ok_in,ok_no_request,ok_twice,ok_late ;
 				uint64_t t_create,t_overwrite,t_found_match,t_found_mismatch,t_close ;
 				uint64_t ok_fwd_after_mismatch,ok_held ;

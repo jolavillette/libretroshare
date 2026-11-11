@@ -404,6 +404,13 @@ void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,
 	uint64_t now = nowMs() ;
 	b.dms   = uint32_t((now > it->second.ms)?(now - it->second.ms):0) ;
 	b.peer  = peerIdx(from) ;
+
+	{
+		PeerTurtleStat& ps(mPeerStats[b.peer]) ;
+		++ps.bounces ;
+		if(b.dms > 20000) ++ps.slow_bounces ;
+		if(b.dms > ps.max_bounce_ms) ps.max_bounce_ms = b.dms ;
+	}
 	b.depth = depth ;
 	it->second.bounces.push_back(b) ;
 }
@@ -549,7 +556,10 @@ void TurtleJournal::okLate(TurtleTunnelRequestId rid,TurtleTunnelId tid,const Tu
 	++mCounters.ok_late ;
 
 	if(mEnabled)
+	{
 		push(tid,OK_LATE,rid,age,from,TurtlePeerId()) ;
+		++mPeerStats[peerIdx(from)].ok_late ;
+	}
 }
 
 void TurtleJournal::tunnelCreated(TurtleTunnelId tid,TurtleTunnelRequestId rid,const TurtlePeerId& src,const TurtlePeerId& dst)
@@ -564,6 +574,21 @@ void TurtleJournal::tunnelCreated(TurtleTunnelId tid,TurtleTunnelRequestId rid,c
 	++mPeerStats[peerIdx(dst)].t_via ;
 
 	push(tid,T_CREATE,rid,0,src,dst) ;
+
+	// One friend at both ends: every item of this tunnel will be sent back to it.
+	if(!src.isNull() && src == dst)
+	{
+		++mCounters.self_tunnel ;
+
+		if(mSelfLoopLinesThisLapse < MAX_SELFLOOP_LINES)
+		{
+			++mSelfLoopLinesThisLapse ;
+			std::ostringstream o ;
+			o << "SELF_TUNNEL " << timeStr(nowMs()) << " tunnel=" << hex32(tid) << " req=" << hex32(rid)
+			  << " stored with " << src << " at both ends" << std::endl ;
+			mPendingDumps.push_back(o.str()) ;
+		}
+	}
 }
 
 void TurtleJournal::tunnelFound(TurtleTunnelId tid,TurtleTunnelRequestId rid,
@@ -688,6 +713,26 @@ void TurtleJournal::itemRouted(TurtleTunnelId tid,const TurtlePeerId& from,const
 	if(rec.first_ms == 0)
 		rec.first_ms = now ;
 	rec.last_ms = now ;
+
+	// We send an item back to the friend it came from: we act as a mirror on this tunnel.
+	if(!from.isNull() && from == to)
+	{
+		++mCounters.mirror_here ;
+
+		if(mSelfLoopLinesThisLapse < MAX_SELFLOOP_LINES)
+		{
+			++mSelfLoopLinesThisLapse ;
+			std::ostringstream o ;
+			o << "MIRROR_HERE " << timeStr(now) << " tunnel=" << hex32(tid) << " item=" << itemName(item_subtype)
+			  << " size=" << d.size << " sent back to " << from << ", the friend it came from" << std::endl ;
+			mPendingDumps.push_back(o.str()) ;
+		}
+		if(!rec.dumped)
+		{
+			rec.dumped = true ;
+			dumpTunnel(tid) ;
+		}
+	}
 
 	if(rec.watched)
 	{
@@ -886,6 +931,13 @@ void TurtleJournal::dumpTunnel(TurtleTunnelId tid)
 		  << " forwarded to " << req.n_fwd << " peers"
 		  << " (" << timeStr(req.ms) << ")" << std::endl ;
 
+		{
+			std::unordered_map<uint32_t,RidSeen>::const_iterator h(mRidHistory.find(it->first)) ;
+			if(h != mRidHistory.end() && h->second.times > 1)
+				o << "    REBORN request: accepted as new " << h->second.times << " times, first at "
+				  << timeStr(h->second.first_ms) << " from " << peerStr(h->second.first_from) << std::endl ;
+		}
+
 		mPendingPeerInfo.insert(req.origin) ;
 
 		// For every peer that sent us a result for this request: did we forward the
@@ -1083,6 +1135,19 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 				// Suspect peers: their minute of turtle activity, resolved off mutex below.
 
+				// Friends delivering requests or results late (slow or Tor links).
+
+				for(std::map<uint16_t,PeerTurtleStat>::const_iterator ps(mPeerStats.begin());ps!=mPeerStats.end();++ps)
+					if(ps->first != 0 && (ps->second.slow_bounces > 0 || ps->second.ok_late > 0))
+					{
+						std::ostringstream so ;
+						so << "SLOWPEER " << timeStr(now) << " " << mPeers[ps->first] << " last minute: requests bounced to us "
+						   << ps->second.bounces << " (" << ps->second.slow_bounces << " more than 20 s after we first saw them, max "
+						   << ps->second.max_bounce_ms/1000 << " s), late results " << ps->second.ok_late << std::endl ;
+						mPendingDumps.push_back(so.str()) ;
+						mPendingPeerInfo.insert(mPeers[ps->first]) ;
+					}
+
 				for(std::map<uint16_t,uint64_t>::iterator it(mSuspects.begin());it!=mSuspects.end();)
 					if(now > it->second + FOLLOW_MS)
 						it = mSuspects.erase(it) ;
@@ -1098,7 +1163,7 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 			const Counters& c(mCounters) ;
 
-			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin)
+			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin || c.mirror_here || c.self_tunnel)
 			{
 				std::ostringstream o ;
 
@@ -1118,7 +1183,8 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				  << "Tunnel requests: " << c.tr_in << " in, " << c.tr_bounce << " bouncing, "
 				  << c.tr_answered << " answered here (" << c.t_overwrite << " overwriting an existing id), "
 				  << c.tr_reborn << " reborn (accepted again after the router forgot them), " << c.tr_rid_collision << " id collisions. "
-				  << "Results from the request's own origin: " << c.ok_from_origin << ". "
+				  << "Results from the request's own origin: " << c.ok_from_origin << ", tunnels stored with one friend at both ends: "
+				  << c.self_tunnel << ", items bounced back to their sender: " << c.mirror_here << ". "
 				  << "Tables: " << live_tunnels << " tunnels, " << live_requests << " requests, "
 				  << c.t_close << " tunnels closed." ;
 
