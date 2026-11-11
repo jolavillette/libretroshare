@@ -68,6 +68,12 @@
 // come back (turtle routing). At most 10 bursts are opened per minute (3 for
 // file maps and chunk maps, which echo routinely).
 //
+// Multi-send check: a turtle tunnel item (tunnel ok, data, file transfer items)
+// goes to exactly one friend, the next hop of its tunnel. When the same bytes
+// are serialised for a second friend, a MULTISEND line is written (and the
+// first ones of each minute go to stderr): that would be our own node sending
+// a copy of a tunnel item to a friend that is not on the tunnel.
+//
 // Output: one summary block per minute (friends with at least one ECHO, DUP or
 // REPEAT, broken down by service) and at most a few sample lines per friend,
 // service and kind. Peer ids only: names are resolved by the turtle journal
@@ -93,12 +99,14 @@ class PqiEchoProbe
 		class Seen
 		{
 			public:
-				Seen() : sent_ms(0),recv_ms(0),sent_to(0),recv_from(0) {}
+				Seen() : sent_ms(0),recv_ms(0),sent_to(0),recv_from(0),sent_to2(0),n_sent_peers(0) {}
 
 				uint64_t sent_ms ;    // first time we sent it, 0 if never
 				uint64_t recv_ms ;    // first time we received it, 0 if never
 				uint16_t sent_to ;    // peer index
 				uint16_t recv_from ;  // peer index
+				uint16_t sent_to2 ;   // a second friend we sent the same bytes to, 0 if none
+				uint8_t  n_sent_peers ;
 		};
 
 		class PeerStat
@@ -147,6 +155,7 @@ class PqiEchoProbe
 				uint64_t trigger_fp ;
 				uint16_t trigger_service ;
 				uint8_t  trigger_subtype ;
+				uint16_t trigger_also_sent_to ;   // the trigger item was ALSO serialised for this friend, 0 if not
 				std::vector<WatchItem> items ;
 		};
 
@@ -189,4 +198,6 @@ class PqiEchoProbe
 		uint32_t mNextWatchId ;
 		uint32_t mWatchesThisLapse ;
 		uint32_t mMinorWatchesThisLapse ;
+		uint32_t mMultiSendThisLapse ;     // turtle tunnel items serialised for two different friends
+		uint32_t mMultiSendLinesThisLapse ;
 };

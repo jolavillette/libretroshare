@@ -44,6 +44,8 @@ static const uint32_t MAX_WATCHES_PER_LAPSE     = 10 ;    // tunnel ok and data 
 static const uint32_t MAX_MINOR_WATCHES_PER_LAPSE = 3 ;   // file transfer, file map, chunk crc items
 static const uint32_t MAX_ITEMS_PER_WATCH       = 400 ;
 static const uint32_t MAX_UNRETURNED_LINES      = 40 ;
+static const uint32_t MAX_MULTISEND_LINES       = 200 ;   // per minute, in the probe file
+static const uint32_t MAX_MULTISEND_STDERR      = 10 ;    // per minute, on stderr
 
 static uint64_t nowMs()
 {
@@ -73,7 +75,8 @@ PqiEchoProbe& PqiEchoProbe::instance()
 
 PqiEchoProbe::PqiEchoProbe()
     : mMtx("PqiEchoProbe"),mLastFlushMs(0),mSamplesThisLapse(0),
-      mNextWatchId(1),mWatchesThisLapse(0),mMinorWatchesThisLapse(0)
+      mNextWatchId(1),mWatchesThisLapse(0),mMinorWatchesThisLapse(0),
+      mMultiSendThisLapse(0),mMultiSendLinesThisLapse(0)
 {
 	const char *e = getenv("RS_ECHO_PROBE") ;
 	mEnabled = (e != NULL && e[0] != '\0' && e[0] != '0') ;
@@ -283,6 +286,7 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 		ft_inner = uint32_t(d[32]) | (uint32_t(d[33]) << 8) | (uint32_t(d[34]) << 16) | (uint32_t(d[35]) << 24) ;
 
 	std::string to_write ;
+	std::string to_stderr ;
 
 	{
 		RS_STACK_MUTEX(mMtx) ;
@@ -326,10 +330,37 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 					mWatchFp.insert(std::make_pair(fp,std::make_pair(w->first,uint32_t(w->second.items.size()-1)))) ;
 				}
 
+			if(s.sent_ms != 0 && idx != s.sent_to && idx != s.sent_to2)
+			{
+				if(s.sent_to2 == 0)
+					s.sent_to2 = idx ;
+				if(s.n_sent_peers < 255)
+					++s.n_sent_peers ;
+
+				if(isTunnelItem(service,subtype))
+				{
+					++mMultiSendThisLapse ;
+
+					std::ostringstream o ;
+					o << "MULTISEND " << timeStr(now) << " to=" << peer << " " << subtypeName(service,subtype)
+					  << " size=" << size << " tunnel=0x" << std::hex << std::setw(8) << std::setfill('0') << tunnel_id
+					  << " fp=" << std::setw(16) << fp << std::dec
+					  << " : the same item was serialised for " << mPeers[s.sent_to] << " " << (now - s.sent_ms)
+					  << " ms earlier (" << int(s.n_sent_peers) << " friends now)" << std::endl ;
+
+					if(mMultiSendLinesThisLapse < MAX_MULTISEND_LINES)
+						mPending.push_back(o.str()) ;
+					if(mMultiSendLinesThisLapse < MAX_MULTISEND_STDERR)
+						to_stderr += "(WW) PqiEchoProbe: " + o.str() ;
+					++mMultiSendLinesThisLapse ;
+				}
+			}
+
 			if(s.sent_ms == 0)
 			{
 				s.sent_ms = now ;
 				s.sent_to = idx ;
+				s.n_sent_peers = 1 ;
 			}
 		}
 		else
@@ -358,7 +389,14 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 			}
 
 			if(kind == ECHO && isTunnelItem(service,subtype))
+			{
 				openWatch(ref_peer,idx,ref_ms,now,fp,service,subtype) ;
+
+				// remember whether we also serialised the trigger item for another friend (the echoing one?)
+				for(std::map<uint32_t,Watch>::iterator w(mWatches.begin());w!=mWatches.end();++w)
+					if(w->second.trigger_fp == fp && w->second.trigger_also_sent_to == 0)
+						w->second.trigger_also_sent_to = s.sent_to2 ;
+			}
 
 			// is it an item of a burst we are watching?
 
@@ -398,7 +436,10 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 					  << " svc=" << serviceName(service) << "/0x" << std::hex << std::setw(2) << std::setfill('0') << int(subtype) << std::dec
 					  << " size=" << size << " fp=" << std::hex << std::setw(16) << std::setfill('0') << fp << std::dec
 					  << " : we " << ((kind == ECHO)?"SENT it to ":"RECEIVED it from ") << mPeers[ref_peer]
-					  << " " << (now - ref_ms) << " ms earlier" << std::endl ;
+					  << " " << (now - ref_ms) << " ms earlier" ;
+					if(kind == ECHO && s.sent_to2 != 0)
+						o << " (also sent to " << mPeers[s.sent_to2] << ((s.sent_to2 == idx)?", the friend sending it back":"") << ")" ;
+					o << std::endl ;
 					mPending.push_back(o.str()) ;
 				}
 			}
@@ -421,6 +462,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 			mSamplesThisLapse = 0 ;
 			mWatchesThisLapse = 0 ;
 			mMinorWatchesThisLapse = 0 ;
+			mMultiSendThisLapse = 0 ;
+			mMultiSendLinesThisLapse = 0 ;
 			mLastFlushMs = now ;
 		}
 	}
@@ -434,6 +477,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 		if(f)
 			f << to_write ;
 	}
+	if(!to_stderr.empty())
+		std::cerr << to_stderr << std::flush ;
 }
 
 std::string PqiEchoProbe::summary(uint64_t now)
@@ -467,6 +512,8 @@ std::string PqiEchoProbe::summary(uint64_t now)
 
 	if(shown == 0)
 		o << "  no echo, duplicate or repeat from any friend" << std::endl ;
+
+	o << "  turtle tunnel items serialised for more than one friend: " << mMultiSendThisLapse << std::endl ;
 
 	return o.str() ;
 }
@@ -504,6 +551,7 @@ void PqiEchoProbe::openWatch(uint16_t to,uint16_t from,uint64_t t0,uint64_t now,
 
 	w.id = id ; w.to = to ; w.trigger_from = from ; w.t0 = t0 ; w.trigger_ms = now ;
 	w.trigger_fp = fp ; w.trigger_service = service ; w.trigger_subtype = subtype ;
+	w.trigger_also_sent_to = 0 ;
 
 	const std::deque<SentRec>& log(mSentLog[to]) ;
 
@@ -592,6 +640,11 @@ std::string PqiEchoProbe::watchReport(const Watch& w)
 	  << " fp=" << std::hex << std::setw(16) << std::setfill('0') << w.trigger_fp << std::dec
 	  << " sent to it at " << timeStr(w.t0) << ", echoed by " << mPeers[w.trigger_from]
 	  << " " << (w.trigger_ms - w.t0) << " ms later" << std::endl ;
+
+	o << "  did WE also send the trigger item to another friend? "
+	  << ((w.trigger_also_sent_to == 0)?std::string("no"):("YES, to " + mPeers[w.trigger_also_sent_to].toStdString()
+	      + ((w.trigger_also_sent_to == w.trigger_from)?" = the friend that echoed it":"")))
+	  << std::endl ;
 
 	o << "  burst = items sent to " << mPeers[w.to] << " within " << BURST_HALF_WIDTH_MS << " ms of the trigger: " << n
 	  << ", returned within " << WATCH_DURATION_MS/1000 << " s: " << back
