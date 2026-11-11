@@ -91,6 +91,10 @@ class PqiEchoProbe
 		void sent    (const RsPeerId& to,  const void *data,uint32_t size) ;
 		void received(const RsPeerId& from,const void *data,uint32_t size) ;
 
+		/// Called by pqiQoSstreamer when a whole item leaves the output queue to be
+		/// written: measures how long it waited in our own QoS queue.
+		void dequeued(const RsPeerId& to,const void *data) ;
+
 	private:
 		PqiEchoProbe() ;
 
@@ -159,6 +163,28 @@ class PqiEchoProbe
 				std::vector<WatchItem> items ;
 		};
 
+		// Output queue delay: serialised item pointer -> when it was queued.
+		class Queued
+		{
+			public:
+				uint64_t ms ;
+				uint32_t size ;
+				uint16_t peer ;
+				uint16_t service ;
+				uint8_t  subtype ;
+		};
+		class QDelayStat
+		{
+			public:
+				QDelayStat() : n(0),sum_ms(0),max_ms(0),over5(0),over20(0) {}
+				uint32_t n ;
+				uint64_t sum_ms ;
+				uint32_t max_ms ;
+				uint32_t over5,over20 ;
+		};
+		static int delayClass(uint16_t service,uint8_t subtype) ;
+		static const char *delayClassName(int c) ;
+
 		void record(bool outgoing,const RsPeerId& peer,const void *data,uint32_t size) ;
 		uint16_t peerIdx(const RsPeerId& p) ;      // mMtx must be locked
 		void expire(uint64_t now) ;                // mMtx must be locked
@@ -200,4 +226,8 @@ class PqiEchoProbe
 		uint32_t mMinorWatchesThisLapse ;
 		uint32_t mMultiSendThisLapse ;     // turtle tunnel items serialised for two different friends
 		uint32_t mMultiSendLinesThisLapse ;
+
+		std::unordered_map<const void*,Queued>         mQueued ;
+		std::map<std::pair<uint16_t,int>,QDelayStat>  mQDelay ;    // (peer, class), current minute
+		uint32_t mQWaitLinesThisLapse ;
 };

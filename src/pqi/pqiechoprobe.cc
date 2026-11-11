@@ -76,7 +76,7 @@ PqiEchoProbe& PqiEchoProbe::instance()
 PqiEchoProbe::PqiEchoProbe()
     : mMtx("PqiEchoProbe"),mLastFlushMs(0),mSamplesThisLapse(0),
       mNextWatchId(1),mWatchesThisLapse(0),mMinorWatchesThisLapse(0),
-      mMultiSendThisLapse(0),mMultiSendLinesThisLapse(0)
+      mMultiSendThisLapse(0),mMultiSendLinesThisLapse(0),mQWaitLinesThisLapse(0)
 {
 	const char *e = getenv("RS_ECHO_PROBE") ;
 	mEnabled = (e != NULL && e[0] != '\0' && e[0] != '0') ;
@@ -310,6 +310,12 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 		{
 			++st.out ;
 
+			{
+				Queued q ;
+				q.ms = now ; q.size = size ; q.peer = idx ; q.service = service ; q.subtype = subtype ;
+				mQueued[data] = q ;
+			}
+
 			SentRec r ;
 			r.ms = now ; r.fp = fp ; r.seq = ++mSendSeq[idx] ; r.size = size ;
 			r.tunnel_id = tunnel_id ; r.ft_inner = ft_inner ; r.service = service ; r.subtype = subtype ;
@@ -464,6 +470,12 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 			mMinorWatchesThisLapse = 0 ;
 			mMultiSendThisLapse = 0 ;
 			mMultiSendLinesThisLapse = 0 ;
+			mQWaitLinesThisLapse = 0 ;
+			mQDelay.clear() ;
+
+			// items dropped from a queue (connection reset) never leave it: forget them after 15 min
+			for(std::unordered_map<const void*,Queued>::iterator q(mQueued.begin());q!=mQueued.end();)
+				if(q->second.ms + 900000 < now) q = mQueued.erase(q) ; else ++q ;
 			mLastFlushMs = now ;
 		}
 	}
@@ -514,6 +526,20 @@ std::string PqiEchoProbe::summary(uint64_t now)
 		o << "  no echo, duplicate or repeat from any friend" << std::endl ;
 
 	o << "  turtle tunnel items serialised for more than one friend: " << mMultiSendThisLapse << std::endl ;
+
+	// Output queue delays (serialisation -> written), friends/classes with a wait above 5 s.
+	{
+		uint32_t shown_q = 0 ;
+		for(std::map<std::pair<uint16_t,int>,QDelayStat>::const_iterator q(mQDelay.begin());q!=mQDelay.end();++q)
+			if(q->second.max_ms > 5000)
+			{
+				++shown_q ;
+				o << "  QDELAY " << mPeers[q->first.first] << " " << delayClassName(q->first.second)
+				  << ": n=" << q->second.n << " avg=" << (q->second.n?q->second.sum_ms/q->second.n:0) << "ms max=" << q->second.max_ms
+				  << "ms >5s=" << q->second.over5 << " >20s=" << q->second.over20 << std::endl ;
+			}
+		o << "  output queue: " << mQueued.size() << " items waiting or untracked, " << shown_q << " friend/class pairs with a wait above 5 s" << std::endl ;
+	}
 
 	return o.str() ;
 }
@@ -725,4 +751,68 @@ std::string PqiEchoProbe::watchReport(const Watch& w)
 		o << "    ... " << unreturned_hidden << " more non tunnel items, not back" << std::endl ;
 
 	return o.str() ;
+}
+
+//=============================================================================//
+//                            Output queue delay                               //
+//=============================================================================//
+
+int PqiEchoProbe::delayClass(uint16_t service,uint8_t subtype)
+{
+	if(service != 0x0014)
+		return 6 ;
+	switch(subtype)
+	{
+		case 0x03: return 0 ;                         // tunnel request
+		case 0x04: return 1 ;                         // tunnel result
+		case 0x0a: case 0x16: return 2 ;              // generic (fast) data
+		case 0x07: case 0x08: case 0x10: case 0x11: case 0x14: case 0x15: return 3 ;	// clear file transfer
+		case 0x01: case 0x09: case 0x0b: return 4 ;   // searches
+		default: return 5 ;
+	}
+}
+
+const char *PqiEchoProbe::delayClassName(int c)
+{
+	static const char *n[] = { "turtle_tunnel_request","turtle_tunnel_ok","turtle_generic_data","turtle_file_transfer","turtle_search","turtle_other","other_services" } ;
+	return (c >= 0 && c <= 6)?n[c]:"?" ;
+}
+
+void PqiEchoProbe::dequeued(const RsPeerId& /*to*/,const void *data)
+{
+	if(!mEnabled || data == NULL)
+		return ;
+
+	uint64_t now = nowMs() ;
+	std::string line ;
+
+	{
+		RS_STACK_MUTEX(mMtx) ;
+
+		std::unordered_map<const void*,Queued>::iterator q(mQueued.find(data)) ;
+		if(q == mQueued.end())
+			return ;
+
+		uint32_t wait = uint32_t((now > q->second.ms)?(now - q->second.ms):0) ;
+		int c = delayClass(q->second.service,q->second.subtype) ;
+
+		QDelayStat& st(mQDelay[std::make_pair(q->second.peer,c)]) ;
+		++st.n ;
+		st.sum_ms += wait ;
+		if(wait > st.max_ms) st.max_ms = wait ;
+		if(wait > 5000)  ++st.over5 ;
+		if(wait > 20000) ++st.over20 ;
+
+		// Tunnel requests and results that wait more than 20 s reach the friend after
+		// its own 20 s result window: worth a line each.
+		if(c <= 2 && wait > 20000 && mQWaitLinesThisLapse < 100)
+		{
+			++mQWaitLinesThisLapse ;
+			std::ostringstream o ;
+			o << "QWAIT " << timeStr(now) << " to=" << mPeers[q->second.peer] << " " << delayClassName(c)
+			  << " size=" << q->second.size << " waited " << wait << " ms in our output queue" << std::endl ;
+			mPending.push_back(o.str()) ;
+		}
+		mQueued.erase(q) ;
+	}
 }

@@ -20,6 +20,7 @@
  *                                                                             *
  *******************************************************************************/
 #include "pqiqosstreamer.h"
+#include "pqiechoprobe.h"
 
 //#define DEBUG_PQIQOSSTREAMER 1
 
@@ -71,6 +72,9 @@ void pqiQoSstreamer::locked_clear_out_queue()
 void *pqiQoSstreamer::locked_pop_out_data(uint32_t max_slice_size, uint32_t& size, bool& starts, bool& ends, uint32_t& packet_id)
 {
 	void *out = pqiQoS::out_rsItem(max_slice_size,size,starts,ends,packet_id) ;
+
+	if(out != NULL && starts && ends)
+		PqiEchoProbe::instance().dequeued(PeerId(),out) ;	// debugging probe, off by default: output queue delay
 
 	if(out != NULL) 
 	{
