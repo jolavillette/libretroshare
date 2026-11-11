@@ -39,6 +39,7 @@
 #include "retroshare/rsiface.h"
 #include "retroshare/rsinit.h"
 #include "util/rsurl.h"
+#include "util/rsstring.h"
 #include "util/rstime.h"
 #include "retroshare/rsevents.h"
 #include "retroshare/rsversion.h"
@@ -588,11 +589,15 @@ void JsonApiServer::registerHandler(
 			std::string authToken;
 			std::getline(authHeader, authToken, ' ');
 
-			if(authToken != "Basic")
+			/* The scheme is case-insensitive (RFC 7235). Log nothing of the
+			 * header: it may carry the credentials, even in place of the
+			 * scheme when a client sends a bare token. */
+			std::string authScheme;
+			stringToLowerCase(authToken, authScheme);
+			if(authScheme != "basic")
 			{
 				authFail( rb::UNAUTHORIZED,
-				          "with wrong Authorization header: ",
-				          authHeader.str() );
+				          "with a missing or non Basic Authorization header" );
 				return;
 			}
 
@@ -603,8 +608,11 @@ void JsonApiServer::registerHandler(
 			if(isAuthTokenValid(authToken, ec)) callback(session);
 			else
 			{
-				std::string tUser;
-				parseToken(authToken, tUser, RS_DEFAULT_STORAGE_PARAM(std::string));
+				/* Without a colon parseToken() puts the whole token, secret
+				 * included, into the user name: do not log it then. */
+				std::string tUser("(token without ':')");
+				if(authToken.find(':') != std::string::npos)
+					parseToken(authToken, tUser, RS_DEFAULT_STORAGE_PARAM(std::string));
 				authFail(rb::UNAUTHORIZED, "user: ", tUser, " ", ec);
 			}
 		} );
