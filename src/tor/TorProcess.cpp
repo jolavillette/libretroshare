@@ -416,6 +416,14 @@ void TorProcess::tick()
         }
         else if(mControlPortReadNbTries > 10)
         {
+            /* Tor is still running: stop it here, stop() does nothing once
+             * the state is Failed. Left running, it keeps its data directory
+             * locked and the next start (maybe with another tor) fails. */
+#ifdef WINDOWS_SYS
+            TerminateProcess(mTorProcessId, 0);
+#else
+            kill(mTorProcessId, SIGTERM);
+#endif
             mErrorMessage = "Tor did not open its control port.";
             mState = Failed;
             m_client->processErrorChanged(mErrorMessage);
