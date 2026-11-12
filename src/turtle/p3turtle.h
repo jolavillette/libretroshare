@@ -444,6 +444,7 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		uint32_t _nb_mismatching_items_dropped ;  // generic items from a peer that is neither end of the tunnel
 		uint32_t _nb_duplicate_tunnel_results ;   // tunnel ok received twice for the same request and tunnel id
 		uint32_t _nb_colliding_tunnel_results ;   // tunnel ok whose id is already used with other endpoints
+		uint32_t _nb_results_from_origin ;        // tunnel ok sent by the friend the request came from
 		rstime_t _last_routing_anomaly_report_time ;
 
 		std::list<pqipeer> _online_peers;

@@ -76,7 +76,11 @@ void TS_dumpState() ;
 //    - The total number of TR per second emmited from self will be MAX_TUNNEL_REQS_PER_SECOND / TIME_BETWEEN_TUNNEL_MANAGEMENT_CALLS = 0.5
 //    - I updated forward probabilities to higher values, and min them to 1/nb_connected_friends to prevent blocking tunnels.
 //
-static const rstime_t TUNNEL_REQUESTS_LIFE_TIME                = 600 ; /// life time for tunnel requests in the cache.
+// Requests are kept much longer than the time they need to travel: over slow links
+// (i2p, Tor, a node with a stalled turtle queue) a copy can arrive more than 10 min
+// later. A request we already forgot would be taken for a new one, with whoever
+// brought it back as origin, and later results for it would leave their route.
+static const rstime_t TUNNEL_REQUESTS_LIFE_TIME                = 1800 ; /// life time for tunnel requests in the cache.
 static const rstime_t TUNNEL_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known tunnel requests
 static const rstime_t SEARCH_REQUESTS_LIFE_TIME                = 600 ; /// life time for search requests in the cache
 static const rstime_t SEARCH_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known search requests
@@ -130,6 +134,7 @@ p3turtle::p3turtle(p3ServiceControl *sc,p3LinkMgr *lm)
 	_nb_mismatching_items_dropped = 0 ;
 	_nb_duplicate_tunnel_results = 0 ;
 	_nb_colliding_tunnel_results = 0 ;
+	_nb_results_from_origin = 0 ;
 	_last_routing_anomaly_report_time = time(NULL) ;
 
 	_traffic_info.reset() ;
@@ -263,15 +268,17 @@ int p3turtle::tick()
 
 		if(now >= _last_routing_anomaly_report_time + TURTLE_ROUTING_ANOMALY_REPORT_PERIOD)
 		{
-			if(_nb_mismatching_items_dropped + _nb_duplicate_tunnel_results + _nb_colliding_tunnel_results > 0)
+			if(_nb_mismatching_items_dropped + _nb_duplicate_tunnel_results + _nb_colliding_tunnel_results + _nb_results_from_origin > 0)
 				RsWarn() << "p3turtle: over the last " << now - _last_routing_anomaly_report_time << " s: "
 				         << _nb_mismatching_items_dropped << " tunnel items dropped (sender is neither end of the tunnel), "
 				         << _nb_duplicate_tunnel_results << " tunnel results received twice, "
-				         << _nb_colliding_tunnel_results << " tunnel results colliding with an existing tunnel id (not forwarded)." ;
+				         << _nb_colliding_tunnel_results << " tunnel results colliding with an existing tunnel id (not forwarded), "
+				         << _nb_results_from_origin << " tunnel results from the friend the request came from (dropped)." ;
 
 			_nb_mismatching_items_dropped = 0 ;
 			_nb_duplicate_tunnel_results = 0 ;
 			_nb_colliding_tunnel_results = 0 ;
+			_nb_results_from_origin = 0 ;
 			_last_routing_anomaly_report_time = now ;
 		}
 	}
@@ -1907,6 +1914,16 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 			RsDbg() << "TURTLE p3turtle::handleTunnelResult Tunnel Request is known, but result arrives too late, dropping";
 #endif
 			return;
+		}
+
+		// A result from the friend the request came from would store a tunnel with that
+		// friend at both ends, which sends every item of the tunnel back to it (a mirror).
+		// A standard friend never answers its own request back to us: such a result can
+		// only come from crossed request generations over slow links. Drop it.
+		if(item->PeerId() == it->second.origin)
+		{
+			++_nb_results_from_origin ;
+			return ;
 		}
 
 		if(it->second.responses.find(item->tunnel_id) != it->second.responses.end())
