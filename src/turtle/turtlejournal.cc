@@ -917,7 +917,34 @@ void TurtleJournal::itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& fro
 	++mCounters.item_unknown_tid ;
 
 	if(mEnabled)
+	{
+		// What did we know of this id? Closed by us (turtle has no close message, so
+		// the other end keeps sending for a while: normal), or never seen in the last
+		// 15 min (the sender relays a tunnel we were never told about, e.g. one it
+		// stored from a late result without forwarding the result).
+		std::map<TurtleTunnelId,TunnelRecord>::const_iterator t(mTunnels.find(tid)) ;
+		bool ever_created = false ;
+		if(t != mTunnels.end())
+			for(uint32_t i=0;i<t->second.events.size() && !ever_created;++i)
+				ever_created = (t->second.events[i].kind == T_CREATE || t->second.events[i].kind == T_OVERWRITE
+				                || t->second.events[i].kind == T_FOUND_MATCH || t->second.events[i].kind == T_FOUND_MISMATCH) ;
+
+		if(t == mTunnels.end() || (!ever_created && t->second.closed_ms == 0))
+		{
+			++mCounters.unk_never ;
+			++mCounters.unk_never_peers[from] ;
+			if(mCounters.unk_never_tids.size() < 100000) mCounters.unk_never_tids.insert(tid) ;
+		}
+		else if(t->second.closed_ms != 0)
+		{
+			++mCounters.unk_closed ;
+			++mCounters.unk_closed_peers[from] ;
+		}
+		else
+			++mCounters.unk_known ;
+
 		push(tid,ITEM_UNKNOWN_TID,0,uint32_t(item_subtype)<<16,from,TurtlePeerId()) ;
+	}
 }
 
 void TurtleJournal::tunnelClosed(TurtleTunnelId tid,const TurtlePeerId& src,const TurtlePeerId& dst,uint32_t age)
@@ -1297,6 +1324,21 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				  << ", request copies with an unperturbed partial id: " << c.partial_echo << " echoing ours, " << c.partial_same << " same as another friend's. "
 				  << "Tables: " << live_tunnels << " tunnels, " << live_requests << " requests, "
 				  << c.t_close << " tunnels closed." ;
+
+				if(c.item_unknown_tid > 0 && mEnabled)
+				{
+					std::vector<std::pair<uint64_t,TurtlePeerId> > tn,tc ;
+					for(std::map<TurtlePeerId,uint64_t>::const_iterator it(c.unk_never_peers.begin());it!=c.unk_never_peers.end();++it) tn.push_back(std::make_pair(it->second,it->first)) ;
+					for(std::map<TurtlePeerId,uint64_t>::const_iterator it(c.unk_closed_peers.begin());it!=c.unk_closed_peers.end();++it) tc.push_back(std::make_pair(it->second,it->first)) ;
+					std::sort(tn.rbegin(),tn.rend()) ;
+					std::sort(tc.rbegin(),tc.rend()) ;
+
+					o << " Unknown ids: " << c.unk_never << " items on " << c.unk_never_tids.size() << " ids never seen (top senders:" ;
+					for(uint32_t i=0;i<tn.size() && i<3;++i) o << " " << tn[i].second << "=" << tn[i].first ;
+					o << "), " << c.unk_closed << " after we closed the tunnel (top:" ;
+					for(uint32_t i=0;i<tc.size() && i<3;++i) o << " " << tc[i].second << "=" << tc[i].first ;
+					o << "), " << c.unk_known << " other." ;
+				}
 
 				if(!c.mismatch_peers.empty())
 				{

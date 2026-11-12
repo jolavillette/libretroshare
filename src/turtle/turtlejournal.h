@@ -347,6 +347,8 @@ class TurtleJournal
 					mirror_here = self_tunnel = 0 ;
 					late_tunnel_items = late_tunnels_used = 0 ;
 					partial_echo = partial_same = 0 ;
+					unk_never = unk_closed = unk_known = 0 ;
+					unk_never_peers.clear() ; unk_closed_peers.clear() ; unk_never_tids.clear() ;
 					ok_in = ok_no_request = ok_twice = ok_late = 0 ;
 					t_create = t_overwrite = t_found_match = t_found_mismatch = t_close = 0 ;
 					ok_fwd_after_mismatch = ok_held = 0 ;
@@ -361,7 +363,10 @@ class TurtleJournal
 				uint64_t tr_reborn,tr_rid_collision,ok_from_origin ;
 				uint64_t mirror_here,self_tunnel ;
 				uint64_t late_tunnel_items,late_tunnels_used ;
-				uint64_t partial_echo,partial_same ;   // copies whose partial tunnel id was NOT perturbed on the way   // items routed on tunnels stored from a late result   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
+				uint64_t partial_echo,partial_same ;
+				uint64_t unk_never,unk_closed,unk_known ;             // items on unknown tunnel ids, by what we knew of the id
+				std::map<TurtlePeerId,uint64_t> unk_never_peers,unk_closed_peers ;
+				std::set<TurtleTunnelId> unk_never_tids ;   // copies whose partial tunnel id was NOT perturbed on the way   // items routed on tunnels stored from a late result   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
 				uint64_t ok_in,ok_no_request,ok_twice,ok_late ;
 				uint64_t t_create,t_overwrite,t_found_match,t_found_mismatch,t_close ;
 				uint64_t ok_fwd_after_mismatch,ok_held ;
