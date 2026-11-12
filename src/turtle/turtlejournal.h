@@ -347,6 +347,7 @@ class TurtleJournal
 					mirror_here = self_tunnel = 0 ;
 					late_tunnel_items = late_tunnels_used = 0 ;
 					partial_echo = partial_same = 0 ;
+					reborn_results = reborn_results_rerouted = 0 ;
 					unk_never = unk_closed = unk_known = 0 ;
 					unk_never_peers.clear() ; unk_closed_peers.clear() ; unk_never_tids.clear() ; unk_never_kinds.clear() ;
 					ok_in = ok_no_request = ok_twice = ok_late = 0 ;
@@ -364,6 +365,7 @@ class TurtleJournal
 				uint64_t mirror_here,self_tunnel ;
 				uint64_t late_tunnel_items,late_tunnels_used ;
 				uint64_t partial_echo,partial_same ;
+				uint64_t reborn_results,reborn_results_rerouted ;   // results for reborn requests / sent to another friend than the first origin
 				uint64_t unk_never,unk_closed,unk_known ;             // items on unknown tunnel ids, by what we knew of the id
 				std::map<TurtlePeerId,uint64_t> unk_never_peers,unk_closed_peers ;
 				std::set<TurtleTunnelId> unk_never_tids ;

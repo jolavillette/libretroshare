@@ -702,6 +702,34 @@ void TurtleJournal::okForwarded(TurtleTunnelId tid,TurtleTunnelRequestId rid,con
 
 	push(tid,OK_FWD,rid,after_mismatch?1:0,to,TurtlePeerId()) ;
 
+	// A result for a request we accepted more than once: it goes to the origin of the
+	// LATEST generation, possibly not the friend the request first came from.
+	{
+		std::unordered_map<uint32_t,RidSeen>::const_iterator h(mRidHistory.find(rid)) ;
+		if(h != mRidHistory.end() && h->second.times > 1)
+		{
+			bool rerouted = (peerIdx(to) != h->second.first_from) ;
+			++mCounters.reborn_results ;
+			if(rerouted) ++mCounters.reborn_results_rerouted ;
+
+			if(mRebornLinesThisLapse < MAX_REBORN_LINES)
+			{
+				++mRebornLinesThisLapse ;
+				std::ostringstream o ;
+				o << "REBORN_RESULT " << timeStr(nowMs()) << " tunnel=" << hex32(tid) << " req=" << hex32(rid)
+				  << " forwarded to " << to << (rerouted?" — NOT the friend the request first came from (":" — the first origin too (")
+				  << peerStr(h->second.first_from) << ", " << (nowMs() - h->second.first_ms)/1000 << " s ago)" << std::endl ;
+				mPendingDumps.push_back(o.str()) ;
+			}
+			TunnelRecord& rec(mTunnels[tid]) ;
+			if(!rec.dumped)
+			{
+				rec.dumped = true ;
+				dumpTunnel(tid) ;
+			}
+		}
+	}
+
 	if(after_mismatch)
 		mTunnels[tid].announced_after_mismatch = true ;
 }
@@ -1306,7 +1334,7 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 			const Counters& c(mCounters) ;
 
-			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin || c.mirror_here || c.self_tunnel || c.late_tunnel_items || c.partial_echo || c.partial_same)
+			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin || c.mirror_here || c.self_tunnel || c.late_tunnel_items || c.partial_echo || c.partial_same || c.reborn_results)
 			{
 				std::ostringstream o ;
 
@@ -1329,7 +1357,8 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				  << "Results from the request's own origin: " << c.ok_from_origin << ", tunnels stored with one friend at both ends: "
 				  << c.self_tunnel << ", items bounced back to their sender: " << c.mirror_here
 				  << ", items routed on tunnels stored from a late result: " << c.late_tunnel_items << " (" << c.late_tunnels_used << " tunnels)"
-				  << ", request copies with an unperturbed partial id: " << c.partial_echo << " echoing ours, " << c.partial_same << " same as another friend's. "
+				  << ", request copies with an unperturbed partial id: " << c.partial_echo << " echoing ours, " << c.partial_same << " same as another friend's"
+				  << ", results for reborn requests: " << c.reborn_results << " (" << c.reborn_results_rerouted << " sent to another friend than the first origin). "
 				  << "Tables: " << live_tunnels << " tunnels, " << live_requests << " requests, "
 				  << c.t_close << " tunnels closed." ;
 
