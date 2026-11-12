@@ -311,6 +311,14 @@ class TurtleJournal
 		uint32_t mRebornLinesThisLapse ;
 		uint32_t mSelfLoopLinesThisLapse ;
 		uint64_t mTrLagN,mTrLagMax,mTrLagOver5 ;   // pqi arrival -> router processing of tunnel requests, current minute
+
+		// Received tunnel requests: new ones, and copies of known ones by the age of
+		// their entry in the router's request table (time since first accepted).
+		static const uint32_t TR_AGE_BUCKETS = 10 ;
+		uint64_t mTrNewMin,mTrNewTotal ;
+		uint64_t mTrAgeMin[TR_AGE_BUCKETS],mTrAgeTotal[TR_AGE_BUCKETS] ;
+		static uint32_t trAgeBucket(uint32_t age_s) ;
+		static std::string trAgeLine(uint64_t n_new,const uint64_t *ages) ;
 		uint64_t                 mLastSummaryMs ;
 
 		class PeerTurtleStat

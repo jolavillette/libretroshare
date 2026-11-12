@@ -233,6 +233,9 @@ TurtleJournal::TurtleJournal()
 	mRebornLinesThisLapse   = 0 ;
 	mSelfLoopLinesThisLapse = 0 ;
 	mTrLagN = mTrLagMax = mTrLagOver5 = 0 ;
+	mTrNewMin = mTrNewTotal = 0 ;
+	for(uint32_t i=0;i<TR_AGE_BUCKETS;++i)
+		mTrAgeMin[i] = mTrAgeTotal[i] = 0 ;
 
 	mPeers.push_back(TurtlePeerId()) ;	// index 0: null id, i.e. us
 
@@ -319,6 +322,8 @@ void TurtleJournal::trIn(TurtleTunnelRequestId rid,const TurtlePeerId& from,uint
 	RS_STACK_MUTEX(mJournalMtx) ;
 
 	++mCounters.tr_in ;
+	++mTrNewMin ;
+	++mTrNewTotal ;
 
 	if(!mEnabled)
 		return ;
@@ -397,12 +402,42 @@ void TurtleJournal::trIn(TurtleTunnelRequestId rid,const TurtlePeerId& from,uint
 	r.partial_in = partial_in ;
 }
 
+uint32_t TurtleJournal::trAgeBucket(uint32_t age_s)
+{
+	static const uint32_t limits[TR_AGE_BUCKETS-1] = { 1, 5, 20, 60, 300, 600, 1200, 1800, 3600 } ;
+	uint32_t i = 0 ;
+	while(i < TR_AGE_BUCKETS-1 && age_s >= limits[i])
+		++i ;
+	return i ;
+}
+
+std::string TurtleJournal::trAgeLine(uint64_t n_new,const uint64_t *ages)
+{
+	static const char *names[TR_AGE_BUCKETS] = { "<1s","1-5s","5-20s","20-60s","1-5min","5-10min","10-20min","20-30min","30-60min",">60min" } ;
+	uint64_t known = 0 ;
+	for(uint32_t i=0;i<TR_AGE_BUCKETS;++i)
+		known += ages[i] ;
+	uint64_t total = known + n_new ;
+
+	std::ostringstream o ;
+	o << total << " received, new " << n_new << " (" << std::fixed << std::setprecision(1)
+	  << (total ? 100.0*n_new/total : 0.0) << "%), copies of known requests by age of the table entry:" ;
+	for(uint32_t i=0;i<TR_AGE_BUCKETS;++i)
+		o << " " << names[i] << "=" << ages[i] << " (" << (total ? 100.0*ages[i]/total : 0.0) << "%)" ;
+	return o.str() ;
+}
+
 void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& /*known_origin*/,
-                             uint32_t /*age*/,uint16_t depth,uint32_t partial_in)
+                             uint32_t age,uint16_t depth,uint32_t partial_in)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
 	++mCounters.tr_bounce ;
+	{
+		uint32_t b = trAgeBucket(age) ;
+		++mTrAgeMin[b] ;
+		++mTrAgeTotal[b] ;
+	}
 
 	if(!mEnabled)
 		return ;
@@ -1304,6 +1339,17 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 					   << mTrLagMax << " ms between pqi arrival and router processing, " << mTrLagOver5 << " over 5 s" << std::endl ;
 					mPendingDumps.push_back(lo.str()) ;
 					mTrLagN = mTrLagMax = mTrLagOver5 = 0 ;
+				}
+
+				// Received tunnel requests: share of new ones, and age of the known ones.
+				{
+					std::ostringstream ao ;
+					ao << "TRAGE " << timeStr(now) << " last minute: " << trAgeLine(mTrNewMin,mTrAgeMin) << std::endl ;
+					ao << "TRAGE " << timeStr(now) << " since start: " << trAgeLine(mTrNewTotal,mTrAgeTotal) << std::endl ;
+					mPendingDumps.push_back(ao.str()) ;
+					mTrNewMin = 0 ;
+					for(uint32_t i=0;i<TR_AGE_BUCKETS;++i)
+						mTrAgeMin[i] = 0 ;
 				}
 
 				// Friends delivering requests or results late (slow or Tor links).
