@@ -1160,6 +1160,11 @@ bool p3PeerMgrIMPL::addSslOnlyFriend( const RsPeerId& sslId, const RsPgpId& pgp_
 	pstate.gpg_id = pgp_id;
 	pstate.id = sslId;
 
+	/* Like addFriend() (p3Peers passes "now"), stamp a new friend with the time
+	 * it was added. Otherwise lastcontact stays 0 until the first successful
+	 * connection and the GUI shows 1970-01-01 as "last contact". */
+	if(!alreadySslFriend) pstate.lastcontact = time(nullptr);
+
 	/* At this point if we got info about the peer just update with the new
 	 * values. */
 	if(!dt.name.empty())     pstate.name = dt.name;
