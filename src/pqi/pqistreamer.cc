@@ -62,14 +62,14 @@ static const int   PQISTREAM_PACKET_SLICING_PROBE_DELAY	= 60;  		// send every 6
 // divided by the measured out rate: this is the time the friend needs to drain
 // what we queued (the "Drain" column of the bandwidth statistics). Above
 // ENTER_DRAIN the friend is congested and only items of MIN_PRIORITY and above
-// (chat, tunnel requests/results, GxsTunnel data, heartbeats, bandwidth control)
-// are queued; others are dropped instead of waiting there for minutes. The state
-// ends below LEAVE_DRAIN.
+// (chat, heartbeats, service info, bandwidth control, RTT) are queued; others,
+// turtle tunnel requests/results included, are dropped instead of waiting there
+// for minutes. The state ends below LEAVE_DRAIN.
 static const float PQISTREAM_CONGESTION_SMOOTHING      = 0.9;   // per second, ~10 s time constant
 static const float PQISTREAM_CONGESTION_ENTER_DRAIN    = 20.0;  // seconds
 static const float PQISTREAM_CONGESTION_LEAVE_DRAIN    = 8.0;   // seconds
 static const float PQISTREAM_CONGESTION_MIN_RATE       = 1.0;   // kB/s, floor of the measured out rate
-static const int   PQISTREAM_CONGESTION_MIN_PRIORITY   = 7;
+static const int   PQISTREAM_CONGESTION_MIN_PRIORITY   = 8;
 static const int   PQISTREAM_CONGESTION_REPORT_PERIOD  = 60;    // seconds
 
 // This is a probe packet, that won't deserialise (it's empty) but will not cause problems to old peers either, since they will ignore
