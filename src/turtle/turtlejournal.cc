@@ -398,7 +398,7 @@ void TurtleJournal::trIn(TurtleTunnelRequestId rid,const TurtlePeerId& from,uint
 }
 
 void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& /*known_origin*/,
-                             uint32_t /*age*/,uint16_t depth)
+                             uint32_t /*age*/,uint16_t depth,uint32_t partial_in)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
@@ -433,7 +433,34 @@ void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,
 		if(b.dms > ps.max_bounce_ms) ps.max_bounce_ms = b.dms ;
 	}
 	b.depth = depth ;
+	b.partial = partial_in ;
 	it->second.bounces.push_back(b) ;
+
+	// Every relay perturbs the partial tunnel id with its own secret bias, so a copy
+	// coming back with the very value we sent out (or with the value another friend
+	// gave us) went through relays that did NOT perturb it. Such relays make tunnel
+	// ids independent of the route, i.e. two routes can share a tunnel id.
+	if(partial_in != 0)
+	{
+		const RequestRecord& rr(it->second) ;
+		bool echo = (rr.partial_out != 0 && partial_in == rr.partial_out) ;
+		bool same = (partial_in == rr.partial_in && from != rr.origin) ;
+
+		if(echo) ++mCounters.partial_echo ;
+		if(same) ++mCounters.partial_same ;
+
+		if((echo || same) && mSelfLoopLinesThisLapse < MAX_SELFLOOP_LINES)
+		{
+			++mSelfLoopLinesThisLapse ;
+			std::ostringstream o ;
+			o << (echo?"NOPERTURB_ECHO ":"NOPERTURB_SAME ") << timeStr(now) << " req=" << hex32(rid) << " from=" << from
+			  << " depth=" << depth << " partial=" << hex32(partial_in) << (echo?" = the value WE sent out":" = the value we got first from ")
+			  << (echo?std::string():rr.origin.toStdString()) << " (we received " << hex32(rr.partial_in) << " at depth " << rr.depth
+			  << ", sent " << hex32(rr.partial_out) << ")" << std::endl ;
+			mPendingDumps.push_back(o.str()) ;
+			mPendingPeerInfo.insert(from) ;
+		}
+	}
 
 	uint64_t arr = probeTrArrival(rid,from) ;
 	uint64_t lag = (arr != 0 && now > arr)?(now - arr):0 ;
@@ -1244,7 +1271,7 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 			const Counters& c(mCounters) ;
 
-			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin || c.mirror_here || c.self_tunnel || c.late_tunnel_items)
+			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin || c.mirror_here || c.self_tunnel || c.late_tunnel_items || c.partial_echo || c.partial_same)
 			{
 				std::ostringstream o ;
 
@@ -1266,7 +1293,8 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				  << c.tr_reborn << " reborn (accepted again after the router forgot them), " << c.tr_rid_collision << " id collisions. "
 				  << "Results from the request's own origin: " << c.ok_from_origin << ", tunnels stored with one friend at both ends: "
 				  << c.self_tunnel << ", items bounced back to their sender: " << c.mirror_here
-				  << ", items routed on tunnels stored from a late result: " << c.late_tunnel_items << " (" << c.late_tunnels_used << " tunnels). "
+				  << ", items routed on tunnels stored from a late result: " << c.late_tunnel_items << " (" << c.late_tunnels_used << " tunnels)"
+				  << ", request copies with an unperturbed partial id: " << c.partial_echo << " echoing ours, " << c.partial_same << " same as another friend's. "
 				  << "Tables: " << live_tunnels << " tunnels, " << live_requests << " requests, "
 				  << c.t_close << " tunnels closed." ;
 

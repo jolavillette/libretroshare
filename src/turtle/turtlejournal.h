@@ -124,7 +124,7 @@ class TurtleJournal
 		//--------------------------- Tunnel requests ---------------------------//
 
 		void trIn      (TurtleTunnelRequestId rid,const TurtlePeerId& from,uint16_t depth,const TurtleFileHash& hash,uint32_t partial_in);
-		void trBounce  (TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& known_origin,uint32_t age,uint16_t depth);
+		void trBounce  (TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& known_origin,uint32_t age,uint16_t depth,uint32_t partial_in = 0);
 		void trFwdTo   (TurtleTunnelRequestId rid,const TurtlePeerId& to);
 		void trFwd     (TurtleTunnelRequestId rid,uint32_t partial_out,uint16_t n_peers);
 		void trAnswered(TurtleTunnelRequestId rid,TurtleTunnelId tid,const TurtlePeerId& to,const TurtleFileHash& hash,
@@ -246,6 +246,7 @@ class TurtleJournal
 				uint32_t dms ;      // ms after the request was first received
 				uint16_t peer ;
 				uint16_t depth ;
+				uint32_t partial ;  // partial tunnel id of this copy, as received
 		};
 
 		// Every request id accepted as new in the last hour, to see a request come
@@ -345,6 +346,7 @@ class TurtleJournal
 					tr_reborn = tr_rid_collision = ok_from_origin = 0 ;
 					mirror_here = self_tunnel = 0 ;
 					late_tunnel_items = late_tunnels_used = 0 ;
+					partial_echo = partial_same = 0 ;
 					ok_in = ok_no_request = ok_twice = ok_late = 0 ;
 					t_create = t_overwrite = t_found_match = t_found_mismatch = t_close = 0 ;
 					ok_fwd_after_mismatch = ok_held = 0 ;
@@ -358,7 +360,8 @@ class TurtleJournal
 				uint64_t tr_in,tr_bounce,tr_fwd,tr_answered ;
 				uint64_t tr_reborn,tr_rid_collision,ok_from_origin ;
 				uint64_t mirror_here,self_tunnel ;
-				uint64_t late_tunnel_items,late_tunnels_used ;   // items routed on tunnels stored from a late result   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
+				uint64_t late_tunnel_items,late_tunnels_used ;
+				uint64_t partial_echo,partial_same ;   // copies whose partial tunnel id was NOT perturbed on the way   // items routed on tunnels stored from a late result   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
 				uint64_t ok_in,ok_no_request,ok_twice,ok_late ;
 				uint64_t t_create,t_overwrite,t_found_match,t_found_mismatch,t_close ;
 				uint64_t ok_fwd_after_mismatch,ok_held ;

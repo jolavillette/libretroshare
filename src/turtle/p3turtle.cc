@@ -1677,7 +1677,8 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 			std::cerr << "  This is a bouncing request. Ignoring and deleting item." << std::endl ;
 #endif
 			TurtleJournal::instance().trBounce(item->request_id,item->PeerId(),it->second.origin,
-			                                   uint32_t(time(NULL) - (rstime_t)it->second.time_stamp),uint16_t(item->depth)) ;
+			                                   uint32_t(time(NULL) - (rstime_t)it->second.time_stamp),uint16_t(item->depth),
+			                                   item->partial_tunnel_id) ;
 			return ;
 		}
 		// This is a new request. Let's add it to the request map, and forward
