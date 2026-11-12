@@ -610,6 +610,7 @@ void TurtleJournal::okLate(TurtleTunnelRequestId rid,TurtleTunnelId tid,const Tu
 	{
 		push(tid,OK_LATE,rid,age,from,TurtlePeerId()) ;
 		++mPeerStats[peerIdx(from)].ok_late ;
+		mTunnels[tid].late_ms = nowMs() ;
 	}
 }
 
@@ -764,6 +765,26 @@ void TurtleJournal::itemRouted(TurtleTunnelId tid,const TurtlePeerId& from,const
 	if(rec.first_ms == 0)
 		rec.first_ms = now ;
 	rec.last_ms = now ;
+
+	// A tunnel stored from a result that came too late was not announced upstream:
+	// the friend we route its items to does not expect them.
+	if(rec.late_ms != 0 && now < rec.late_ms + 600000)
+	{
+		++mCounters.late_tunnel_items ;
+		if(rec.late_items++ == 0)
+		{
+			++mCounters.late_tunnels_used ;
+			if(mSelfLoopLinesThisLapse < MAX_SELFLOOP_LINES)
+			{
+				++mSelfLoopLinesThisLapse ;
+				std::ostringstream o ;
+				o << "LATE_TUNNEL_USED " << timeStr(now) << " tunnel=" << hex32(tid) << " stored from a late result "
+				  << (now - rec.late_ms)/1000 << " s ago; first item " << itemName(item_subtype) << " size=" << d.size
+				  << " from " << peerStr(peerIdx(from)) << " routed to " << peerStr(peerIdx(to)) << std::endl ;
+				mPendingDumps.push_back(o.str()) ;
+			}
+		}
+	}
 
 	// We send an item back to the friend it came from: we act as a mirror on this tunnel.
 	if(!from.isNull() && from == to)
@@ -1223,7 +1244,7 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 			const Counters& c(mCounters) ;
 
-			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin || c.mirror_here || c.self_tunnel)
+			if(c.item_mismatch || c.item_unknown_tid || c.ok_twice || c.t_found_mismatch || c.ok_held || c.tr_reborn || c.ok_from_origin || c.mirror_here || c.self_tunnel || c.late_tunnel_items)
 			{
 				std::ostringstream o ;
 
@@ -1244,7 +1265,8 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 				  << c.tr_answered << " answered here (" << c.t_overwrite << " overwriting an existing id), "
 				  << c.tr_reborn << " reborn (accepted again after the router forgot them), " << c.tr_rid_collision << " id collisions. "
 				  << "Results from the request's own origin: " << c.ok_from_origin << ", tunnels stored with one friend at both ends: "
-				  << c.self_tunnel << ", items bounced back to their sender: " << c.mirror_here << ". "
+				  << c.self_tunnel << ", items bounced back to their sender: " << c.mirror_here
+				  << ", items routed on tunnels stored from a late result: " << c.late_tunnel_items << " (" << c.late_tunnels_used << " tunnels). "
 				  << "Tables: " << live_tunnels << " tunnels, " << live_requests << " requests, "
 				  << c.t_close << " tunnels closed." ;
 

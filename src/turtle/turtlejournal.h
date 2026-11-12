@@ -231,6 +231,8 @@ class TurtleJournal
 				uint32_t           captured ;
 
 				bool               watched ;                  // FOLLOW lines are printed for this tunnel
+				uint64_t           late_ms = 0 ;              // a result for this id came too late (stored, not forwarded)
+				uint32_t           late_items = 0 ;           // items routed on it since
 				uint64_t           last_reject_ms ;
 				uint64_t           closed_ms ;                // our own entry expired at that time, 0 if alive
 				TurtlePeerId       src,dst ;                  // our endpoints when the first mismatch hit
@@ -342,6 +344,7 @@ class TurtleJournal
 					tr_in = tr_bounce = tr_fwd = tr_answered = 0 ;
 					tr_reborn = tr_rid_collision = ok_from_origin = 0 ;
 					mirror_here = self_tunnel = 0 ;
+					late_tunnel_items = late_tunnels_used = 0 ;
 					ok_in = ok_no_request = ok_twice = ok_late = 0 ;
 					t_create = t_overwrite = t_found_match = t_found_mismatch = t_close = 0 ;
 					ok_fwd_after_mismatch = ok_held = 0 ;
@@ -354,7 +357,8 @@ class TurtleJournal
 
 				uint64_t tr_in,tr_bounce,tr_fwd,tr_answered ;
 				uint64_t tr_reborn,tr_rid_collision,ok_from_origin ;
-				uint64_t mirror_here,self_tunnel ;   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
+				uint64_t mirror_here,self_tunnel ;
+				uint64_t late_tunnel_items,late_tunnels_used ;   // items routed on tunnels stored from a late result   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
 				uint64_t ok_in,ok_no_request,ok_twice,ok_late ;
 				uint64_t t_create,t_overwrite,t_found_match,t_found_mismatch,t_close ;
 				uint64_t ok_fwd_after_mismatch,ok_held ;
