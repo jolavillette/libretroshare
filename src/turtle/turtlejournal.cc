@@ -910,7 +910,7 @@ void TurtleJournal::recordItem(TurtleTunnelId tid,TunnelRecord& rec,uint64_t now
 	}
 }
 
-void TurtleJournal::itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& from,uint8_t item_subtype)
+void TurtleJournal::itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& from,uint8_t item_subtype,const ItemDesc& d)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
@@ -933,6 +933,14 @@ void TurtleJournal::itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& fro
 		{
 			++mCounters.unk_never ;
 			++mCounters.unk_never_peers[from] ;
+			{
+				std::ostringstream k ;
+				k << itemName(item_subtype) ;
+				if(d.size) k << " " << d.size << "B" ;
+				std::string ps = payloadStr(d) ;
+				if(!ps.empty()) k << " " << ps ;
+				++mCounters.unk_never_kinds[k.str()] ;
+			}
 			if(mCounters.unk_never_tids.size() < 100000) mCounters.unk_never_tids.insert(tid) ;
 		}
 		else if(t->second.closed_ms != 0)
@@ -960,8 +968,8 @@ void TurtleJournal::tunnelClosed(TurtleTunnelId tid,const TurtlePeerId& src,cons
 
 	TunnelRecord& rec(mTunnels[tid]) ;
 
-	if(rec.watched && rec.closed_ms == 0)
-		rec.closed_ms = nowMs() ;
+	if(rec.closed_ms == 0)
+		rec.closed_ms = nowMs() ;	// every tunnel, so that later items on its id are told apart
 }
 
 //=============================================================================//
@@ -1335,6 +1343,30 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 					o << " Unknown ids: " << c.unk_never << " items on " << c.unk_never_tids.size() << " ids never seen (top senders:" ;
 					for(uint32_t i=0;i<tn.size() && i<3;++i) o << " " << tn[i].second << "=" << tn[i].first ;
+					// how long have these ids been sending to us? (first unknown item seen, kept 15 min)
+					{
+						std::vector<uint64_t> ages ;
+						for(std::set<TurtleTunnelId>::const_iterator t(c.unk_never_tids.begin());t!=c.unk_never_tids.end();++t)
+						{
+							std::map<TurtleTunnelId,TunnelRecord>::const_iterator r(mTunnels.find(*t)) ;
+							if(r != mTunnels.end() && !r->second.events.empty())
+								ages.push_back((now > r->second.events.front().ms)?(now - r->second.events.front().ms)/1000:0) ;
+						}
+						std::sort(ages.begin(),ages.end()) ;
+						if(!ages.empty())
+						{
+							uint32_t over5 = 0 ;
+							for(uint32_t i=0;i<ages.size();++i) if(ages[i] > 300) ++over5 ;
+							o << "; first unknown item on those ids: median " << ages[ages.size()/2] << " s ago, max " << ages.back()
+							  << " s, " << over5 << " ids for more than 5 min" ;
+						}
+						std::vector<std::pair<uint64_t,std::string> > kinds ;
+						for(std::map<std::string,uint64_t>::const_iterator k(c.unk_never_kinds.begin());k!=c.unk_never_kinds.end();++k)
+							kinds.push_back(std::make_pair(k->second,k->first)) ;
+						std::sort(kinds.rbegin(),kinds.rend()) ;
+						o << "; they carry:" ;
+						for(uint32_t i=0;i<kinds.size() && i<4;++i) o << " [" << kinds[i].second << "]=" << kinds[i].first ;
+					}
 					o << "), " << c.unk_closed << " after we closed the tunnel (top:" ;
 					for(uint32_t i=0;i<tc.size() && i<3;++i) o << " " << tc[i].second << "=" << tc[i].first ;
 					o << "), " << c.unk_known << " other." ;

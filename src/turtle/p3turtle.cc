@@ -1314,7 +1314,8 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "p3turtle: got file map with unknown tunnel id " << HEX_PRINT(item->tunnelId()) << std::endl ;
 #endif
-			TurtleJournal::instance().itemUnknownTunnel(item->tunnelId(),item->PeerId(),item->PacketSubType()) ;
+			TurtleJournal::instance().itemUnknownTunnel(item->tunnelId(),item->PeerId(),item->PacketSubType(),
+			        TurtleJournal::instance().enabled()?TurtleJournal::fingerprint(item):TurtleJournal::ItemDesc()) ;
 
 			delete item;
 			return ;

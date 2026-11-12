@@ -176,7 +176,7 @@ class TurtleJournal
 		/// same item, whoever relays them), its size and payload prefix. Only
 		/// computed when the recorder is on.
 		static ItemDesc fingerprint(RsTurtleGenericTunnelItem *item) ;
-		void itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& from,uint8_t item_subtype);
+		void itemUnknownTunnel(TurtleTunnelId tid,const TurtlePeerId& from,uint8_t item_subtype,const ItemDesc& d = ItemDesc());
 		void tunnelClosed     (TurtleTunnelId tid,const TurtlePeerId& src,const TurtlePeerId& dst,uint32_t age);
 
 		//------------------------------ Periodic -------------------------------//
@@ -348,7 +348,7 @@ class TurtleJournal
 					late_tunnel_items = late_tunnels_used = 0 ;
 					partial_echo = partial_same = 0 ;
 					unk_never = unk_closed = unk_known = 0 ;
-					unk_never_peers.clear() ; unk_closed_peers.clear() ; unk_never_tids.clear() ;
+					unk_never_peers.clear() ; unk_closed_peers.clear() ; unk_never_tids.clear() ; unk_never_kinds.clear() ;
 					ok_in = ok_no_request = ok_twice = ok_late = 0 ;
 					t_create = t_overwrite = t_found_match = t_found_mismatch = t_close = 0 ;
 					ok_fwd_after_mismatch = ok_held = 0 ;
@@ -366,7 +366,8 @@ class TurtleJournal
 				uint64_t partial_echo,partial_same ;
 				uint64_t unk_never,unk_closed,unk_known ;             // items on unknown tunnel ids, by what we knew of the id
 				std::map<TurtlePeerId,uint64_t> unk_never_peers,unk_closed_peers ;
-				std::set<TurtleTunnelId> unk_never_tids ;   // copies whose partial tunnel id was NOT perturbed on the way   // items routed on tunnels stored from a late result   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
+				std::set<TurtleTunnelId> unk_never_tids ;
+				std::map<std::string,uint64_t> unk_never_kinds ;   // item kind/size/payload on never-seen ids   // copies whose partial tunnel id was NOT perturbed on the way   // items routed on tunnels stored from a late result   // we bounced an item back to its sender / stored a tunnel with one friend at both ends
 				uint64_t ok_in,ok_no_request,ok_twice,ok_late ;
 				uint64_t t_create,t_overwrite,t_found_match,t_found_mismatch,t_close ;
 				uint64_t ok_fwd_after_mismatch,ok_held ;
