@@ -39,6 +39,7 @@
 #include "util/rsstring.h"
 
 #include <chrono>
+#include <filesystem>
 #include <vector>
 
 #define MSG_TABLE_NAME std::string("MESSAGES")
@@ -239,10 +240,20 @@ void RsDataService::preReadDatabaseFile()
     // random reads that follow are served from the page cache. On an SSD or a
     // warm cache this costs little. Skipped when the file is large compared to
     // the available memory, where it would only evict other useful pages.
+    //
+    // Each database runs its own pre-read and they all start together. This is
+    // on purpose: measured on 2026-11-13 on a RAID1 of two rotating disks, the
+    // forums, boards and channels files (1.27 GB) took 8-9 s read in parallel
+    // and 14-19 s one after the other, because md serves concurrent streams
+    // from both disks. An SSD loses nothing either. On a single rotating disk
+    // the heads move between files, once per 4 MB chunk at most.
 
     static const size_t CHUNK_SIZE = 4 * 1024 * 1024;
 
-    std::ifstream f(mDbPath, std::ios::binary | std::ios::ate);
+    // mDbPath is UTF-8. On Windows a narrow path is read in the ANSI code page,
+    // so a profile under a non-ASCII user name would not open: go through a
+    // filesystem::path, which libstdc++ opens with the wide API there.
+    std::ifstream f(std::filesystem::u8path(mDbPath), std::ios::binary | std::ios::ate);
 
     if(!f)
         return;
