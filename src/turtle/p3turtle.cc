@@ -82,6 +82,8 @@ void TS_dumpState() ;
 // brought it back as origin, and later results for it would leave their route.
 static const rstime_t TUNNEL_REQUESTS_LIFE_TIME                = 1800 ; /// life time for tunnel requests in the cache.
 static const rstime_t TUNNEL_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known tunnel requests
+static const rstime_t TUNNEL_REQUEST_IDS_SLICE_TIME            = 600 ; /// time slice of the long memory of tunnel request ids
+static const uint32_t TUNNEL_REQUEST_IDS_SLICES                =  12 ; /// slices kept: tunnel request ids are remembered 2 hours
 static const rstime_t SEARCH_REQUESTS_LIFE_TIME                = 600 ; /// life time for search requests in the cache
 static const rstime_t SEARCH_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known search requests
 static const rstime_t REGULAR_TUNNEL_DIGGING_TIME              = 300 ; /// maximum interval between two tunnel digging campaigns.
@@ -135,7 +137,11 @@ p3turtle::p3turtle(p3ServiceControl *sc,p3LinkMgr *lm)
 	_nb_duplicate_tunnel_results = 0 ;
 	_nb_colliding_tunnel_results = 0 ;
 	_nb_results_from_origin = 0 ;
+	_nb_long_memory_drops = 0 ;
 	_last_routing_anomaly_report_time = time(NULL) ;
+
+	_seen_tunnel_request_ids.resize(1) ;
+	_last_seen_ids_rotation = time(NULL) ;
 
 	_traffic_info.reset() ;
 	_max_tr_up_rate = MAX_TR_FORWARD_PER_SEC ;
@@ -268,17 +274,19 @@ int p3turtle::tick()
 
 		if(now >= _last_routing_anomaly_report_time + TURTLE_ROUTING_ANOMALY_REPORT_PERIOD)
 		{
-			if(_nb_mismatching_items_dropped + _nb_duplicate_tunnel_results + _nb_colliding_tunnel_results + _nb_results_from_origin > 0)
+			if(_nb_mismatching_items_dropped + _nb_duplicate_tunnel_results + _nb_colliding_tunnel_results + _nb_results_from_origin + _nb_long_memory_drops > 0)
 				RsWarn() << "p3turtle: over the last " << now - _last_routing_anomaly_report_time << " s: "
 				         << _nb_mismatching_items_dropped << " tunnel items dropped (sender is neither end of the tunnel), "
 				         << _nb_duplicate_tunnel_results << " tunnel results received twice, "
 				         << _nb_colliding_tunnel_results << " tunnel results colliding with an existing tunnel id (not forwarded), "
-				         << _nb_results_from_origin << " tunnel results from the friend the request came from (dropped)." ;
+				         << _nb_results_from_origin << " tunnel results from the friend the request came from (dropped), "
+				         << _nb_long_memory_drops << " copies of tunnel requests older than the request table (dropped)." ;
 
 			_nb_mismatching_items_dropped = 0 ;
 			_nb_duplicate_tunnel_results = 0 ;
 			_nb_colliding_tunnel_results = 0 ;
 			_nb_results_from_origin = 0 ;
+			_nb_long_memory_drops = 0 ;
 			_last_routing_anomaly_report_time = now ;
 		}
 	}
@@ -562,6 +570,18 @@ void p3turtle::autoWash()
 			}
 			else
 				++it ;
+
+		// Long memory of tunnel request ids: start a new slice, forget the oldest one.
+
+		if(now >= _last_seen_ids_rotation + TUNNEL_REQUEST_IDS_SLICE_TIME)
+		{
+			_seen_tunnel_request_ids.push_back(std::unordered_set<TurtleTunnelRequestId>()) ;
+
+			while(_seen_tunnel_request_ids.size() > TUNNEL_REQUEST_IDS_SLICES)
+				_seen_tunnel_request_ids.pop_front() ;
+
+			_last_seen_ids_rotation = now ;
+		}
 	}
 
 	// Tunnels.
@@ -1619,6 +1639,15 @@ TurtleRequestId p3turtle::diggTunnel(const TurtleFileHash& hash)
 	return id ;
 }
 
+bool p3turtle::locked_tunnelRequestAlreadySeen(TurtleTunnelRequestId id) const
+{
+	for(uint32_t i=0;i<_seen_tunnel_request_ids.size();++i)
+		if(_seen_tunnel_request_ids[i].find(id) != _seen_tunnel_request_ids[i].end())
+			return true ;
+
+	return false ;
+}
+
 void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 {
 #ifdef P3TURTLE_DEBUG
@@ -1661,6 +1690,17 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 #endif
 			return ;
 		}
+
+		// Not in the table any more, but seen within the long memory: a late copy that
+		// came back after the table forgot it. Accepting it would start the request
+		// again with a wrong origin. Drop it.
+		if(locked_tunnelRequestAlreadySeen(item->request_id))
+		{
+			++_nb_long_memory_drops ;
+			return ;
+		}
+		_seen_tunnel_request_ids.back().insert(item->request_id) ;
+
 		// This is a new request. Let's add it to the request map, and forward
 		// it to open peers, while the mutex is locked, so no-one can trigger the
 		// lock before the data is consistent.
