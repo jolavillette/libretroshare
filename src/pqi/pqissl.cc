@@ -33,6 +33,8 @@
 #include <openssl/err.h>
 
 #include "pqi/pqissllistener.h"
+#include "pqi/pqissludp.h"
+#include "pqi/pqiechoprobe.h"
 
 #include "pqi/p3linkmgr.h"
 #include "retroshare/rspeers.h"
@@ -213,6 +215,7 @@ int pqissl::reset_locked()
 #ifdef PQISSL_LOG_DEBUG 
 		outLog += "pqissl::reset() Shutting down (active) socket\n";
 #endif
+		PqiEchoProbe::instance().clearSocket(PeerId(),sockfd) ;	// debugging probe, off by default
 		net_internal_close(sockfd);
 		sockfd = -1;
 		neededReset = true;	
@@ -1417,6 +1420,11 @@ int pqissl::accept_locked( SSL *ssl, int fd,
 
 	// we want to continue listening - incase this socket is crap, and they try again.
 	//stoplistening();
+
+	// Debugging probe (off by default): kernel TCP state of this link. UDP links
+	// (pqissludp) use tcponudp ids, not kernel sockets.
+	if(dynamic_cast<pqissludp*>(this) == nullptr)
+		PqiEchoProbe::instance().setSocket(PeerId(),fd) ;
 
 	active = true;
 	waiting = WAITING_NOT;

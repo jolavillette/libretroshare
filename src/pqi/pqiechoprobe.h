@@ -100,6 +100,15 @@ class PqiEchoProbe
 		/// router processes what was received.
 		uint64_t trArrival(uint32_t rid,const RsPeerId& from) ;
 
+		/// TCP socket of a friend link (pqissl), for the TCP state probes below.
+		/// clearSocket() only forgets fd if it is still the one registered.
+		void setSocket  (const RsPeerId& peer,int fd) ;
+		void clearSocket(const RsPeerId& peer,int fd) ;
+
+		/// Short kernel view of a friend link, e.g. "rtt=21.3ms ato=40ms sendq=0B
+		/// unacked=0 nodelay=on", or "no socket". Used by the turtle journal.
+		std::string linkState(const RsPeerId& peer) ;
+
 	private:
 		PqiEchoProbe() ;
 
@@ -199,6 +208,37 @@ class PqiEchoProbe
 		};
 		void noteReceived(uint16_t idx,uint64_t now,uint16_t service,uint8_t subtype) ;	// mMtx must be locked
 
+		// Tunnel request race (debug/tr-race-probe). A tunnel request is 38 bytes:
+		// with Nagle on, the kernel holds it while earlier bytes are unacknowledged.
+		// When one leaves our QoS queue we read the socket state: bytes still in the
+		// send queue (unsent + unacknowledged) and whether TCP_NODELAY is set.
+		class TcpSnap
+		{
+			public:
+				TcpSnap() : ok(false),info(false),sendq(-1),nodelay(-1),rtt_us(0),rttvar_us(0),ato_us(0),
+				            unacked(0),cwnd(0),retrans(0),mss(0),rcv_rtt_us(0) {}
+				bool    ok,info ;      // socket readable; extended TCP info available
+				int64_t sendq ;        // bytes in the send queue (unsent + unacked), -1 unknown
+				int     nodelay ;      // 1 on, 0 off (Nagle on), -1 unknown
+				uint32_t rtt_us,rttvar_us,ato_us,unacked,cwnd,retrans,mss,rcv_rtt_us ;
+		};
+		static TcpSnap tcpSnap(int fd) ;
+		static std::string snapStr(const TcpSnap& s) ;
+
+		class TrSendStat
+		{
+			public:
+				TrSendStat() : n(0),own(0),wait_sum(0),wait_max(0),n_sendq(0),sendq_max(0),n_nagle(0),n_nodelay_off(0),n_unknown(0) {}
+				uint32_t n,own ;            // tunnel requests sent to this friend; of which ours (depth 1)
+				uint64_t wait_sum ;
+				uint32_t wait_max ;         // ms in our QoS queue
+				uint32_t n_sendq ;          // left our queue while the socket still had bytes queued
+				int64_t  sendq_max ;
+				uint32_t n_nagle ;          // ... and Nagle was on: the kernel may hold it
+				uint32_t n_nodelay_off ;
+				uint32_t n_unknown ;        // no socket state
+		};
+
 		static int delayClass(uint16_t service,uint8_t subtype) ;
 		static const char *delayClassName(int c) ;
 
@@ -252,5 +292,10 @@ class PqiEchoProbe
 		std::map<uint16_t,uint64_t> mLastRx ;     // per friend, last item received (any service)
 		std::map<uint16_t,Resume>   mResumes ;    // bursts being counted
 		uint32_t mQStale ;          // dequeued pointer whose bytes no longer match: not counted
+
+		std::map<uint16_t,int>        mSockets ;     // friend -> TCP socket of its pqissl link
+		std::map<uint16_t,TrSendStat> mTrSend ;      // current minute
+		std::map<uint16_t,TrSendStat> mTrSendTotal ; // since start
+		uint32_t mTrHeldLinesThisLapse ;
 		uint32_t mQMatched ;
 };
