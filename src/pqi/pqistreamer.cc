@@ -58,20 +58,6 @@ static const int   PQISTREAM_SLICE_PROTOCOL_VERSION_ID_01     = 0x10;		// Protoc
 static const int   PQISTREAM_PARTIAL_PACKET_HEADER_SIZE	= 8;   		// Same size than normal header, to make the code simpler.
 static const int   PQISTREAM_PACKET_SLICING_PROBE_DELAY	= 60;  		// send every 60 secs.
 
-// Out queue congestion. Every second the out queue size is low-pass filtered and
-// divided by the measured out rate: this is the time the friend needs to drain
-// what we queued (the "Drain" column of the bandwidth statistics). Above
-// ENTER_DRAIN the friend is congested and only items of MIN_PRIORITY and above
-// (chat, heartbeats, service info, bandwidth control, RTT) are queued; others,
-// turtle tunnel requests/results included, are dropped instead of waiting there
-// for minutes. The state ends below LEAVE_DRAIN.
-static const float PQISTREAM_CONGESTION_SMOOTHING      = 0.9;   // per second, ~10 s time constant
-static const float PQISTREAM_CONGESTION_ENTER_DRAIN    = 20.0;  // seconds
-static const float PQISTREAM_CONGESTION_LEAVE_DRAIN    = 8.0;   // seconds
-static const float PQISTREAM_CONGESTION_MIN_RATE       = 1.0;   // kB/s, floor of the measured out rate
-static const int   PQISTREAM_CONGESTION_MIN_PRIORITY   = 8;
-static const int   PQISTREAM_CONGESTION_REPORT_PERIOD  = 60;    // seconds
-
 // This is a probe packet, that won't deserialise (it's empty) but will not cause problems to old peers either, since they will ignore
 // it. This packet however will be understood by new peers as a signal to enable packet slicing. This should go when all peers use the
 // same protocol.
@@ -135,14 +121,6 @@ pqistreamer::pqistreamer(RsSerialiser *rss, const RsPeerId& id, BinInterface *bi
 	mIncomingSize_bytes = 0;
 
 	mStatisticsTimeStamp = 0 ;
-
-	mQosSmoothedQueueBytes = 0 ;
-	mQosCongested = false ;
-	for(int i=0;i<10;++i)
-		mQosDroppedCount[i] = 0 ;
-	mQosDroppedBytes = 0 ;
-	mQosLastReport = mAvgLastUpdate ;
-	mQosCongestedSince = 0 ;
 	/* allocated once */
 	mPkt_rpend_size = 0;
 	mPkt_rpending = 0;
@@ -309,59 +287,7 @@ void pqistreamer::updateRates()
 		{
 			RsStackMutex stack(mStreamerMtx); /**** LOCKED MUTEX ****/
 			mAvgSentCount = 0;
-			locked_updateCongestion(avgSentpSec);
 		}
-	}
-}
-
-void pqistreamer::locked_updateCongestion(float rate_out_kBps)
-{
-	double now = getCurrentTS();
-
-	mQosSmoothedQueueBytes = PQISTREAM_CONGESTION_SMOOTHING * mQosSmoothedQueueBytes
-	                       + (1.0 - PQISTREAM_CONGESTION_SMOOTHING) * locked_compute_out_pkt_size();
-
-	float rate = std::max(rate_out_kBps, PQISTREAM_CONGESTION_MIN_RATE);
-	float drain = mQosSmoothedQueueBytes / (rate * 1024.0);
-
-	if(!mQosCongested && drain > PQISTREAM_CONGESTION_ENTER_DRAIN)
-	{
-		mQosCongested = true;
-		mQosCongestedSince = now;
-		RsInfo() << "PQISTREAMER congestion ON  for " << PeerId().toStdString() << ": queue " << (int)mQosSmoothedQueueBytes
-		         << " B (smoothed), out rate " << (int)(1024 * rate_out_kBps)
-		         << " B/s, drain " << (int)drain << " s. Queuing priority >= " << PQISTREAM_CONGESTION_MIN_PRIORITY << " only.";
-	}
-	else if(mQosCongested && drain < PQISTREAM_CONGESTION_LEAVE_DRAIN)
-	{
-		mQosCongested = false;
-		RsInfo() << "PQISTREAMER congestion OFF for " << PeerId().toStdString() << " after " << (int)(now - mQosCongestedSince)
-		         << " s: queue " << (int)mQosSmoothedQueueBytes << " B (smoothed), out rate "
-		         << (int)(1024 * rate_out_kBps) << " B/s, drain " << (int)drain << " s.";
-	}
-
-	if(now >= mQosLastReport + PQISTREAM_CONGESTION_REPORT_PERIOD)
-	{
-		uint32_t total = 0;
-		for(int i=0;i<10;++i)
-			total += mQosDroppedCount[i];
-
-		if(total > 0)
-		{
-			std::string per_prio;
-			for(int i=9;i>=0;--i)
-				if(mQosDroppedCount[i] > 0)
-					rs_sprintf_append(per_prio, " p%d:%u", i, mQosDroppedCount[i]);
-
-			RsInfo() << "PQISTREAMER congestion for " << PeerId().toStdString() << ": over the last " << (int)(now - mQosLastReport)
-			         << " s, " << total << " items (" << mQosDroppedBytes << " B) not queued, per priority" << per_prio
-			         << ". Now " << (mQosCongested ? "congested" : "not congested") << ", drain " << (int)drain << " s.";
-
-			for(int i=0;i<10;++i)
-				mQosDroppedCount[i] = 0;
-			mQosDroppedBytes = 0;
-		}
-		mQosLastReport = now;
 	}
 }
  
@@ -468,19 +394,6 @@ int	pqistreamer::queue_outpqi_locked(RsItem *pqi,uint32_t& pktsize)
 #ifdef DEBUG_PQISTREAMER
         std::cerr << "pqistreamer::queue_outpqi() called." << std::endl;
 #endif
-
-	// Congested friend: do not queue low priority items, they would wait for minutes.
-	if(mQosCongested && pqi->priority_level() < PQISTREAM_CONGESTION_MIN_PRIORITY)
-	{
-		uint8_t prio = std::min<uint8_t>(pqi->priority_level(), 9);
-		++mQosDroppedCount[prio];
-		mQosDroppedBytes += mRsSerialiser->size(pqi);
-
-		if (!(mBio_flags & BIN_FLAGS_NO_DELETE))
-			delete pqi;
-
-		return 0;
-	}
 
 	/* decide which type of packet it is */
 

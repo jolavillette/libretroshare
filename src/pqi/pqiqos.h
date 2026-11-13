@@ -39,6 +39,7 @@
 #include <list>
 
 #include <util/rsmemory.h>
+#include <util/rstime.h>
 
 class pqiQoS
 {
@@ -51,6 +52,7 @@ public:
 		uint32_t current_offset ;
 		uint32_t size ;
 		uint32_t id ;
+		rstime_t queued_at ;	// when the item entered the queue
 	};
 
 	class ItemQueue 
@@ -131,6 +133,7 @@ public:
 			rec.current_offset = 0 ;
 			rec.size = size ;
 			rec.id = id ;
+			rec.queued_at = time(NULL) ;
 
 			_items.push_back(rec) ;
 		}
@@ -157,6 +160,12 @@ public:
 
 	// kills all waiting items.
 	void clear() ;
+
+	// Removes the items that waited in the queue for more than max_age seconds, that
+	// did not start to be sent and that match the filter. Returns the number of items
+	// removed; removed_bytes gets their total size and max_age_seen the oldest age.
+	typedef bool (*ItemFilter)(const void *data,uint32_t size) ;
+	uint32_t removeOldItems(rstime_t now,rstime_t max_age,ItemFilter filter,uint32_t& removed_bytes,rstime_t& max_age_seen) ;
 
 	// get some stats about what's going on. service_packets will contain the number of
 	// packets per service, and queue_sizes will contain the size of the different priority queues.

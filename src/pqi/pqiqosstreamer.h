@@ -45,5 +45,14 @@ class pqiQoSstreamer: public pqithreadstreamer, public pqiQoS
 	private:
 		uint32_t _total_item_size ;
 		uint32_t _total_item_count ;
+
+		// Turtle tunnel requests/results that waited too long in the queue are dropped
+		// instead of being sent late (see locked_removeStaleTunnelItems()).
+		void locked_removeStaleTunnelItems() ;
+		rstime_t _last_stale_check ;
+		rstime_t _last_stale_report ;
+		uint32_t _stale_dropped ;
+		uint32_t _stale_dropped_bytes ;
+		rstime_t _stale_max_age ;
 };
 

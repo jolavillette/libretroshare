@@ -183,17 +183,6 @@ class pqistreamer: public PQInterface
         	std::list<RSTrafficClue> mCurrentStatsChunk_Out ;
 		rstime_t mStatisticsTimeStamp ;
 
-		// Congested out queue: while the friend drains our queue too slowly, only
-		// items of priority PQISTREAM_CONGESTION_MIN_PRIORITY and above are queued.
-		void locked_updateCongestion(float rate_out_kBps) ;
-
-		float    mQosSmoothedQueueBytes ; // low-pass filtered out queue size, in bytes
-		bool     mQosCongested ;          // current congestion state
-		uint32_t mQosDroppedCount[10] ;   // items refused per priority since the last report
-		uint64_t mQosDroppedBytes ;       // estimated bytes refused since the last report
-		double   mQosLastReport ;         // time of the last report line
-		double   mQosCongestedSince ;     // start of the current congestion
-
 		bool mAcceptsPacketSlicing ;
 		rstime_t mLastSentPacketSlicingProbe ;
 		void locked_addTrafficClue(const RsItem *pqi, uint32_t pktsize, std::list<RSTrafficClue> &lst);
