@@ -24,8 +24,6 @@ cmake_minimum_required(VERSION 3.0...4.4)
 
 if(NOT TARGET sam3_external)
 include(ExternalProject)
-find_package(Git REQUIRED)
-find_package(Patch REQUIRED)
 include(EnvironmentModification)
 
 set(FETCH_sam3_GIT_TAG "" CACHE STRING
@@ -34,6 +32,33 @@ set(FETCH_sam3_GIT_TAG "" CACHE STRING
 mark_as_advanced(FETCH_sam3_GIT_TAG)
 if(NOT FETCH_sam3_GIT_TAG)
 	set(FETCH_sam3_GIT_TAG origin/master)
+endif()
+
+# sam3 is an ExternalProject, which FETCHCONTENT_SOURCE_DIR_<NAME> does not
+# reach, so honour FETCHCONTENT_SOURCE_DIR_SAM3 here the way FetchContent does
+# for the other packages: the tree is taken as is (no git, no patch). URL copies
+# it into the prefix, so the in-source build never writes into it.
+set(FETCHCONTENT_SOURCE_DIR_SAM3 "" CACHE PATH
+	"When not empty, overrides where to find pre-populated content for sam3"
+)
+if(FETCHCONTENT_SOURCE_DIR_SAM3)
+	if(NOT IS_DIRECTORY "${FETCHCONTENT_SOURCE_DIR_SAM3}")
+		message(FATAL_ERROR "Manually specified source directory is missing:\n"
+			"  FETCHCONTENT_SOURCE_DIR_SAM3 --> ${FETCHCONTENT_SOURCE_DIR_SAM3}"
+		)
+	endif()
+	set(sam3_external_DOWNLOAD_OPTIONS URL "${FETCHCONTENT_SOURCE_DIR_SAM3}")
+else()
+	find_package(Git REQUIRED)
+	find_package(Patch REQUIRED)
+	set(sam3_external_DOWNLOAD_OPTIONS
+		GIT_REPOSITORY "https://github.com/i2p/libsam3.git"
+		GIT_TAG ${FETCH_sam3_GIT_TAG}
+		GIT_PROGRESS TRUE
+		PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard
+		COMMAND ${Patch_EXECUTABLE} -tNp1 -i
+			"${CMAKE_CURRENT_LIST_DIR}/sam3.patch"
+	)
 endif()
 
 set(sam3_external_SOURCE_DIR "sam3_external-prefix/src/sam3_external")
@@ -54,14 +79,9 @@ set(sam3_external_BUILD_ENVIRONMENT
 EnvironmentModification(envmod_build ${sam3_external_BUILD_ENVIRONMENT})
 
 ExternalProject_Add(sam3_external
-	GIT_REPOSITORY "https://github.com/i2p/libsam3.git"
-	GIT_TAG ${FETCH_sam3_GIT_TAG}
-	GIT_PROGRESS TRUE
+	${sam3_external_DOWNLOAD_OPTIONS}
 	CONFIGURE_COMMAND ""
   BUILD_COMMAND ${envmod_build} make build
-	PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard
-	COMMAND ${Patch_EXECUTABLE} -tNp1 -i
-		"${CMAKE_CURRENT_LIST_DIR}/sam3.patch"
 	INSTALL_COMMAND ""
 	BUILD_IN_SOURCE TRUE
 	BUILD_ALWAYS TRUE
