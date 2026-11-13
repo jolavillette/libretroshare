@@ -50,7 +50,7 @@ static const uint64_t CAPTURE_MS            = 300000 ;  // every item written ou
 static const uint32_t CAPTURE_MAX_ITEMS     = 3000 ;    // ...but at most this many per tunnel
 static const uint64_t FOLLOW_MS             = 1800000 ; // FOLLOW lines until 30 min after the last dropped item
 static const uint32_t MAX_BOUNCES_PER_REQ   = 32 ;
-static const uint64_t RID_HISTORY_MS        = 3600000 ; // request ids remembered for 1 h (the router forgets them after 600 s)
+static const uint64_t RID_HISTORY_MS        = 9000000 ; // request ids remembered for 2.5 h (longer than the router's 2 h id memory)
 static const uint32_t MAX_REBORN_LINES      = 100 ;     // per minute
 static const uint32_t MAX_SELFLOOP_LINES    = 100 ;     // per minute
 
@@ -234,6 +234,8 @@ TurtleJournal::TurtleJournal()
 	mSelfLoopLinesThisLapse = 0 ;
 	mTrLagN = mTrLagMax = mTrLagOver5 = 0 ;
 	mTrNewMin = mTrNewTotal = 0 ;
+	for(uint32_t i=0;i<LM_AGE_BUCKETS;++i)
+		mLmMin[i] = mLmTotal[i] = 0 ;
 	for(uint32_t i=0;i<TR_AGE_BUCKETS;++i)
 		mTrAgeMin[i] = mTrAgeTotal[i] = 0 ;
 
@@ -424,6 +426,38 @@ std::string TurtleJournal::trAgeLine(uint64_t n_new,const uint64_t *ages)
 	  << (total ? 100.0*n_new/total : 0.0) << "%), copies of known requests by age of the table entry:" ;
 	for(uint32_t i=0;i<TR_AGE_BUCKETS;++i)
 		o << " " << names[i] << "=" << ages[i] << " (" << (total ? 100.0*ages[i]/total : 0.0) << "%)" ;
+	return o.str() ;
+}
+
+void TurtleJournal::trLongMemoryDrop(TurtleTunnelRequestId rid,const TurtlePeerId& from)
+{
+	RS_STACK_MUTEX(mJournalMtx) ;
+
+	uint32_t b = LM_AGE_BUCKETS-1 ;
+	std::unordered_map<uint32_t,RidSeen>::const_iterator h(mRidHistory.find(rid)) ;
+
+	if(h != mRidHistory.end())
+	{
+		uint64_t now = nowMs() ;
+		uint64_t age = (now > h->second.first_ms)?(now - h->second.first_ms)/1000:0 ;
+		b = (age < 1800)?0:((age < 2400)?1:((age < 3600)?2:((age < 5400)?3:4))) ;
+	}
+	++mLmMin[b] ;
+	++mLmTotal[b] ;
+	++mLmPeersMin[peerIdx(from)] ;
+}
+
+std::string TurtleJournal::lmLine(const uint64_t *b)
+{
+	static const char *names[LM_AGE_BUCKETS] = { "<30min","30-40min","40-60min","60-90min","90-150min","unknown" } ;
+	uint64_t n = 0 ;
+	for(uint32_t i=0;i<LM_AGE_BUCKETS;++i)
+		n += b[i] ;
+
+	std::ostringstream o ;
+	o << n << " copies dropped as already seen, by age since first seen:" ;
+	for(uint32_t i=0;i<LM_AGE_BUCKETS;++i)
+		o << " " << names[i] << "=" << b[i] ;
 	return o.str() ;
 }
 
@@ -1346,6 +1380,24 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 					std::ostringstream ao ;
 					ao << "TRAGE " << timeStr(now) << " last minute: " << trAgeLine(mTrNewMin,mTrAgeMin) << std::endl ;
 					ao << "TRAGE " << timeStr(now) << " since start: " << trAgeLine(mTrNewTotal,mTrAgeTotal) << std::endl ;
+
+					// Copies the router dropped thanks to its long memory of request ids.
+					ao << "TRLM " << timeStr(now) << " last minute: " << lmLine(mLmMin) ;
+					if(!mLmPeersMin.empty())
+					{
+						std::vector<std::pair<uint64_t,uint16_t> > top ;
+						for(std::map<uint16_t,uint64_t>::const_iterator p(mLmPeersMin.begin());p!=mLmPeersMin.end();++p)
+							top.push_back(std::make_pair(p->second,p->first)) ;
+						std::sort(top.rbegin(),top.rend()) ;
+						ao << "; brought by:" ;
+						for(uint32_t i=0;i<top.size() && i<3;++i)
+							ao << " " << mPeers[top[i].second] << "=" << top[i].first ;
+					}
+					ao << std::endl ;
+					ao << "TRLM " << timeStr(now) << " since start: " << lmLine(mLmTotal) << std::endl ;
+					for(uint32_t i=0;i<LM_AGE_BUCKETS;++i)
+						mLmMin[i] = 0 ;
+					mLmPeersMin.clear() ;
 					mPendingDumps.push_back(ao.str()) ;
 					mTrNewMin = 0 ;
 					for(uint32_t i=0;i<TR_AGE_BUCKETS;++i)

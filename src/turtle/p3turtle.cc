@@ -1746,6 +1746,7 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 		if(locked_tunnelRequestAlreadySeen(item->request_id))
 		{
 			++_nb_long_memory_drops ;
+			TurtleJournal::instance().trLongMemoryDrop(item->request_id,item->PeerId()) ;	// debugging journal
 			return ;
 		}
 		_seen_tunnel_request_ids.back().insert(item->request_id) ;
