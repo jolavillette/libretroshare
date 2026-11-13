@@ -457,6 +457,17 @@ int unix_fcntl_nonblock(int fd)
 
 int unix_tcp_nodelay(int fd)
 {
+	// Testing switch, to be removed before upstreaming: RS_TCP_NODELAY=0 keeps
+	// Nagle on, so the same build can be measured with and without the fix.
+	static const bool disabled = []() {
+		const char *e = getenv("RS_TCP_NODELAY");
+		bool off = (e != nullptr && e[0] == '0');
+		if (off) RsInfo() << "TCP_NODELAY disabled by RS_TCP_NODELAY=0: peer links keep Nagle";
+		return off;
+	}();
+	if (disabled)
+		return 0;
+
 	int on = 1;
 	int ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *) &on, sizeof(on));
 
