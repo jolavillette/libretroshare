@@ -48,6 +48,7 @@
 int errno;
 #else /* Windows - define errno */
 #include <netdb.h>
+#include <netinet/tcp.h>
 #endif
 
 #ifdef __HAIKU__
@@ -451,6 +452,18 @@ int unix_fcntl_nonblock(int fd)
 	}
 #endif
 /******************* WINDOWS SPECIFIC PART ******************/
+	return ret;
+}
+
+int unix_tcp_nodelay(int fd)
+{
+	int on = 1;
+	int ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *) &on, sizeof(on));
+
+	if (ret != 0)
+		RsWarn() << __PRETTY_FUNCTION__ << " cannot set TCP_NODELAY on socket " << fd
+		         << ", OS error " << rs_last_socket_error();
+
 	return ret;
 }
 

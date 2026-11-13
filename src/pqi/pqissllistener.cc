@@ -385,6 +385,9 @@ int	pqissllistenbase::acceptconnection()
 #endif
 /********************************** WINDOWS/UNIX SPECIFIC PART ******************/
 
+	// Not fatal: without it the link only runs with Nagle, as it always did.
+	unix_tcp_nodelay(fd);
+
     std::cerr << "(II) Checking incoming connection address: " << sockaddr_storage_iptostring(remote_addr) ;
         if(rsBanList != NULL && !rsBanList->isAddressAccepted(remote_addr, RSBANLIST_CHECKING_FLAGS_BLACKLIST))
         {

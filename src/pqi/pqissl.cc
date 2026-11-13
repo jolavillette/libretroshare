@@ -629,6 +629,9 @@ int pqissl::Initiate_Connection()
 		return -1;
 	}
 
+	// Not fatal: without it the link only runs with Nagle, as it always did.
+	unix_tcp_nodelay(osock);
+
 	if (sockaddr_storage_isnull(addr))
 	{
 		rslog(RSL_WARNING, pqisslzone, "pqissl::Initiate_Connection() Invalid (0.0.0.0) Remote Address, Aborting Connect.");
