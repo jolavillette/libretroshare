@@ -22,6 +22,7 @@
 #include "util/rstime.h"
 #include "pqi/pqithreadstreamer.h"
 #include <algorithm>
+#include <chrono>
 #include <unistd.h>
 
 // for timeBeginPeriod
@@ -60,6 +61,21 @@ bool pqithreadstreamer::RecvItem(RsItem *item)
 	return mParent->RecvItem(item);
 }
 
+int	pqithreadstreamer::SendItem(RsItem *item, uint32_t& serialized_size)
+{
+	int ret = pqistreamer::SendItem(item, serialized_size);	// item may be deleted by now
+
+	// An idle streamer sleeps up to STREAMER_SLEEP_MAX: without this, the item would wait
+	// for the end of that sleep. Notifying costs next to nothing when the thread is not waiting.
+	{
+		std::lock_guard<std::mutex> lock(mWakeMtx);
+		mItemQueued = true;
+	}
+	mWakeCv.notify_one();
+
+	return ret;
+}
+
 int	pqithreadstreamer::tick()
 {
 	// pqithreadstreamer mutex lock is not needed here
@@ -91,10 +107,18 @@ void pqithreadstreamer::threadTick()
 
 	updateRates();
 
+	// An item queued since the last send (it may be what woke us up) goes out first: do not let
+	// the poll for incoming data hold it back for up to mTimeout.
+	bool itemQueued;
+	{
+		std::lock_guard<std::mutex> lock(mWakeMtx);
+		itemQueued = mItemQueued;
+	}
+
 	// Fill incoming queue
 	{
 		RsStackMutex stack(mThreadMutex);
-		readbytes = tick_recv(mTimeout);
+		readbytes = tick_recv(itemQueued ? STREAMER_TIMEOUT_MIN : mTimeout);
 	}
 
 	// Process incoming items, move them to relevant service queue or shortcut to fast service
@@ -104,18 +128,27 @@ void pqithreadstreamer::threadTick()
 		RecvItem(incoming);
 	}
 
+	// Everything queued until now is handled by the send below. An item queued from here on sets
+	// the flag again, and the wait at the end of this pass returns at once.
+	{
+		std::lock_guard<std::mutex> lock(mWakeMtx);
+		mItemQueued = false;
+	}
+
 	// Parse outgoing queue and send items
 	{
 		RsStackMutex stack(mThreadMutex);
 		sentbytes = tick_send(0);
 	}
 
+	const bool queueEmpty = (getQueueSize(false) == 0);
+
         // Adaptive timeout and sleep. Reading, or a send that left items queued, means a transfer:
         // go reactive. A send that emptied the queue is a lone item (on a node with many friends,
         // mostly forwarded turtle tunnel requests, several per second on every link): treating it as
-        // activity kept every idle link at a 1 ms cadence. The next lone item waits at most one
-        // sleep period, a few tens of ms.
-        if (readbytes > 0 || (sentbytes > 0 && getQueueSize(false) > 0))
+        // activity kept every idle link at a 1 ms cadence. The next lone item does not wait for the
+        // end of the sleep: SendItem() wakes the thread (see below).
+        if (readbytes > 0 || (sentbytes > 0 && !queueEmpty))
         {
                 // Activity detected: switch to maximum reactivity immediately
                 // This ensure fast throughput for data bursts
@@ -136,6 +169,20 @@ void pqithreadstreamer::threadTick()
 
 	if (mSleepPeriod > 0)
 	{
-		rstime::rs_usleep(mSleepPeriod);
+		// Queue empty: sleep until the period ends or SendItem() queues an item. Lone items are
+		// mostly turtle tunnel requests and results, whose arrival order decides which route a
+		// tunnel takes; holding them up to a full idle cycle on every hop favoured the routes
+		// made of busy links. Items left in the queue (bandwidth limit, socket full): plain
+		// sleep, or every item queued behind them would cost a pass that cannot send it.
+		if (queueEmpty)
+			waitForItemOrTimeout(mSleepPeriod);
+		else
+			rstime::rs_usleep(mSleepPeriod);
 	}
+}
+
+void pqithreadstreamer::waitForItemOrTimeout(uint32_t usec)
+{
+	std::unique_lock<std::mutex> lock(mWakeMtx);
+	mWakeCv.wait_for(lock, std::chrono::microseconds(usec), [this] { return mItemQueued; });
 }

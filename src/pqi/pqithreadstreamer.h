@@ -25,10 +25,17 @@
 #include "pqi/pqistreamer.h"
 #include "util/rsthreads.h"
 
+#include <condition_variable>
+#include <mutex>
+
 class pqithreadstreamer: public pqistreamer, public RsTickingThread
 {
 public:
     pqithreadstreamer(PQInterface *parent, RsSerialiser *rss, const RsPeerId& peerid, BinInterface *bio_in, int bio_flagsin);
+
+    /// Queues the item, then wakes the streamer thread so that it does not sit in its idle sleep
+    using pqistreamer::SendItem;
+    virtual int SendItem(RsItem *item, uint32_t& serialized_size) override;
 
     // from pqistreamer
     virtual bool RecvItem(RsItem *item) override;
@@ -42,8 +49,17 @@ protected:
     uint32_t mSleepPeriod;
 
 private:
+    /// Sleeps up to usec, or until SendItem() queues an item
+    void waitForItemOrTimeout(uint32_t usec);
+
     /* thread variables */
     RsMutex mThreadMutex;
+
+    // Set by SendItem() from any thread, cleared by the streamer thread right before it sends.
+    // Leaf lock: nothing else is locked while mWakeMtx is held.
+    std::mutex mWakeMtx;
+    std::condition_variable mWakeCv;
+    bool mItemQueued = false;
 };
 
 #endif //MRK_PQI_THREAD_STREAMER_HEADER
