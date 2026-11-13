@@ -1302,6 +1302,7 @@ bool p3GxsTunnelService::locked_sendClearTunnelData(RsGxsTunnelDHPublicKeyItem *
     std::cerr << "     data = " << RsUtil::BinToHex((unsigned char*)gitem->data_bytes,gitem->data_size,100) ;
     std::cerr << std::endl;
 #endif
+    gitem->setPriorityLevel(QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM) ;	// we are an end of this tunnel
     mTurtle->sendTurtleData(item->PeerId(),gitem) ;
     
     return true ;
@@ -1441,8 +1442,11 @@ bool p3GxsTunnelService::locked_sendEncryptedTunnelData(RsGxsTunnelItem *item)
 		it->second.already_probed_for_fast_items = true;
 
 	}
+	// We are an end of this tunnel: our items still go to a congested friend, relayed ones do not.
+	if(gitem2) gitem2->setPriorityLevel(QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM) ;
 	if(gitem2) mTurtle->sendTurtleData(virtual_peer_id,gitem2) ;
 #endif
+    if(gitem)  gitem->setPriorityLevel(QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM) ;
     if(gitem)  mTurtle->sendTurtleData(virtual_peer_id,gitem) ;
 
 	return true ;

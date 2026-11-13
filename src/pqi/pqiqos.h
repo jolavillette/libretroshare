@@ -167,6 +167,11 @@ public:
 	typedef bool (*ItemFilter)(const void *data,uint32_t size) ;
 	uint32_t removeOldItems(rstime_t now,rstime_t max_age,ItemFilter filter,uint32_t& removed_bytes,rstime_t& max_age_seen) ;
 
+	// Removes the items of priority lower than min_priority that did not start to be sent.
+	// removed_per_priority[p] is increased by the number of items removed at priority p.
+	// Returns the number of items removed; removed_bytes gets their total size.
+	uint32_t removeLowPriorityItems(uint32_t min_priority,std::vector<uint32_t>& removed_per_priority,uint32_t& removed_bytes) ;
+
 	// get some stats about what's going on. service_packets will contain the number of
 	// packets per service, and queue_sizes will contain the size of the different priority queues.
 
