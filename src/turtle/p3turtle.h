@@ -134,6 +134,8 @@
 #include <string>
 #include <list>
 #include <set>
+#include <deque>
+#include <unordered_set>
 
 #include "pqi/pqinetwork.h"
 #include "pqi/pqi.h"
@@ -288,10 +290,10 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		virtual std::string getPeerNameForVirtualPeerId(const RsPeerId& virtual_peer_id);
 		
 		/// get info about tunnels
-		virtual void getInfo(std::vector<std::vector<std::string> >&,
-									std::vector<std::vector<std::string> >&,
-									std::vector<TurtleSearchRequestDisplayInfo >&,
-									std::vector<TurtleTunnelRequestDisplayInfo >&) const ;
+		virtual void getInfo(std::vector<std::vector<std::string>>& hashes_info,
+		                     std::vector<std::vector<std::string>>& tunnels_info,
+		                     std::vector<TurtleSearchRequestDisplayInfo>& search_reqs_info,
+		                     std::vector<TurtleTunnelRequestDisplayInfo>& tunnel_reqs_info) const ;
 		
 		virtual void getTrafficStatistics(TurtleTrafficStatisticsInfo& info) const ;
 
@@ -416,6 +418,15 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		/// keeps trace of who emmitted a tunnel request
 		std::map<TurtleTunnelRequestId,TurtleTunnelRequestInfo> 	_tunnel_requests_origins ;
 
+		/// Ids of the tunnel requests seen, kept much longer than the request table
+		/// (time slices, the oldest one dropped at each rotation). Over slow links (Tor,
+		/// i2p, a stalled queue) copies of a request come back up to ~50 min later; once
+		/// the table forgot it, such a copy would be taken for a new request, with
+		/// whoever brought it back as origin, and its results would leave their route.
+		std::deque<std::unordered_set<TurtleTunnelRequestId> > _seen_tunnel_request_ids ;
+		rstime_t _last_seen_ids_rotation ;
+		bool locked_tunnelRequestAlreadySeen(TurtleTunnelRequestId id) const ;
+
 		/// stores adequate tunnels for each file hash locally managed
 		std::map<TurtleFileHash,TurtleHashInfo>			   	_incoming_file_hashes ;
 
@@ -438,6 +449,15 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		rstime_t _last_tunnel_management_time ;
 		rstime_t _last_tunnel_campaign_time ;
 		rstime_t _last_tunnel_speed_estimate_time ;
+
+		/// Routing anomalies, counted and reported once per minute instead of one log block per
+		/// item: a misbehaving neighbour can otherwise flood the log for hours.
+		uint32_t _nb_mismatching_items_dropped ;  // generic items from a peer that is neither end of the tunnel
+		uint32_t _nb_duplicate_tunnel_results ;   // tunnel ok received twice for the same request and tunnel id
+		uint32_t _nb_colliding_tunnel_results ;   // tunnel ok whose id is already used with other endpoints
+		uint32_t _nb_results_from_origin ;        // tunnel ok sent by the friend the request came from
+		uint32_t _nb_long_memory_drops ;          // tunnel request copies older than the request table, dropped
+		rstime_t _last_routing_anomaly_report_time ;
 
 		std::list<pqipeer> _online_peers;
 

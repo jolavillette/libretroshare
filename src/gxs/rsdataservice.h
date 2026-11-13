@@ -255,6 +255,8 @@ public:
      */
     int updateGroupMetaData(const GrpLocMetaData &meta) override;
 
+    int updateGroupMetaData(const std::vector<GrpLocMetaData>& metaList) override;
+
     /*!
      * Completely clear out data stored in
      * and returns this to a state
@@ -276,6 +278,9 @@ public:
 
     void debug_printCacheSize() ;
 
+    //! Creates the covering index used by the meta reads if it is missing (one-time cost on upgrade).
+    void ensureMsgMetaIndex();
+
 private:
 
     /*!
@@ -283,7 +288,13 @@ private:
      * @param c cursor to result set
      * @param msgs messages retrieved from cursor are stored here
      */
-    void locked_retrieveMessages(RetroCursor* c, std::vector<RsNxsMsg*>& msgs, int metaOffset);
+    /*!
+     * @param expected_grp when not null, messages belonging to another group are
+     *        discarded. Used by the id based retrieval, whose query selects on
+     *        the message id alone.
+     */
+    void locked_retrieveMessages(RetroCursor* c, std::vector<RsNxsMsg*>& msgs, int metaOffset,
+                                 const RsGxsGroupId* expected_grp = nullptr);
 
     /*!
      * Retrieves all the grp results from a cursor
