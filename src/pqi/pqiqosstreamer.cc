@@ -44,8 +44,9 @@ static const rstime_t PQI_QOS_STALE_REPORT_PERIOD    = 60 ;	// seconds
 //  - drain above ENTER_DRAIN for PERSISTENCE seconds in a row: the friend is congested.
 //    Only items of priority MIN_PRIORITY and above are queued (heartbeats, bandwidth
 //    control, chat, the tunnel requests/results we start or answer ourselves and the
-//    GxsTunnel items of the tunnels we are an end of); everything else, relayed turtle
-//    traffic included, is dropped, and is purged from the queue when congestion starts.
+//    GxsTunnel items of the tunnels we are an end of), plus direct mail (see
+//    isDirectMailItem()); everything else, relayed turtle traffic included, is dropped,
+//    and is purged from the queue when congestion starts.
 //  - the congestion lasts at least `hold` seconds, then ends once drain stayed below
 //    LEAVE_DRAIN for PERSISTENCE seconds in a row. Purging empties the queue at once, so
 //    without this the state would flip every few tens of seconds on a slow friend.
@@ -73,6 +74,21 @@ static bool isTurtleTunnelRequestOrResult(const void *data,uint32_t size)
 	const unsigned char *p = (const unsigned char *)data ;
 
 	return p[1] == 0x00 && p[2] == 0x14 && (p[3] == 0x03 || p[3] == 0x04) ;
+}
+
+// Direct mail between friends (service 0x0013, see rsitems/rsserviceids.h). p3MsgService
+// removes a direct mail from its outbox as soon as it is handed to us, with no receipt:
+// dropped here, it would be lost. It is therefore never refused nor purged when the friend
+// is congested. It keeps its low priority, so it only uses what chat and the other
+// priority 8+ items leave of the link, and it keeps the drain up until it is sent.
+static bool isDirectMailItem(const void *data,uint32_t size)
+{
+	if(size < 8)
+		return false ;
+
+	const unsigned char *p = (const unsigned char *)data ;
+
+	return p[1] == 0x00 && p[2] == 0x13 ;
 }
 
 const float    pqiQoSstreamer::PQI_QOS_STREAMER_ALPHA      = 2.0f ;
@@ -179,7 +195,7 @@ void pqiQoSstreamer::locked_updateCongestion(float out_rate_kBps)
 			_seconds_below = 0 ;
 
 			uint32_t bytes = 0 ;
-			uint32_t n = pqiQoS::removeLowPriorityItems(PQI_QOS_CONGESTION_MIN_PRIORITY,_refused_per_priority,bytes) ;
+			uint32_t n = pqiQoS::removeLowPriorityItems(PQI_QOS_CONGESTION_MIN_PRIORITY,isDirectMailItem,_refused_per_priority,bytes) ;
 
 			_total_item_size -= std::min(bytes,_total_item_size) ;
 			_total_item_count -= std::min(n,_total_item_count) ;
@@ -257,7 +273,7 @@ int pqiQoSstreamer::getQueueSize(bool in)
 
 void pqiQoSstreamer::locked_storeInOutputQueue(void *ptr,int size,int priority)
 {
-	if(_congested && priority < PQI_QOS_CONGESTION_MIN_PRIORITY)	// see locked_updateCongestion()
+	if(_congested && priority < PQI_QOS_CONGESTION_MIN_PRIORITY && !isDirectMailItem(ptr,size))	// see locked_updateCongestion()
 	{
 		++_refused_per_priority[std::min(std::max(priority,0),(int)_refused_per_priority.size()-1)] ;
 		_refused_bytes += size ;
