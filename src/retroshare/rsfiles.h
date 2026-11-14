@@ -192,6 +192,7 @@ enum class RsSharedDirectoriesEventCode: uint8_t {
     FRIEND_DIR_LIST_UPDATED  = 0x0b, // NOTIFY_LIST_DIRLIST_FRIENDS, friend dir list has been updated
     OWN_DIR_LIST_UPDATED     = 0x0c, // NOTIFY_LIST_DIRLIST_LOCAL  , own    dir list has been updated
     OWN_DIR_LIST_PROCESSING  = 0x0d, // NOTIFY_LIST_DIRLIST_LOCAL prechange
+    FILE_HASH_FAILED         = 0x0e, // mFilePath: shared or extra file that could not be hashed (unreadable, vanished, I/O error)
 };
 
 enum class RsFileTransferEventCode: uint8_t {
@@ -538,7 +539,6 @@ struct BannedFileEntry : RsSerializable
 	}
 };
 
-struct DeepFilesSearchResult;
 
 struct TurtleFileInfoV2 : RsSerializable
 {
@@ -548,9 +548,6 @@ struct TurtleFileInfoV2 : RsSerializable
 	    fSize(oldInfo.size), fHash(oldInfo.hash), fName(oldInfo.name),
 	    fWeight(0) {}
 
-#ifdef RS_DEEP_FILES_INDEX
-	explicit TurtleFileInfoV2(const DeepFilesSearchResult& dRes);
-#endif // def RS_DEEP_FILES_INDEX
 
 	uint64_t fSize;    /// File size
 	RsFileHash fHash;  /// File hash
@@ -812,9 +809,7 @@ public:
 	/**
 	 * @brief Request remote files search
 	 * @jsonapi{development}
-	 * @param[in] matchString string to look for in the search. If files deep
-	 *	indexing is enabled at compile time support advanced features described
-	 *	at https://xapian.org/docs/queryparser.html
+	 * @param[in] matchString string to look for in the search
 	 * @param multiCallback function that will be called each time a search
 	 * result is received
 	 * @param[in] maxWait maximum wait time in seconds for search results

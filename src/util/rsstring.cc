@@ -32,6 +32,7 @@
 #endif
 #include <stdint.h>
 #include <stdio.h>
+#include <algorithm>
 
 namespace librs { namespace util {
 
@@ -319,6 +320,149 @@ void stringToLowerCase(const std::string& s, std::string &lower)
 	for(uint32_t i=0;i<lower.size();++i)
 		if(lower[i] > 64 && lower[i] < 91)
 			lower[i] += 97-65 ;
+}
+
+/* Simple (one to one) lower case mapping of a code point. Only covers the
+ * scripts in which case matters and that file names commonly use. */
+static uint32_t foldCodePoint(uint32_t c)
+{
+	if(c < 0x80) return (c >= 'A' && c <= 'Z') ? c + 32 : c;
+
+	// Latin-1 Supplement
+	if(c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 32;
+
+	// Latin Extended-A
+	if(c == 0x130) return 'i'; // LATIN CAPITAL LETTER I WITH DOT ABOVE
+	if(c >= 0x100 && c <= 0x137) return c | 1;
+	if(c >= 0x139 && c <= 0x148) return (c & 1) ? c + 1 : c;
+	if(c >= 0x14A && c <= 0x177) return c | 1;
+	if(c == 0x178) return 0xFF;
+	if(c >= 0x179 && c <= 0x17E) return (c & 1) ? c + 1 : c;
+
+	// Greek
+	if(c == 0x386) return 0x3AC;
+	if(c >= 0x388 && c <= 0x38A) return c + 37;
+	if(c == 0x38C) return 0x3CC;
+	if(c == 0x38E || c == 0x38F) return c + 63;
+	if(c >= 0x391 && c <= 0x3AB && c != 0x3A2) return c + 32;
+	if(c == 0x3C2) return 0x3C3; // final sigma
+
+	// Cyrillic
+	if(c >= 0x400 && c <= 0x40F) return c + 80;
+	if(c >= 0x410 && c <= 0x42F) return c + 32;
+	if(c >= 0x460 && c <= 0x481) return c | 1;
+	if(c >= 0x48A && c <= 0x4BF) return c | 1;
+	if(c == 0x4C0) return 0x4CF;
+	if(c >= 0x4C1 && c <= 0x4CE) return (c & 1) ? c + 1 : c;
+	if(c >= 0x4D0 && c <= 0x52F) return c | 1;
+
+	// Armenian
+	if(c >= 0x531 && c <= 0x556) return c + 48;
+
+	// Latin Extended Additional (Vietnamese, Welsh...)
+	if(c >= 0x1E00 && c <= 0x1E95) return c | 1;
+	if(c >= 0x1EA0 && c <= 0x1EFF) return c | 1;
+
+	// Fullwidth Latin
+	if(c >= 0xFF21 && c <= 0xFF3A) return c + 32;
+
+	return c;
+}
+
+static void appendUtf8(std::string& out, uint32_t c)
+{
+	if(c < 0x80) out += static_cast<char>(c);
+	else if(c < 0x800)
+	{
+		out += static_cast<char>(0xC0 | (c >> 6));
+		out += static_cast<char>(0x80 | (c & 0x3F));
+	}
+	else if(c < 0x10000)
+	{
+		out += static_cast<char>(0xE0 | (c >> 12));
+		out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+		out += static_cast<char>(0x80 | (c & 0x3F));
+	}
+	else
+	{
+		out += static_cast<char>(0xF0 | (c >> 18));
+		out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+		out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+		out += static_cast<char>(0x80 | (c & 0x3F));
+	}
+}
+
+static bool isAscii(const std::string& s)
+{
+	for(unsigned char ch : s) if(ch >= 0x80) return false;
+	return true;
+}
+
+std::string utf8FoldCase(const std::string& s)
+{
+	std::string out;
+	out.reserve(s.size());
+
+	const size_t n = s.size();
+	size_t i = 0;
+	while(i < n)
+	{
+		const unsigned char b0 = static_cast<unsigned char>(s[i]);
+
+		if(b0 < 0x80)
+		{
+			out += static_cast<char>((b0 >= 'A' && b0 <= 'Z') ? b0 + 32 : b0);
+			++i;
+			continue;
+		}
+
+		size_t len; uint32_t c, min;
+		if((b0 & 0xE0) == 0xC0)      { len = 2; c = b0 & 0x1F; min = 0x80; }
+		else if((b0 & 0xF0) == 0xE0) { len = 3; c = b0 & 0x0F; min = 0x800; }
+		else if((b0 & 0xF8) == 0xF0) { len = 4; c = b0 & 0x07; min = 0x10000; }
+		else { out += s[i++]; continue; } // stray continuation or invalid byte
+
+		bool valid = i + len <= n;
+		for(size_t k = 1; valid && k < len; ++k)
+		{
+			const unsigned char bk = static_cast<unsigned char>(s[i+k]);
+			if((bk & 0xC0) != 0x80) valid = false;
+			else c = (c << 6) | (bk & 0x3F);
+		}
+		// Reject overlong forms, surrogates and out of range values so that
+		// re-encoding never changes bytes we do not fold.
+		if(valid && (c < min || c > 0x10FFFF || (c >= 0xD800 && c <= 0xDFFF)))
+			valid = false;
+
+		if(!valid) { out += s[i++]; continue; }
+
+		appendUtf8(out, foldCodePoint(c));
+		i += len;
+	}
+
+	return out;
+}
+
+bool utf8ContainsIgnoreCase(const std::string& haystack, const std::string& needle)
+{
+	if(isAscii(haystack) && isAscii(needle))
+	{
+		auto eq = [](char a, char b)
+		{
+			if(a >= 'A' && a <= 'Z') a += 32;
+			if(b >= 'A' && b <= 'Z') b += 32;
+			return a == b;
+		};
+		return std::search( haystack.begin(), haystack.end(),
+		                    needle.begin(), needle.end(), eq ) != haystack.end();
+	}
+
+	return utf8FoldCase(haystack).find(utf8FoldCase(needle)) != std::string::npos;
+}
+
+bool utf8EqualsIgnoreCase(const std::string& a, const std::string& b)
+{
+	return utf8FoldCase(a) == utf8FoldCase(b);
 }
 
 bool isHexaString(const std::string& s)

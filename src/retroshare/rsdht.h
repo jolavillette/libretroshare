@@ -173,6 +173,49 @@ public:
     rstime_t mLastSeen;
 };
 
+/** Size of the DHT and of its RetroShare part. 0 = not measured yet.
+ * Densities come from random-target lookups; "reachable" counts the nodes
+ * that answered us, "heard" adds the silent ones at least two nodes reported.
+ * Errors are half the 10-90 % confidence interval, in percent. */
+struct RsDhtSizeEstimate
+{
+	/** RetroShare nodes online now: low end of the reachable interval to the
+	 * high end of the heard one */
+	uint32_t rsMin = 0;
+	uint32_t rsMax = 0;
+	/** fewer lookups than a full sample yet: the range will still move */
+	bool rsProvisional = true;
+	uint32_t rsReachable = 0;
+	uint32_t rsReachableErr = 0;
+	uint32_t rsHeard = 0;
+	uint32_t rsHeardErr = 0;
+	uint32_t rsLookups = 0;
+
+	/** RS nodes seen in our own routing table over the last 24 h */
+	uint32_t rsSeen24h = 0;
+	/** distinct RS nodes online during the last 24 h, from the overlap of
+	 * our routing table and the RS lookups (Chapman); 0 = no overlap yet */
+	uint32_t rsDistinct24h = 0;
+	/** RS nodes online now from our routing table, calibrated by the share
+	 * of our friends present in the DHT the table holds; 0 = no friend in
+	 * the DHT. Friends are over-represented in our table: a low estimate */
+	uint32_t rsFriendCalibrated = 0;
+	uint32_t rsFriendsInDht = 0;
+
+	/** whole DHT, same meanings */
+	uint32_t allMin = 0;
+	uint32_t allMax = 0;
+	bool allProvisional = true;
+	uint32_t allReachable = 0;
+	uint32_t allReachableErr = 0;
+	uint32_t allHeard = 0;
+	uint32_t allHeardErr = 0;
+	uint32_t allLookups = 0;
+
+	/** false when this libbitdht cannot run the lookups at all */
+	bool lookupsAvailable = false;
+};
+
 class RsDht
 {
 	public:
@@ -211,6 +254,9 @@ virtual bool    getOwnDhtId(std::string &ownDhtId) = 0;
 
 virtual bool	isAddressBanned(const struct sockaddr_storage& raddr) =0;
 virtual void	getListOfBannedIps(std::list<RsDhtFilteredPeer>& lst) =0;
+
+/** Estimated number of RetroShare nodes and of DHT nodes, as ranges */
+virtual void	getDhtSizeEstimate(RsDhtSizeEstimate& est) = 0;
 
 #if 0
 virtual std::string getPeerStatusString();

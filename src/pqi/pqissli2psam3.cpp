@@ -23,6 +23,10 @@ bool pqissli2psam3::connect_parameter(uint32_t type, const std::string &value)
 	{
 		RS_DBG1("got addr:", value);
 		RS_STACK_MUTEX(mSslMtx);
+		// A new address means a new destination: drop the cached long key so
+		// that the next attempt looks it up instead of reaching the old one.
+		if (value != mI2pAddrB32)
+			mI2pAddrLong.clear();
 		mI2pAddrB32 = value;
 		return true;
 	}
@@ -67,8 +71,12 @@ int pqissli2psam3::Initiate_Connection()
 		RS_DBG1("DO_LOOKUP");
 
 		if (!mI2pAddrLong.empty()) {
-			// skip lookup, it is highly unlikely/impossible for a public key to change (isn't it?)
-			mState = pqisslSam3State::WAIT_LOOKUP;
+			// skip lookup: the key is cached for the current base32 address and
+			// dropped by connect_parameter() when that address changes.
+			// Go straight to DO_CONNECT: WAIT_LOOKUP waits for a lookup task
+			// that was never started, so every reconnection after the first
+			// one stalled there for ever.
+			mState = pqisslSam3State::DO_CONNECT;
 			break;
 		}
 
@@ -144,10 +152,17 @@ void pqissli2psam3::taskFinished(taskTicket *&ticket)
 		auto addr = static_cast<i2p::address*>(ticket->data);
 
 		RS_STACK_MUTEX(mSslMtx);
-		if (ticket->result == autoProxyStatus::ok) {
+		if (ticket->result == autoProxyStatus::ok && addr->base32 != mI2pAddrB32) {
+			// The address changed while this lookup ran: its key is the old
+			// destination's, look the new one up instead.
+			mState = pqisslSam3State::DO_LOOKUP;
+		} else if (ticket->result == autoProxyStatus::ok) {
 			mI2pAddrLong = addr->publicKey;
 			mState = pqisslSam3State::DO_CONNECT;
 		} else {
+			// Leave WAIT_LOOKUP too: staying there made every later
+			// attempt wait for a task that would never come back.
+			mState = pqisslSam3State::NONE;
 			waiting = WAITING_FAIL_INTERFACE;
 		}
 
@@ -165,6 +180,9 @@ void pqissli2psam3::taskFinished(taskTicket *&ticket)
 			mConn = wrapper->connection;
 			mState = pqisslSam3State::DONE;
 		} else {
+			// Same as above for WAIT_CONNECT. The looked-up key is kept, so
+			// the next attempt skips the lookup.
+			mState = pqisslSam3State::NONE;
 			waiting = WAITING_FAIL_INTERFACE;
 		}
 

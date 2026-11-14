@@ -44,6 +44,7 @@
 #include "ft/ftcontroller.h"
 
 #include "p3turtle.h"
+#include "turtle/turtlejournal.h"
 #include "util/cxx17retrocompat.h"
 #include "util/rsdebug.h"
 #include "util/rsprint.h"
@@ -296,6 +297,21 @@ int p3turtle::tick()
 		dumpState() ;
 	}
 #endif
+
+	// Off turtle mutex: flush the tunnel journal dumps and print its periodic summary.
+	{
+		uint32_t live_tunnels,live_requests ;
+
+		{
+			RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
+
+			live_tunnels  = uint32_t(_local_tunnels.size()) ;
+			live_requests = uint32_t(_tunnel_requests_origins.size()) ;
+		}
+
+		TurtleJournal::instance().tick(live_tunnels,live_requests) ;
+	}
+
 	return 0 ;
 }
 
@@ -593,6 +609,9 @@ void p3turtle::locked_closeTunnel(TurtleTunnelId tid,std::vector<std::pair<RsTur
 		std::cerr << "p3turtle: was asked to close tunnel " << reinterpret_cast<void*>(tid) << ", which actually doesn't exist." << std::endl ;
 		return ;
 	}
+
+	TurtleJournal::instance().tunnelClosed(tid,it->second.local_src,it->second.local_dst,
+	                                       uint32_t(time(NULL) - (rstime_t)it->second.time_stamp)) ;
 #ifdef P3TURTLE_DEBUG
 	std::cerr << "p3turtle: Closing tunnel " << HEX_PRINT(tid) << std::endl ;
 #endif
@@ -769,6 +788,27 @@ void p3turtle::setMaxTRForwardRate(int val)
 		_max_tr_up_rate = val ;
 		std::cerr << "p3turtle: Set max tr up rate to " << val << std::endl;
 	}
+
+// JOLA
+// This is a hack!
+// At the moment the number of TR forwarded per second must stay within MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT and MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT
+// In some cases this is not satisfying:
+// - for nodes with very good UP BW, who wish to be part of more tunnels and provide more BW to the RS community,
+// - for nodes with poor UP BW, who wish to entirely stop forwarding data in tunnels while still being able to upload their own files, download in tunnels, and do distant chat
+// For that purpose:
+// - if the user selects MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT in settings then the actual max TR forward per seconds is set to 300, which is equivalent to 15 to 20 kB/s
+// - if the user selects MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT in settings then the actual max TR forward per seconds is set to 0
+        if (_max_tr_up_rate == MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT)
+        {
+                RsDbg() << "TURTLE p3turtle::setMaxTRForwardRate setting max TR forward per second to 1000";
+                _max_tr_up_rate = 1000;
+        }
+        if (_max_tr_up_rate == MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT)
+        {
+                RsDbg() << "TURTLE p3turtle::setMaxTRForwardRate setting max TR forward per second to 0";
+                _max_tr_up_rate =    0;
+        }
+
 	IndicateConfigChanged() ;
 }
 
@@ -1295,6 +1335,9 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "p3turtle: got file map with unknown tunnel id " << HEX_PRINT(item->tunnelId()) << std::endl ;
 #endif
+			TurtleJournal::instance().itemUnknownTunnel(item->tunnelId(),item->PeerId(),item->PacketSubType(),
+			        TurtleJournal::instance().enabled()?TurtleJournal::fingerprint(item):TurtleJournal::ItemDesc()) ;
+
 			delete item;
 			return ;
 		}
@@ -1313,13 +1356,39 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 			item->setTravelingDirection(RsTurtleGenericTunnelItem::DIRECTION_SERVER) ;
 		else
 		{
-			std::cerr << "(EE) p3turtle::routeGenericTunnelItem(): item mismatches tunnel src/dst ids." << std::endl;
-			std::cerr << "(EE)          tunnel.local_src = " << tunnel.local_src << std::endl;
-			std::cerr << "(EE)          tunnel.local_dst = " << tunnel.local_dst << std::endl;
-			std::cerr << "(EE)            item->PeerId() = " << item->PeerId()    << std::endl;
-			std::cerr << "(EE) This item is probably lost while tunnel route got redefined. Deleting this item." << std::endl ;
+			// The sender is neither end of this tunnel: we have no way to route this item.
+			// The full history of the offending tunnel id is dumped once by the journal;
+			// here we only keep an aggregated count, because this condition comes in bursts
+			// of thousands of items per minute for a single broken tunnel.
+
+			rstime_t tunnel_age = time(NULL) - (rstime_t)tunnel.time_stamp ;
+
+			TurtleJournal::instance().itemMismatch(item->tunnelId(),item->PeerId(),tunnel.local_src,tunnel.local_dst,
+			                                       item->PacketSubType(),(tunnel_age > 0)?uint32_t(tunnel_age):0,
+			                                       TurtleJournal::instance().enabled()?TurtleJournal::fingerprint(item):TurtleJournal::ItemDesc()) ;
+
+			if(TurtleJournal::instance().verboseRouting())
+			{
+				std::cerr << "(EE) p3turtle::routeGenericTunnelItem(): item mismatches tunnel src/dst ids." << std::endl;
+				std::cerr << "(EE)               tunnel id = " << HEX_PRINT(item->tunnelId()) << std::endl;
+				std::cerr << "(EE)          tunnel.local_src = " << tunnel.local_src << std::endl;
+				std::cerr << "(EE)          tunnel.local_dst = " << tunnel.local_dst << std::endl;
+				std::cerr << "(EE)            item->PeerId() = " << item->PeerId()    << std::endl;
+				std::cerr << "(EE) This item is probably lost while tunnel route got redefined. Deleting this item." << std::endl ;
+			}
+
 			delete item ;
 			return ;
+		}
+
+		// Journal: fingerprint of every accepted item, so that a later dropped item can be
+		// recognised as a copy of one that travelled on the real route.
+		if(TurtleJournal::instance().enabled())
+		{
+			const TurtlePeerId& next((item->PeerId() == tunnel.local_dst)?tunnel.local_src:tunnel.local_dst) ;
+
+			TurtleJournal::instance().itemRouted(item->tunnelId(),item->PeerId(),(next == _own_id)?TurtlePeerId():next,
+			                                     item->PacketSubType(),TurtleJournal::fingerprint(item)) ;
 		}
 
 		// Let's figure out whether this packet is for us or not.
@@ -1510,6 +1579,10 @@ void p3turtle::sendTurtleData(const RsPeerId& virtual_peer_id,RsTurtleGenericTun
 #ifdef P3TURTLE_DEBUG
 	std::cerr << "p3turtle: sending service packet to virtual peer id " << virtual_peer_id << ", hash=0x" << tunnel.hash << ", tunnel = " << HEX_PRINT(item->tunnel_id) << ", next peer=" << tunnel.local_dst << std::endl ;
 #endif
+	if(TurtleJournal::instance().enabled())
+		TurtleJournal::instance().itemRouted(tunnel_id,TurtlePeerId(),item->PeerId(),item->PacketSubType(),
+		                                     TurtleJournal::fingerprint(item)) ;
+
 	sendItem(item) ;
 }
 
@@ -1625,6 +1698,9 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "  This is a bouncing request. Ignoring and deleting item." << std::endl ;
 #endif
+			TurtleJournal::instance().trBounce(item->request_id,item->PeerId(),it->second.origin,
+			                                   uint32_t(time(NULL) - (rstime_t)it->second.time_stamp),uint16_t(item->depth),
+			                                   item->partial_tunnel_id) ;
 			return ;
 		}
 		// This is a new request. Let's add it to the request map, and forward
@@ -1635,6 +1711,9 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 		req.origin = item->PeerId() ;
 		req.time_stamp = time(NULL) ;
 		req.depth = item->depth ;
+
+		TurtleJournal::instance().trIn(item->request_id,item->PeerId(),uint16_t(item->depth),
+		                               item->file_hash,item->partial_tunnel_id) ;
 
 #ifdef TUNNEL_STATISTICS
 		std::cerr << "storing tunnel request " << (void*)(item->request_id) << std::endl ;
@@ -1668,6 +1747,7 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 			// Send back tunnel ok to the same guy
 			//
 			RsTurtleTunnelOkItem *res_item = new RsTurtleTunnelOkItem ;
+			res_item->setPriorityLevel(QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM) ;	// we are the end of this tunnel
             TurtleVirtualPeerId vpid ;
 
 			res_item->request_id = item->request_id ;
@@ -1689,6 +1769,17 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 				tt.time_stamp = time(NULL) ;
 				tt.transfered_bytes = 0 ;
 				tt.speed_Bps = 0.0f ;
+
+				// This assignment silently replaces any existing entry for that id, including
+				// a transit tunnel between two other peers. Record it: that is one of the ways
+				// a tunnel id can end up pointing to a route it does not serve anymore.
+
+				std::map<TurtleTunnelId,TurtleTunnel>::const_iterator old(_local_tunnels.find(t_id)) ;
+				bool overwrote = (old != _local_tunnels.end()) ;
+
+				TurtleJournal::instance().trAnswered(item->request_id,t_id,item->PeerId(),item->file_hash,overwrote,
+				                                     overwrote?old->second.local_src:RsPeerId(),
+				                                     overwrote?old->second.local_dst:RsPeerId()) ;
 
 				_local_tunnels[t_id] = tt ;
 
@@ -1753,6 +1844,7 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 	//
 
 	float forward_probability ;
+	uint16_t nb_forwarded = 0 ;	// journal: how many neighbours actually got this request
 
 	{
 		RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
@@ -1764,6 +1856,10 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 		std::cerr << "Forwarding probability: depth=" << item->depth << ", distance to max speed=" << distance_to_maximum << ", corrected=" << corrected_distance << ", prob.=" << forward_probability << std::endl;
 #endif
 	}
+
+// JOLA
+// Enough with this shit, we will only drop TR with depth >= 6
+        forward_probability = 1.0f ;
 
 	if(item->depth < TURTLE_MAX_SEARCH_DEPTH || random_bypass)
 	{
@@ -1812,6 +1908,9 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 				// Copy current item and modify it.
 				RsTurtleOpenTunnelItem *fwd_item = new RsTurtleOpenTunnelItem(*item) ;
 
+				if(item->PeerId() == _own_id)	// our own request: still sent to a congested friend
+					fwd_item->setPriorityLevel(QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM) ;
+
 				// increase search depth, except in some rare cases, to prevent correlation between
 				// TR sniffing and friend names. The strategy is to not increase depth if the depth
 				// is 1:
@@ -1823,12 +1922,15 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 
 				fwd_item->PeerId(*it) ;
 
+				TurtleJournal::instance().trFwdTo(item->request_id,*it) ;
+
 				{
 					RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
 					_traffic_info_buffer.tr_up_Bps += RsTurtleSerialiser().size(fwd_item);
 				}
 
 				sendItem(fwd_item) ;
+				++nb_forwarded ;
 			}
 		}
 	}
@@ -1836,6 +1938,11 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 	else
 		std::cout << "  Dropping this item, as tunnel depth is " << item->depth << std::endl ;
 #endif
+
+	// item->partial_tunnel_id has been perturbated above: this is the id our neighbours
+	// received, and therefore the one the future tunnel id will be derived from.
+
+	TurtleJournal::instance().trFwd(item->request_id,item->partial_tunnel_id,nb_forwarded) ;
 }
 
 void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
@@ -1856,6 +1963,8 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 		item->print(std::cerr,0) ;
 #endif
 
+		TurtleJournal::instance().okIn(item->request_id,item->tunnel_id,item->PeerId()) ;
+
 		if(it == _tunnel_requests_origins.end())
 		{
 			// This is an error: how could we receive a tunnel result corresponding to a tunnel item we
@@ -1865,11 +1974,16 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << __PRETTY_FUNCTION__ << ": tunnel result has no peer direction!" << std::endl ;
 #endif
+			TurtleJournal::instance().okNoRequest(item->request_id,item->tunnel_id,item->PeerId()) ;
 			return ;
 		}
 		if(it->second.responses.find(item->tunnel_id) != it->second.responses.end())
 		{
-			std::cerr << "p3turtle: ERROR: received a tunnel response twice. That should not happen." << std::endl;
+			TurtleJournal::instance().okTwice(item->request_id,item->tunnel_id,item->PeerId()) ;
+
+			if(TurtleJournal::instance().verboseRouting())
+				std::cerr << "p3turtle: ERROR: received a tunnel response twice. That should not happen." << std::endl;
+
 			return ;
 		}
 		else
@@ -1879,11 +1993,29 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 		bool found = (_local_tunnels.find(item->tunnel_id) != _local_tunnels.end()) ;
 		TurtleTunnel& tunnel(_local_tunnels[item->tunnel_id]) ;
 
+		// When the id is already known, the endpoints of the existing entry are kept. If they
+		// differ from the route this result comes from, forwarding the result upstream would
+		// advertise a route that we cannot serve: the upstream peer would then send items that
+		// we systematically drop in routeGenericTunnelItem().
+
+		bool endpoints_mismatch = false ;
+
 		if(found)
 		{
+			endpoints_mismatch = (tunnel.local_src != it->second.origin || tunnel.local_dst != item->PeerId()) ;
+
+			TurtleJournal::instance().tunnelFound(item->tunnel_id,item->request_id,
+			                                      tunnel.local_src,tunnel.local_dst,
+			                                      it->second.origin,item->PeerId(),endpoints_mismatch) ;
+
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "Tunnel id " << HEX_PRINT(item->tunnel_id) << " is already there. Not storing." << std::endl ;
 #endif
+			if(endpoints_mismatch && TurtleJournal::instance().guardEnabled())
+			{
+				TurtleJournal::instance().okHeld(item->tunnel_id,item->request_id,it->second.origin) ;
+				return ;
+			}
 		}
 		else
 		{
@@ -1893,6 +2025,8 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 			tunnel.time_stamp = time(NULL) ;
 			tunnel.transfered_bytes = 0 ;
 			tunnel.speed_Bps = 0.0f ;
+
+			TurtleJournal::instance().tunnelCreated(item->tunnel_id,item->request_id,tunnel.local_src,tunnel.local_dst) ;
 
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "  storing tunnel info. src=" << tunnel.local_src << ", dst=" << tunnel.local_dst << ", id=" << item->tunnel_id << std::endl ;
@@ -1907,6 +2041,8 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #ifdef P3TURTLE_DEBUG
 			RsDbg() << "TURTLE p3turtle::handleTunnelResult Tunnel Request is known, but result arrives too late, dropping";
 #endif
+			TurtleJournal::instance().okLate(item->request_id,item->tunnel_id,item->PeerId(),
+			                                 uint32_t(time(NULL) - (rstime_t)it->second.time_stamp)) ;
 			return;
 		}
 
@@ -1969,6 +2105,8 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #endif
 			RsTurtleTunnelOkItem *fwd_item = new RsTurtleTunnelOkItem(*item) ;	// copy the item
 			fwd_item->PeerId(it->second.origin) ;
+
+			TurtleJournal::instance().okForwarded(item->tunnel_id,item->request_id,it->second.origin,endpoints_mismatch) ;
 
 			sendItem(fwd_item) ;
 		}
@@ -2294,6 +2432,9 @@ void p3turtle::getTrafficStatistics(TurtleTrafficStatisticsInfo& info) const
 			if(_traffic_info.tr_dn_Bps / (float)TUNNEL_REQUEST_PACKET_SIZE > _max_tr_up_rate)
 				forward_probability *= _max_tr_up_rate*TUNNEL_REQUEST_PACKET_SIZE / (float)_traffic_info.tr_dn_Bps ;
 		}
+
+// JOLA
+                forward_probability = 1.0f ;
 
 		info.forward_probabilities.push_back(forward_probability) ;
 	}

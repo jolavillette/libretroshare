@@ -1042,6 +1042,16 @@ X509 *AuthSSLimpl::SignX509ReqWithGPG(X509_REQ *req, long /*days*/)
 
         /* ADD Signature back into Cert... Signed!. */
 
+#if OPENSSL_VERSION_NUMBER >= 0x40000000L && !defined(LIBRESSL_VERSION_NUMBER)
+        /* ASN1_STRING is opaque since OpenSSL 4; set1() copies the bytes and records 0 unused bits. */
+        if (!ASN1_BIT_STRING_set1(signature, buf_sigout, sigoutl, 0))
+        {
+            fprintf(stderr, "AuthSSLimpl::SignX509Req: ASN1_BIT_STRING_set1 failed\n");
+            goto err;
+        }
+        OPENSSL_free(buf_sigout);
+        buf_sigout=NULL;
+#else
         if (signature->data != NULL) OPENSSL_free(signature->data);
         signature->data=buf_sigout;
         buf_sigout=NULL;
@@ -1051,6 +1061,7 @@ X509 *AuthSSLimpl::SignX509ReqWithGPG(X509_REQ *req, long /*days*/)
          */
         signature->flags&= ~(ASN1_STRING_FLAG_BITS_LEFT|0x07);
         signature->flags|=ASN1_STRING_FLAG_BITS_LEFT;
+#endif
 
         std::cerr << "Certificate Complete" << std::endl;
 
@@ -1174,7 +1185,7 @@ bool AuthSSLimpl::AuthX509WithGPG(X509 *x509,bool verbose, uint32_t& diagnostic)
 
 		PGPSignatureInfo signature_info ;
 		PGPKeyManagement::parseSignature(
-		            signature->data, static_cast<size_t>(signature->length),
+		            ASN1_STRING_get0_data(signature), static_cast<size_t>(ASN1_STRING_length(signature)),
 		            signature_info );
 
 		if(signature_info.signature_version != PGP_PACKET_TAG_SIGNATURE_VERSION_V4)
@@ -1233,7 +1244,7 @@ bool AuthSSLimpl::AuthX509WithGPG(X509 *x509,bool verbose, uint32_t& diagnostic)
 
 		// passed, verify the signature itself
 
-        if (!AuthPGP::VerifySignBin( signed_data, signed_data_length, signature->data, static_cast<unsigned int>(signature->length), pd.fpr ))
+        if (!AuthPGP::VerifySignBin( signed_data, signed_data_length, const_cast<unsigned char*>(ASN1_STRING_get0_data(signature)), static_cast<unsigned int>(ASN1_STRING_length(signature)), pd.fpr ))
 		{
 			diagnostic = RS_SSL_HANDSHAKE_DIAGNOSTIC_WRONG_SIGNATURE;
 			goto err;
@@ -1286,29 +1297,23 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 	constexpr int verificationFailed = 0;
 	constexpr int verificationSuccess = 1;
 
-    // Function to recover the IP address of the caller in case it's needed
-
-    auto getCallersIP = [=]() -> std::string {
+    // Caller's address for the events below. Built from the socket address:
+    // RsUrl(std::string) takes a bare IP for a scheme, leaving host and port empty.
+    auto getCallersLocator = [=]() -> RsUrl {
         SSL *ssl = (SSL*)X509_STORE_CTX_get_ex_data(ctx, SSL_get_ex_data_X509_STORE_CTX_idx());
 
-        if (!ssl) return std::string();
+        if (!ssl) return RsUrl();
 
-        // Now you can get the underlying socket and peer IP
-        int fd = SSL_get_fd(ssl); // gets the underlying file descriptor
-        if (fd < 0) return std::string();
+        int fd = SSL_get_fd(ssl);
+        if (fd < 0) return RsUrl();
 
         struct sockaddr_storage addr;
-
         socklen_t len = sizeof(addr);
 
         if(!!getpeername(fd, (struct sockaddr *)&addr, &len))
-            return std::string();
+            return RsUrl();
 
-        std::string ipstr;
-        if (sockaddr_storage_inet_ntop(addr, ipstr))
-            return ipstr;
-        else
-            return std::string();
+        return RsUrl(addr);
     };
 
 	using Evt_t = RsAuthSslConnectionAutenticationEvent;
@@ -1345,13 +1350,13 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 
 		RsInfo() << __PRETTY_FUNCTION__ << " " << errMsg << std::endl;
 
-		if(rsEvents)
+		if(rsEvents && !isNotifyDenied(pgpId))
 		{
 			ev->mSslCn = sslCn;
 			ev->mSslId = sslId;
 			ev->mPgpId = pgpId;
 			ev->mErrorMsg = errMsg;
-            ev->mLocator = RsUrl(getCallersIP());
+            ev->mLocator = getCallersLocator();
 			ev->mErrorCode = RsAuthSslError::MISSING_AUTHENTICATION_INFO;
 
 			rsEvents->postEvent(std::move(ev));
@@ -1367,12 +1372,12 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 
 		RsInfo() << __PRETTY_FUNCTION__ << " " << errMsg << std::endl;
 
-		if(rsEvents)
+		if(rsEvents && !isNotifyDenied(pgpId))
 		{
 			ev->mSslId = sslId;
 			ev->mSslCn = sslCn;
 			ev->mErrorMsg = errMsg;
-            ev->mLocator = RsUrl(getCallersIP());
+            ev->mLocator = getCallersLocator();
             ev->mErrorCode = RsAuthSslError::MISSING_AUTHENTICATION_INFO;
 
 			rsEvents->postEvent(std::move(ev));
@@ -1403,7 +1408,7 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 				ev->mSslId = sslId;
 				ev->mSslCn = sslCn;
 				ev->mPgpId = pgpId;
-                ev->mLocator = RsUrl(getCallersIP());
+                ev->mLocator = getCallersLocator();
                 ev->mErrorMsg = errorMsg;
 				ev->mErrorCode = RsAuthSslError::MISMATCHED_PGP_ID;
 				rsEvents->postEvent(std::move(ev));
@@ -1425,12 +1430,12 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 
 		RsInfo() << __PRETTY_FUNCTION__ << " " << errMsg << std::endl;
 
-		if(rsEvents)
+		if(rsEvents && !isNotifyDenied(pgpId))
 		{
 			ev->mSslId = sslId;
 			ev->mSslCn = sslCn;
 			ev->mPgpId = pgpId;
-            ev->mLocator = RsUrl(getCallersIP());
+            ev->mLocator = getCallersLocator();
 
 			switch(auth_diagnostic)
 			{
@@ -1466,12 +1471,12 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 
 		Dbg1() << __PRETTY_FUNCTION__ << " " << errMsg << std::endl;
 
-		if(rsEvents)
+		if(rsEvents && !isNotifyDenied(pgpId))
 		{
 			ev->mSslId = sslId;
 			ev->mSslCn = sslCn;
 			ev->mPgpId = pgpId;
-            ev->mLocator = RsUrl(getCallersIP());
+            ev->mLocator = getCallersLocator();
             ev->mErrorMsg = errMsg;
 			ev->mErrorCode = RsAuthSslError::NOT_A_FRIEND;
 			rsEvents->postEvent(std::move(ev));
@@ -1856,22 +1861,21 @@ bool AuthSSLimpl::saveList(bool& cleanup, std::list<RsItem*>& lst)
 
         cleanup = true ;
 
-        // Now save config for network digging strategies
-        RsConfigKeyValueSet *vitem = new RsConfigKeyValueSet ;
-		std::map<RsPeerId, X509*>::iterator mapIt;
-        for (mapIt = mCerts.begin(); mapIt != mCerts.end(); ++mapIt) {
-            if (mapIt->first == mOwnId) {
-                continue;
+        // This config (authssl.cfg) only holds the deny list. The certificates
+        // in mCerts are not saved: this config was not registered before the
+        // deny list, and mCerts is refilled at each successful handshake.
+
+        /* Save Deny List */
+        if (!mDenyList.empty()) {
+            RsConfigKeyValueSet* denyItem = new RsConfigKeyValueSet;
+            for (const auto& pair : mDenyList) {
+                RsTlvKeyValue kv;
+                kv.key = pair.first.toStdString();
+                kv.value = "DENY:" + pair.second;
+                denyItem->tlvkvs.pairs.push_back(kv);
             }
-            RsTlvKeyValue kv;
-            kv.key = mapIt->first.toStdString();
-            #ifdef AUTHSSL_DEBUG
-            std::cerr << "AuthSSLimpl::saveList() called (mapIt->first) : " << (mapIt->first) << std::endl ;
-            #endif
-			kv.value = saveX509ToPEM(mapIt->second);
-            vitem->tlvkvs.pairs.push_back(kv) ;
+            lst.push_back(denyItem);
         }
-        lst.push_back(vitem);
 
         return true ;
 }
@@ -1902,6 +1906,11 @@ bool AuthSSLimpl::loadList(std::list<RsItem*>& load)
                                         continue;
                                 }
 
+                                if (kit->value.compare(0, 5, "DENY:") == 0) {
+                                    mDenyList[RsPgpId(kit->key)] = kit->value.substr(5);
+                                    continue;
+                                }
+
                                 X509 *peer = loadX509FromPEM(kit->value);
                                 /* authenticate it */
                                 uint32_t diagnos ;
@@ -1924,4 +1933,30 @@ const EVP_PKEY*RsX509Cert::getPubKey(const X509& x509)
 #else
 	return X509_get0_pubkey(&x509);
 #endif
+}
+
+void AuthSSLimpl::addNotifyDeny(const RsPgpId& pgpId, const std::string& name)
+{
+	RsStackMutex stack(sslMtx);
+	mDenyList[pgpId] = name;
+	IndicateConfigChanged();
+}
+
+void AuthSSLimpl::removeNotifyDeny(const RsPgpId& pgpId)
+{
+	RsStackMutex stack(sslMtx);
+	mDenyList.erase(pgpId);
+	IndicateConfigChanged();
+}
+
+bool AuthSSLimpl::isNotifyDenied(const RsPgpId& pgpId)
+{
+	RsStackMutex stack(sslMtx);
+	return mDenyList.find(pgpId) != mDenyList.end();
+}
+
+void AuthSSLimpl::getNotifyDenyList(std::map<RsPgpId, std::string>& ids)
+{
+	RsStackMutex stack(sslMtx);
+	ids = mDenyList;
 }

@@ -13,6 +13,24 @@ include(GNUInstallDirs)
 set(FETCHCONTENT_QUIET OFF)
 include(FetchContent)
 
+################################################################################
+## Offline build guard. Several dependencies fall back to FetchContent (network
+## download at configure time) when their local sources are absent. For
+## offline/distribution builds (e.g. a Debian source package) that fallback must
+## be a hard error: it would silently build against an unpinned upstream tip.
+option(
+	RS_FETCH_MISSING_DEPS
+	"Allow downloading missing dependencies at configure time via FetchContent. Turn OFF for offline/distribution builds: a missing dependency then stops the configure with an explicit error instead of a silent network download." ON )
+
+macro(rs_fetch_fallback_guard RS_FFG_DEP_NAME)
+	if(RS_FETCH_MISSING_DEPS)
+		message(STATUS "${RS_FFG_DEP_NAME} not found locally, downloading it via FetchContent (pass -DRS_FETCH_MISSING_DEPS=OFF to make this an error)")
+	else()
+		message(FATAL_ERROR "${RS_FFG_DEP_NAME} not found locally and RS_FETCH_MISSING_DEPS is OFF: refusing to download it at configure time. Provide its sources (git submodule / complete source tarball) or the system library." )
+	endif()
+endmacro()
+################################################################################
+
 if(WIN32)
 	# Force Unicode mappings for Windows API (fixes MoveFileEx and similar errors)
 	add_definitions(-DUNICODE -D_UNICODE)
@@ -61,14 +79,16 @@ option(
 	"Enable use RNP lib for PGP"
 	ON )
 
-option(
-	RS_JSON_API
-	"Use restbed to expose libretroshare as JSON API via HTTP"
+cmake_dependent_option(
+	RS_SYSTEM_LIBRNP
+	"Link the system librnp instead of building the vendored copy"
+	OFF
+	"RS_RNPLIB"
 	OFF )
 
 option(
-	RS_FORUM_DEEP_INDEX
-	"Xapian based full text index and search of GXS forums"
+	RS_JSON_API
+	"Use restbed to expose libretroshare as JSON API via HTTP"
 	OFF )
 
 option(
@@ -173,6 +193,13 @@ option(
 	OFF )
 
 cmake_dependent_option(
+	RS_FORUM_CONTENT_SEARCH
+	"Full text search of the content of the forum posts (SQLite FTS4 index)"
+	ON
+	"NOT RS_ANDROID"
+	OFF )
+
+cmake_dependent_option(
 	RS_WEBUI
 	"Enable RetroShare Web UI support"
 	OFF
@@ -221,7 +248,10 @@ set(
 
 ################################################################################
 
-find_package(Git REQUIRED)
+# Git is optional: it is only used to stamp versions (git describe; a source
+# tarball carries a Source_Version file instead) and by the FetchContent
+# network fallbacks, which are guarded by RS_FETCH_MISSING_DEPS.
+find_package(Git)
 
 ################################################################################
 
@@ -341,6 +371,17 @@ target_link_libraries(${PROJECT_NAME} PRIVATE ${CMAKE_DL_LIBS})
 find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
 
+# The GXS message deserialisation in RsGenExchange::getMsgData() is an OpenMP
+# loop. Without the compiler flag the pragma is ignored and the loop runs
+# serially, so link OpenMP when the toolchain provides it. Not on Android: the
+# NDK's libomp would have to be shipped in the APK.
+if(NOT ANDROID)
+	find_package(OpenMP)
+	if(OpenMP_CXX_FOUND)
+		target_link_libraries(${PROJECT_NAME} PRIVATE OpenMP::OpenMP_CXX)
+	endif(OpenMP_CXX_FOUND)
+endif(NOT ANDROID)
+
 find_package(OpenSSL REQUIRED)
 target_include_directories(${PROJECT_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
 target_link_libraries(${PROJECT_NAME} PRIVATE OpenSSL::SSL OpenSSL::Crypto)
@@ -379,7 +420,38 @@ if(RS_RNPLIB)
 
 	set(RNPLIB_DEVEL_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../supportlibs/librnp/")
 
-	if(EXISTS "${RNPLIB_DEVEL_DIR}/CMakeLists.txt")
+	## On Android prefer an already built and installed librnp, which
+	## prepare-toolchain-clang.sh puts in the sysroot before configuring us.
+	## Building it inline instead cannot work: librnp's CMake runs a freshly
+	## compiled findopensslfeatures to enumerate the OpenSSL features, and that
+	## binary is an Android executable the build host cannot run -- either not
+	## at all, or through binfmt/qemu which then fails on the missing Android
+	## dynamic linker:
+	##   qemu-aarch64: Could not open '/system/bin/linker64': No such file or
+	##   directory
+	## The inline build is only reached when libretroshare is checked out
+	## inside the RetroShare super-project, which is why building from a
+	## standalone clone has always worked.
+	if(RS_ANDROID)
+		find_library(RS_PREBUILT_RNP_LIBRARY NAMES rnp)
+	endif(RS_ANDROID)
+
+	## Distribution policies (e.g. Debian) forbid embedded copies of packaged
+	## libraries, so a missing system librnp must fail instead of falling back
+	## to the vendored sources.
+	if(RS_SYSTEM_LIBRNP)
+		find_library(RS_PREBUILT_RNP_LIBRARY NAMES rnp)
+		if(NOT RS_PREBUILT_RNP_LIBRARY)
+			message(FATAL_ERROR "RS_SYSTEM_LIBRNP is ON but no system librnp was found (install librnp-dev or equivalent)")
+		endif()
+		## PUBLIC because rnp/rnp.h is reached from the public authgpg.h
+		find_path(RS_SYSTEM_RNP_INCLUDE "rnp/rnp.h")
+		if(RS_SYSTEM_RNP_INCLUDE)
+			target_include_directories(${PROJECT_NAME} PUBLIC "${RS_SYSTEM_RNP_INCLUDE}")
+		endif()
+	endif(RS_SYSTEM_LIBRNP)
+
+	if(NOT RS_PREBUILT_RNP_LIBRARY AND EXISTS "${RNPLIB_DEVEL_DIR}/CMakeLists.txt")
 		message(STATUS "librnp source found at ${RNPLIB_DEVEL_DIR} using it")
 		rnplib_set_inline_build_options()
 		add_subdirectory("${RNPLIB_DEVEL_DIR}" "${CMAKE_CURRENT_BINARY_DIR}/librnp")
@@ -401,6 +473,7 @@ if(RS_RNPLIB)
 		else()
 			message(STATUS "librnp not found locally, using FetchContent")
 			rnplib_set_inline_build_options()
+			rs_fetch_fallback_guard(librnp)
 			FetchContent_Declare(
 				librnp
 				GIT_REPOSITORY "https://github.com/rnpgp/rnp.git"
@@ -438,6 +511,7 @@ else()
 			"openpgpsdk source found at ${OPENPGPSDK_DEVEL_DIR} using it" )
 		add_subdirectory("${OPENPGPSDK_DEVEL_DIR}" "${CMAKE_BINARY_DIR}/openpgpsdk")
 	else()
+		rs_fetch_fallback_guard(openpgpsdk)
 		FetchContent_Declare(
 			openpgpsdk
 			GIT_REPOSITORY "https://github.com/RetroShare/OpenPGP-SDK.git"
@@ -466,6 +540,7 @@ if(RS_BITDHT)
 		add_subdirectory(${BITDHT_DEVEL_DIR} ${CMAKE_BINARY_DIR}/bitdht)
 		set(RS_BITDHT_DIR "${BITDHT_DEVEL_DIR}")
 	else()
+		rs_fetch_fallback_guard(bitdht)
 		FetchContent_Declare(
 			bitdht
 			GIT_REPOSITORY "https://github.com/RetroShare/BitDHT.git"
@@ -513,6 +588,7 @@ elseif(EXISTS "${RAPIDJSON_DEVEL_DIR}/CMakeLists.txt")
 		${PROJECT_NAME}
 		PUBLIC "${RAPIDJSON_DEVEL_DIR}/include" )
 else()
+	rs_fetch_fallback_guard(rapidjson)
 	FetchContent_Declare(
 		rapidjson
 		GIT_REPOSITORY "https://github.com/Tencent/rapidjson.git"
@@ -560,10 +636,27 @@ if(RS_JSON_API)
 	)
 	file(WRITE "${JSON_API_GENERATOR_DOXYFILE}" "${DOXYFILE_CONTENT}")
 
+	# Doxygen never purges its output directory, and the generator emits one
+	# #include per *_8h.xml file it finds there. Without removing them first, the
+	# XML of a public header that has been removed or renamed survives forever and
+	# keeps being turned into an #include of a file that no longer exists.
+	# cmake -E rm does not expand wildcards, so the glob is done by a generated
+	# script run at build time.
+	set(
+		JSON_API_PURGE_XML_SCRIPT
+		"${JSON_API_GENERATOR_WORK_DIR}/purge-stale-header-xml.cmake" )
+	file(WRITE "${JSON_API_PURGE_XML_SCRIPT}"
+		"file(GLOB stale_header_xml \"${JSONAPI_GENERATOR_OUTPUT_DIR}/xml/*_8h.xml\")\n"
+		"if(stale_header_xml)\n"
+		"\tfile(REMOVE \${stale_header_xml})\n"
+		"endif()\n"
+	)
+
 	add_custom_command(
 		OUTPUT
 			"${JSONAPI_GENERATOR_OUTPUT_DIR}/jsonapi-includes.inl"
 			"${JSONAPI_GENERATOR_OUTPUT_DIR}/jsonapi-wrappers.inl"
+		COMMAND ${CMAKE_COMMAND} -P "${JSON_API_PURGE_XML_SCRIPT}"
 		COMMAND ${DOXYGEN_EXECUTABLE} ${JSON_API_GENERATOR_DOXYFILE}
 		COMMAND
 			${Python3_EXECUTABLE} ${JSONAPI_GENERATOR_EXECUTABLE}
@@ -615,6 +708,7 @@ if(RS_JSON_API)
 	else()
 		message( WARNING
 		         "FetchContent restbed, will be installed if you run make install")
+		rs_fetch_fallback_guard(restbed)
 		FetchContent_Declare(
 			restbed
 			GIT_REPOSITORY "https://github.com/Corvusoft/restbed.git"
@@ -654,12 +748,9 @@ endif(RS_JSON_API)
 
 ################################################################################
 
-if(RS_FORUM_DEEP_INDEX)
-	find_package(Xapian REQUIRED)
-	target_link_libraries(${PROJECT_NAME} PRIVATE ${XAPIAN_LIBRARIES})
-
-	target_compile_definitions(${PROJECT_NAME} PUBLIC RS_DEEP_FORUMS_INDEX)
-endif(RS_FORUM_DEEP_INDEX)
+if(RS_FORUM_CONTENT_SEARCH)
+	target_compile_definitions(${PROJECT_NAME} PUBLIC RS_FORUM_CONTENT_SEARCH)
+endif(RS_FORUM_CONTENT_SEARCH)
 
 ################################################################################
 
@@ -759,6 +850,7 @@ if(RS_BRODCAST_DISCOVERY)
 		target_include_directories(
 			${PROJECT_NAME} PRIVATE "${UDP_DISCOVERY_DEVEL_DIR}" )
 	else()
+		rs_fetch_fallback_guard(udp-discovery-cpp)
 		FetchContent_Declare(
 			udp-discovery-cpp
 			GIT_REPOSITORY "https://github.com/truvorskameikin/udp-discovery-cpp.git"
@@ -822,6 +914,7 @@ endif(RS_EXPORT_JNI_ONLOAD)
 ################################################################################
 
 if(RS_ANDROID)
+	rs_fetch_fallback_guard(jni-hpp)
 	FetchContent_Declare(
 		jni-hpp
 		GIT_REPOSITORY "https://github.com/RetroShare/jni.hpp.git"
@@ -847,30 +940,48 @@ if( NOT RS_MAJOR_VERSION STREQUAL "" AND
 	message(STATUS "libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} defined in command line")
 	set(V_VERSION_SET ON)
 else()
-	set(V_GIT_DESCRIBE_OUTPUT "")
 	set(V_GIT_DESCRIBE_REGEXP "^v([0-9]+).([0-9]+).([0-9]+)(.*)\n$")
 
-	execute_process(
-		COMMAND ${GIT_EXECUTABLE} describe --tags --long --match v*.*.*
-		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-		OUTPUT_VARIABLE V_GIT_DESCRIBE_OUTPUT
-		RESULT_VARIABLE V_GIT_RESULT ) # Avoid CMake failure if git fails
+	# A source tarball made from the RetroShare super-project stores the output
+	# of `git describe --tags --long --match v*.*.*` in a Source_Version file
+	# next to this CMakeLists.txt. When the file exists it is the truth: read it
+	# before asking git, because the tarball may be unpacked inside another git
+	# repository (git-buildpackage, or any other checkout) whose tags do not
+	# describe libretroshare. The trailing newline is re-appended so the same
+	# regexp as the git output applies.
+	set(V_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
+	set(V_DESCRIBE_OUTPUT "")
+	if(EXISTS "${V_VERSION_FILE}")
+		file(READ "${V_VERSION_FILE}" V_DESCRIBE_OUTPUT)
+		string(STRIP "${V_DESCRIBE_OUTPUT}" V_DESCRIBE_OUTPUT)
+		set(V_DESCRIBE_OUTPUT "${V_DESCRIBE_OUTPUT}\n")
+		set(V_DESCRIBE_SOURCE "Source_Version file")
+	else()
+		execute_process(
+			COMMAND ${GIT_EXECUTABLE} describe --tags --long --match v*.*.*
+			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+			OUTPUT_VARIABLE V_DESCRIBE_OUTPUT
+			RESULT_VARIABLE V_GIT_RESULT ) # Avoid CMake failure if git fails
+		if(NOT V_GIT_RESULT EQUAL 0)
+			set(V_DESCRIBE_OUTPUT "")
+		endif()
+		set(V_DESCRIBE_SOURCE "git")
+	endif()
 
-	if( V_GIT_RESULT EQUAL 0 AND
-	    V_GIT_DESCRIBE_OUTPUT MATCHES "${V_GIT_DESCRIBE_REGEXP}" )
+	if(V_DESCRIBE_OUTPUT MATCHES "${V_GIT_DESCRIBE_REGEXP}")
 		string(
 			REGEX REPLACE
 			"${V_GIT_DESCRIBE_REGEXP}" "\\1;\\2;\\3;\\4"
-			V_GIT_DESCRIBE_LIST ${V_GIT_DESCRIBE_OUTPUT} )
+			V_GIT_DESCRIBE_LIST ${V_DESCRIBE_OUTPUT} )
 		list(GET V_GIT_DESCRIBE_LIST 0 RS_MAJOR_VERSION)
 		list(GET V_GIT_DESCRIBE_LIST 1 RS_MINOR_VERSION)
 		list(GET V_GIT_DESCRIBE_LIST 2 RS_MINI_VERSION)
 		list(GET V_GIT_DESCRIBE_LIST 3 RS_EXTRA_VERSION)
 
-		message("libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} determined via git")
+		message("libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} determined via ${V_DESCRIBE_SOURCE}")
 		set(V_VERSION_SET ON)
 	else()
-		message(WARNING "Determining libRetroShare version via git failed please specify it through CMake command line arguments!")
+		message(WARNING "Determining libRetroShare version via ${V_DESCRIBE_SOURCE} failed please specify it through CMake command line arguments!")
 	endif()
 endif()
 
@@ -889,12 +1000,20 @@ endif(V_VERSION_SET)
 # Ported from the qmake build (libretroshare.pro RS_LIB_VERSION_HASH block):
 # describe the libretroshare submodule itself and drop the leading 'v' to
 # match the GUI version style. Used only inside libretroshare, hence PRIVATE.
-execute_process(
-	COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
-	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-	OUTPUT_VARIABLE RS_LIB_VERSION_HASH
-	OUTPUT_STRIP_TRAILING_WHITESPACE
-	RESULT_VARIABLE V_GIT_HASH_RESULT ) # Avoid CMake failure if git fails
+# A source tarball carries a Source_Version file (see the version detection
+# above): read it first, for the same reason as there.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
+	file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version" RS_LIB_VERSION_HASH)
+	string(STRIP "${RS_LIB_VERSION_HASH}" RS_LIB_VERSION_HASH)
+	set(V_GIT_HASH_RESULT 0)
+else()
+	execute_process(
+		COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+		OUTPUT_VARIABLE RS_LIB_VERSION_HASH
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+		RESULT_VARIABLE V_GIT_HASH_RESULT ) # Avoid CMake failure if git fails
+endif()
 
 if(V_GIT_HASH_RESULT EQUAL 0 AND NOT RS_LIB_VERSION_HASH STREQUAL "")
 	string(REGEX REPLACE "^v" "" RS_LIB_VERSION_HASH "${RS_LIB_VERSION_HASH}")
@@ -903,7 +1022,7 @@ if(V_GIT_HASH_RESULT EQUAL 0 AND NOT RS_LIB_VERSION_HASH STREQUAL "")
 		${PROJECT_NAME}
 		PRIVATE RS_LIB_VERSION_HASH="${RS_LIB_VERSION_HASH}" )
 else()
-	message(WARNING "Determining libRetroShare engine hash via git failed")
+	message(WARNING "Determining libRetroShare engine hash via git or Source_Version failed")
 endif()
 
 ################################################################################
@@ -934,6 +1053,7 @@ endif()
 ################################################################################
 
 if(RS_CPPTRACE_STACKTRACE)
+    rs_fetch_fallback_guard(cpptrace)
     FetchContent_Declare(
       cpptrace
       GIT_REPOSITORY https://github.com/jeremy-rifkin/cpptrace.git
@@ -942,10 +1062,18 @@ if(RS_CPPTRACE_STACKTRACE)
       GIT_PROGRESS TRUE
       TIMEOUT 10
     )
+    # Always link cpptrace (and the libdwarf it fetches) statically into
+    # libretroshare. Both default to BUILD_SHARED_LIBS, which is ON when
+    # libretroshare itself is shared (Windows): they then come out as DLLs
+    # that nothing deploys next to the executable, and it refuses to start.
+    set(SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+    set(BUILD_SHARED_LIBS OFF)
+    set(CPPTRACE_BUILD_SHARED OFF CACHE BOOL "cpptrace as a static library" FORCE)
     FetchContent_MakeAvailable(cpptrace)
+    set(BUILD_SHARED_LIBS ${SAVED_BUILD_SHARED_LIBS})
     target_link_libraries(${PROJECT_NAME} PRIVATE cpptrace::cpptrace)
     target_compile_definitions(
-        ${LIBRARY_NAME} PRIVATE RS_JEREMY_RIFKIN_CPPTRACE )
+        ${PROJECT_NAME} PRIVATE RS_JEREMY_RIFKIN_CPPTRACE )
 endif(RS_CPPTRACE_STACKTRACE)
 
 if(RS_USE_I2P_SAM3)

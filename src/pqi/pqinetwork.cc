@@ -48,6 +48,7 @@
 int errno;
 #else /* Windows - define errno */
 #include <netdb.h>
+#include <netinet/tcp.h>
 #endif
 
 #ifdef __HAIKU__
@@ -145,6 +146,14 @@ std::string socket_errorType(int err)
 	else if (err == EADDRNOTAVAIL)
 	{
 		return std::string("EADDRNOTAVAIL");
+	}
+	else if (err == EACCES)
+	{
+		return std::string("EACCES");
+	}
+	else if (err == EPERM)
+	{
+		return std::string("EPERM");
 	}
 	//
 
@@ -253,8 +262,34 @@ std::string socket_errorType(int err)
 	{
 		return std::string("WSAEAFNOSUPPORT (normally UDP related!)");
 	}
+	else if (err == WSAECONNABORTED)
+	{
+		return std::string("WSAECONNABORTED");
+	}
+	else if (err == WSAENETRESET)
+	{
+		return std::string("WSAENETRESET");
+	}
+	else if (err == WSAENETDOWN)
+	{
+		return std::string("WSAENETDOWN");
+	}
+	else if (err == WSAENOTCONN)
+	{
+		return std::string("WSAENOTCONN");
+	}
+	else if (err == WSAESHUTDOWN)
+	{
+		return std::string("WSAESHUTDOWN");
+	}
+	else if (err == WSAEHOSTUNREACH)
+	{
+		return std::string("WSAEHOSTUNREACH");
+	}
 
-	return std::string("----WINDOWS OPERATING SYSTEM FAILURE----");
+	std::string out;
+	rs_sprintf(out, "unknown socket error %d", err);
+	return out;
 }
 
 // implement the improved unix inet address fn.
@@ -428,6 +463,29 @@ int unix_fcntl_nonblock(int fd)
 	return ret;
 }
 
+int unix_tcp_nodelay(int fd)
+{
+	// Testing switch, to be removed before upstreaming: RS_TCP_NODELAY=0 keeps
+	// Nagle on, so the same build can be measured with and without the fix.
+	static const bool disabled = []() {
+		const char *e = getenv("RS_TCP_NODELAY");
+		bool off = (e != nullptr && e[0] == '0');
+		if (off) RsInfo() << "TCP_NODELAY disabled by RS_TCP_NODELAY=0: peer links keep Nagle";
+		return off;
+	}();
+	if (disabled)
+		return 0;
+
+	int on = 1;
+	int ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *) &on, sizeof(on));
+
+	if (ret != 0)
+		RsWarn() << __PRETTY_FUNCTION__ << " cannot set TCP_NODELAY on socket " << fd
+		         << ", OS error " << rs_last_socket_error();
+
+	return ret;
+}
+
 
 int unix_connect(int fd, const sockaddr_storage &serv_addr)
 {
@@ -481,6 +539,15 @@ int rs_socket_error()
     return WinToUnixError(WSAGetLastError());
 #else
     return errno;
+#endif
+}
+
+int rs_last_socket_error()
+{
+#ifdef WINDOWS_SYS // ie WINDOWS.
+	return WSAGetLastError();
+#else
+	return errno;
 #endif
 }
 /******************* WINDOWS SPECIFIC PART ******************/

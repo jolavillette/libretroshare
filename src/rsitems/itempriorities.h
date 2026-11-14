@@ -37,6 +37,11 @@ const uint8_t QOS_PRIORITY_TOP                          = 9 ;
 const uint8_t QOS_PRIORITY_RS_TURTLE_OPEN_TUNNEL        = 7 ;
 const uint8_t QOS_PRIORITY_RS_TURTLE_TUNNEL_OK          = 7 ;
 
+// Tunnel requests and results we start or answer ourselves, and the GxsTunnel items
+// (distant chat...) of the tunnels we are an end of. Relayed copies keep the priority
+// of their class. Above 7, they still go to a congested friend (see pqiqosstreamer.cc).
+const uint8_t QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM    = 8 ;
+
 const uint8_t QOS_PRIORITY_RS_TURTLE_SEARCH_REQUEST     = 6 ;
 const uint8_t QOS_PRIORITY_RS_TURTLE_FILE_REQUEST       = 6 ;
 const uint8_t QOS_PRIORITY_RS_TURTLE_FILE_MAP_REQUEST   = 6 ;
@@ -91,7 +96,7 @@ const uint8_t QOS_PRIORITY_RS_HEARTBEAT_PULSE           = 8 ;
 
 // Chat/Msgs
 //
-const uint8_t QOS_PRIORITY_RS_CHAT_ITEM                 = 7 ;
+const uint8_t QOS_PRIORITY_RS_CHAT_ITEM                 = 8 ;  // above 7: still sent to a congested friend
 const uint8_t QOS_PRIORITY_RS_CHAT_AVATAR_ITEM          = 2 ;
 const uint8_t QOS_PRIORITY_RS_MSG_ITEM                  = 2 ;  // deprecated
 const uint8_t QOS_PRIORITY_RS_MAIL_ITEM                 = 2 ;  // new mail service

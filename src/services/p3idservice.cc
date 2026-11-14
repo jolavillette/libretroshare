@@ -555,7 +555,8 @@ void p3IdService::cleanUnusedKeys()
             return ;
         }
 
-        // grab at most 10 identities to delete. No need to send too many requests to the token queue at once.
+        // Collect every expired identity (no cap). They are all removed from the
+        // DB in a single transaction by RsGenExchange::processGroupDelete().
         IdCacheEntryCleaner idcec(mKeysTS,mMaxKeepKeysBanned) ;
 
         mKeyCache.applyToAllCachedEntries(idcec,&IdCacheEntryCleaner::processEntry);
@@ -4038,11 +4039,22 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
 #ifdef DEBUG_IDS
         std::cerr << "Bruteforcing PGP hash from GxsId mPgpHash: " << grp.mPgpIdHash << std::endl;
 #endif
+        // The signature carries no readable issuer id, so we cannot tell which
+        // PGP key signed this identity: we try every known key and look for the
+        // one whose fingerprint reproduces the stored hash. Log a single summary
+        // line here; the per-key detail below would otherwise flood the log with
+        // thousands of entries on a single line, so it stays under DEBUG_IDS.
+        RsDbg() << "GXS_SIGCHECK GxsId " << grp.mMeta.mGroupId
+                << ": signature has no issuer id, brute-forcing PGP link against "
+                << mPgpFingerprintMap.size() << " known keys" ;
+
         for(auto mit = mPgpFingerprintMap.begin(); mit != mPgpFingerprintMap.end(); ++mit)
         {
             calcPGPHash(RsGxsId(grp.mMeta.mGroupId), mit->second, hash);
 
+#ifdef DEBUG_IDS
             std::cerr << "   profile key " << mit->first << " (" << mit->second << ") : ";
+#endif
 
             if (grp.mPgpIdHash == hash)
             {
@@ -4057,6 +4069,21 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
             else
                 std::cerr << "fails" << std::endl;
 #endif
+        }
+
+        // No known PGP key reproduces mPgpIdHash: the signing profile key is
+        // simply not in our keyring. This is the same situation as an issuer id
+        // that is not in mPgpFingerprintMap above, so treat it the same way:
+        // keep the identity as not verified and retry later. Going on would
+        // call VerifySignBin() with a null fingerprint and the hash of the last
+        // key tried, which always fails and deletes a valid identity.
+        if(pgp_fingerprint.isNull())
+        {
+#ifdef DEBUG_IDS
+            std::cerr << "No known PGP key matches. Key will be marked as non verified." << std::endl;
+#endif
+            error = false;
+            return false;
         }
     }
 

@@ -34,6 +34,9 @@
 #include <unistd.h>
 #include <stdio.h>
 #include <signal.h>
+#ifndef WINDOWS_SYS
+#include <sys/wait.h>
+#endif
 
 #include "util/rsdir.h"
 #include "util/rsfile.h"
@@ -54,7 +57,8 @@ using namespace Tor;
 static const int INTERVAL_BETWEEN_CONTROL_PORT_READ_TRIES = 5; // try every 5 secs.
 
 TorProcess::TorProcess(TorProcessClient *client)
-    : m_client(client),  mState(TorProcess::NotStarted), mControlPort(0), mLastTryReadControlPort(0),mVerbose(false)
+    : m_client(client),  mState(TorProcess::NotStarted), mControlPort(0), mLastTryReadControlPort(0),mVerbose(false),
+      mStdOutFD(nullptr), mStdErrFD(nullptr)
 {
     mControlPortReadNbTries=0;
 
@@ -347,7 +351,10 @@ void TorProcess::start()
     if(popen3(fd,args,mTorProcessId))
     {
         RsErr() << "Could not start Tor process. errno=" << errno ;
+        mErrorMessage = "Could not start the Tor executable " + mExecutable + " (errno=" + RsUtil::NumberToString(errno) + ")";
         mState = Failed;
+        if(m_client) m_client->processErrorChanged(mErrorMessage);
+        if(m_client) m_client->processStateChanged(mState);
         return;	// stop the control thread
     }
 
@@ -360,6 +367,9 @@ void TorProcess::start()
 
 void TorProcess::tick()
 {
+    if(!mStdOutFD || !mStdErrFD)	// start() failed before the process was launched
+        return;
+
     mStdOutFD->tick();
     mStdErrFD->tick();
 
@@ -371,15 +381,26 @@ void TorProcess::tick()
 
     if(!mStdOutFD->isactive() && !mStdErrFD->isactive())
     {
-        static rstime_t last(0);
-
-        rstime_t now = time(nullptr);
-        if(now > last + 10)
+        // Only report once: after this the state is Failed and we stay quiet.
+        // Do not call stop() here: it waits for mState to leave Starting, which
+        // nothing would do since we run on the thread that should change it.
+        if(mState >= Starting)
         {
-            last = now;
-            RsErr() << "Tor process died. Exiting TorControl process." ;
+            // Keep what tor printed last: it usually says why it exited
+            // (e.g. "You should upgrade" when the network requires protocols
+            // this version lacks).
+            for(int i=0; i<200 && (s=mStdOutFD->readline(buff,1024)); ++i) logMessage(std::string((char*)buff,s));
+            for(int i=0; i<200 && (s=mStdErrFD->readline(buff,1024)); ++i) logMessage(std::string((char*)buff,s));
+
+#ifndef WINDOWS_SYS
+            waitpid(mTorProcessId, nullptr, WNOHANG);
+#endif
+            RsErr() << "Tor process died." ;
+            mErrorMessage = "The Tor process exited unexpectedly.";
+            mState = Failed;
+            if(m_client) m_client->processErrorChanged(mErrorMessage);
+            if(m_client) m_client->processStateChanged(mState);
         }
-        stop();
         return;
     }
     time_t now = time(nullptr);
@@ -395,7 +416,17 @@ void TorProcess::tick()
         }
         else if(mControlPortReadNbTries > 10)
         {
+            /* Tor is still running: stop it here, stop() does nothing once
+             * the state is Failed. Left running, it keeps its data directory
+             * locked and the next start (maybe with another tor) fails. */
+#ifdef WINDOWS_SYS
+            TerminateProcess(mTorProcessId, 0);
+#else
+            kill(mTorProcessId, SIGTERM);
+#endif
+            mErrorMessage = "Tor did not open its control port.";
             mState = Failed;
+            m_client->processErrorChanged(mErrorMessage);
             m_client->processStateChanged(mState);// stateChanged(mState);
         }
     }

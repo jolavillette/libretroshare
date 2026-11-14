@@ -1160,6 +1160,11 @@ bool p3PeerMgrIMPL::addSslOnlyFriend( const RsPeerId& sslId, const RsPgpId& pgp_
 	pstate.gpg_id = pgp_id;
 	pstate.id = sslId;
 
+	/* Like addFriend() (p3Peers passes "now"), stamp a new friend with the time
+	 * it was added. Otherwise lastcontact stays 0 until the first successful
+	 * connection and the GUI shows 1970-01-01 as "last contact". */
+	if(!alreadySslFriend) pstate.lastcontact = time(nullptr);
+
 	/* At this point if we got info about the peer just update with the new
 	 * values. */
 	if(!dt.name.empty())     pstate.name = dt.name;
@@ -2672,6 +2677,15 @@ bool  p3PeerMgrIMPL::loadList(std::list<RsItem *>& load)
             info.name    = gitem2->name ;
             info.flag    = gitem2->flag ;
 
+            // Node groups only make sense for friends. Older GUIs let the own profile be added by mistake and
+            // then offered no way to remove it from the friend list, so drop it here and re-save.
+            if(info.peerIds.erase(mOwnState.gpg_id) > 0)
+            {
+                RsWarn() << "Removed own PGP profile " << mOwnState.gpg_id << " from node group \"" << info.name
+                         << "\" (" << info.id << "): the own profile cannot be a group member." ;
+                IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN);
+            }
+
             std::cerr << "(II) Loaded group in new format. ID = " << info.id << std::endl;
             groupList[info.id] = info ;
 
@@ -2998,6 +3012,15 @@ bool p3PeerMgrIMPL::assignPeersToGroup(const RsNodeGroupId &groupId, const std::
 
                     if (assign)
                     {
+                        // The own profile is not a friend and must never become a group member: the friend
+                        // list cannot display it, so the user would have no way to undo the assignment.
+                        if (*peerIt == mOwnState.gpg_id)
+                        {
+                            RsWarn() << "Refusing to add own PGP profile " << *peerIt << " to node group \""
+                                     << groupItem.name << "\" (" << groupItem.id << ")." ;
+                            continue;
+                        }
+
                         groupItem.peerIds.insert(*peerIt);
                         changed = true;
                     }

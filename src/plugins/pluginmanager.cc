@@ -69,6 +69,7 @@ RsPluginManager::RsPluginManager(const RsFileHash &hash)
 	: p3Config(),_current_executable_hash(hash)
 {
 	_allow_all_plugins = false ;
+	_reference_hash_loaded = false ;
 }
 
 bool RsPluginManager::loadConfiguration(RsFileHash &loadHash)
@@ -161,7 +162,10 @@ void RsPluginManager::loadPlugins(const std::vector<std::string>& plugin_directo
 
 	// 0 - get the list of files to read
 
-	bool first_time = (_accepted_hashes.empty()) && _rejected_hashes.empty() ;
+	// Only skip the confirmation dialog on the very first run. Empty hash lists also happen after every
+	// executable update (the accepted list is discarded, see loadList()), and silently disabling the
+	// plugins there is what forced users to re-enable them after each upgrade.
+	bool first_time = !_reference_hash_loaded ;
 
 	for(uint32_t i=0;i<plugin_directories.size();++i)
 	{
@@ -202,29 +206,46 @@ void RsPluginManager::loadPlugins(const std::vector<std::string>& plugin_directo
 	saveConfiguration();
 }
 
+#include <chrono>
+#include "util/rsdebug.h"
+
 void RsPluginManager::stopPlugins(p3ServiceServer *pqih)
 {
 	std::cerr << "  Stopping plugins." << std::endl;
 
 	for (uint32_t i = 0; i < _plugins.size(); ++i)
 	{
+		std::string name = _plugins[i].file_name;
 		if (_plugins[i].plugin != NULL)
 		{
+			using sclock = std::chrono::steady_clock;
+			auto ms = [](sclock::time_point a, sclock::time_point b)
+			{ return std::chrono::duration_cast<std::chrono::milliseconds>(b - a).count(); };
+			auto t0 = sclock::now();
+			name = _plugins[i].plugin->getPluginName();
 			p3Service *service = _plugins[i].plugin->p3_service();
 			if (service)
 			{
 				pqih->removeService(service);
 			}
+			auto t1 = sclock::now();
 
 			_plugins[i].plugin->stop();
+			auto t2 = sclock::now();
 			delete _plugins[i].plugin;
 			_plugins[i].plugin = NULL;
+			auto t3 = sclock::now();
+			RsInfo() << "shutdown: plugin " << name << " stopped in " << ms(t0, t3)
+			         << " ms (remove service " << ms(t0, t1)
+			         << " ms, stop() " << ms(t1, t2)
+			         << " ms, delete " << ms(t2, t3) << " ms)";
 		}
-		if (_plugins[i].handle)
-		{
-			dlclose(_plugins[i].handle);
-			_plugins[i].handle = NULL;
-		}
+		// Do not dlclose() the plugin: the process is exiting, and code or data of
+		// the plugin can still be referenced after this point. Qt events posted by
+		// the plugin and not delivered yet are destroyed by ~QApplication, and their
+		// argument types (e.g. RsPeerId registered from the plugin) point into the
+		// plugin image. Unloading it made the GUI crash on exit (seen on macOS).
+		_plugins[i].handle = NULL;
 	}
 }
 
@@ -303,6 +324,18 @@ bool RsPluginManager::loadPlugin(const std::string& plugin_name,bool first_time)
 		std::cerr << "    -> cannot hash file. Plugin read canceled." << std::endl;
 		return false;
 	}
+
+	// The same plugin can be reachable from two search directories, as the same
+	// file or as another build of it (a stale copy in the user directory): keep
+	// the first one loaded, the bundled directories are searched first.
+	const std::string base_name = RsDirUtil::getFileName(plugin_name);
+	for(const PluginInfo& other: _plugins)
+		if(other.status == PLUGIN_STATUS_LOADED &&
+		   (other.file_hash == pf.file_hash || RsDirUtil::getFileName(other.file_name) == base_name))
+		{
+			std::cerr << "    -> already loaded from " << other.file_name << ". Skipped." << std::endl;
+			return false;
+		}
 
 	_plugins.push_back(pf) ;
 	PluginInfo& pinfo(_plugins.back()) ;
@@ -520,6 +553,7 @@ bool RsPluginManager::loadList(std::list<RsItem*>& list)
 				else if((*kit).key == "REFERENCE_EXECUTABLE_HASH")
 				{
 					reference_executable_hash = RsFileHash(kit->value) ;
+					_reference_hash_loaded = true ;
 					std::cerr << "   Reference executable hash: " << kit->value << std::endl;
 				}
 				else if((*kit).key == "ACCEPTED")

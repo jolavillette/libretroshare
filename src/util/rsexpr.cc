@@ -22,6 +22,7 @@
 
 #include "retroshare/rsexpr.h"
 #include "retroshare/rstypes.h"
+#include "util/rsstring.h"
 #include <algorithm>
 #include <functional>
 
@@ -102,30 +103,20 @@ bool HashExpression::eval(const ExpFileEntry& file){
 /*Check whether two strings are 'equal' to each other*/
 static bool StrEquals(const std::string & str1, const std::string & str2, 
                       bool IgnoreCase ){
-    if ( str1.size() != str2.size() ){
-        return false;
-    } else if (IgnoreCase) {
-        std::equal( str1.begin(), str1.end(),
-                    str2.begin(), CompareCharIC() );
-    }
-    return std::equal( str1.begin(), str1.end(),
-                       str2.begin());
+    if (IgnoreCase)
+        return utf8EqualsIgnoreCase(str1, str2);
+
+    return str1 == str2;
 }
 
 /*Check whether one string contains the other*/
 static bool StrContains( const std::string & str1, const std::string & str2,
                          bool IgnoreCase){
 
-    std::string::const_iterator iter ;
-    if (IgnoreCase) {
-        iter = std::search( str1.begin(), str1.end(),
-                            str2.begin(), str2.end(), CompareCharIC() );
-    } else {
-        iter = std::search( str1.begin(), str1.end(),
-                            str2.begin(), str2.end());
-    }
+    if (IgnoreCase)
+        return utf8ContainsIgnoreCase(str1, str2);
 
-    return ( iter != str1.end() );
+    return str1.find(str2) != std::string::npos;
 }
 
 

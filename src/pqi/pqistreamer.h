@@ -102,6 +102,10 @@ class pqistreamer: public PQInterface
 		virtual void *locked_pop_out_data(uint32_t max_slice_size,uint32_t& size,bool& starts,bool& ends,uint32_t& packet_id);
 		virtual int   locked_gatherStatistics(std::list<RSTrafficClue>& outqueue_stats,std::list<RSTrafficClue>& inqueue_stats); // extracting data.
 
+		// Called about once a second with the measured out rate (kB/s), even when nothing can
+		// be sent. Lets a queue implementation watch its own congestion (see pqiqosstreamer.cc).
+		virtual void locked_tickOutQueue(float /*out_rate_kBps*/) {}
+
         	void updateRates() ;
             	
 	protected:

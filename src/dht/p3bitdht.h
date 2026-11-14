@@ -32,6 +32,7 @@
 #include "pqi/pqinetwork.h"
 #include "pqi/pqimonitor.h"
 #include "util/rsthreads.h"
+#include "dht/p3bitdht_size.h"
 
 #include "udp/udpstack.h"
 #include "udp/udpbitdht.h"
@@ -217,6 +218,7 @@ public:
 
     virtual bool	isAddressBanned(const struct sockaddr_storage& raddr) ;
     virtual void	getListOfBannedIps(std::list<RsDhtFilteredPeer> &lst) ;
+    virtual void	getDhtSizeEstimate(RsDhtSizeEstimate &est) override;
 
     virtual bool    setAttachMode(bool on);
 
@@ -360,6 +362,7 @@ private:
     int 	removeTranslation_locked(const RsPeerId& pid);
 
     UdpBitDht *mUdpBitDht; /* has own mutex, is static except for creation/destruction */
+    DhtSizeEstimator mSizeEstimator; /* has own mutex */
 #ifdef RS_USE_DHT_STUNNER
     UdpStunner *mDhtStunner;
     UdpStunner *mProxyStunner;
