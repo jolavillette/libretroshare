@@ -125,6 +125,7 @@ class TurtleJournal
 
 		void trIn      (TurtleTunnelRequestId rid,const TurtlePeerId& from,uint16_t depth,const TurtleFileHash& hash,uint32_t partial_in);
 		void trBounce  (TurtleTunnelRequestId rid,const TurtlePeerId& from,const TurtlePeerId& known_origin,uint32_t age,uint16_t depth,uint32_t partial_in = 0);
+		void trLongMemoryDrop(TurtleTunnelRequestId rid,const TurtlePeerId& from);	// copy dropped by the router's long memory of request ids
 		void trFwdTo   (TurtleTunnelRequestId rid,const TurtlePeerId& to);
 		void trFwd     (TurtleTunnelRequestId rid,uint32_t partial_out,uint16_t n_peers);
 		void trAnswered(TurtleTunnelRequestId rid,TurtleTunnelId tid,const TurtlePeerId& to,const TurtleFileHash& hash,
@@ -319,6 +320,14 @@ class TurtleJournal
 		uint64_t mTrAgeMin[TR_AGE_BUCKETS],mTrAgeTotal[TR_AGE_BUCKETS] ;
 		static uint32_t trAgeBucket(uint32_t age_s) ;
 		static std::string trAgeLine(uint64_t n_new,const uint64_t *ages) ;
+
+		// Copies dropped by the router's long memory of request ids (older than its
+		// request table), by age since the journal first saw the id; the last bucket
+		// counts ids the journal history no longer knows.
+		static const uint32_t LM_AGE_BUCKETS = 6 ;
+		uint64_t mLmMin[LM_AGE_BUCKETS],mLmTotal[LM_AGE_BUCKETS] ;
+		std::map<uint16_t,uint64_t> mLmPeersMin ;
+		static std::string lmLine(const uint64_t *b) ;
 		uint64_t                 mLastSummaryMs ;
 
 		class PeerTurtleStat
