@@ -34,6 +34,14 @@
 // For Dummy Msgs.
 #include "util/rsrandom.h"
 #include "util/rsstring.h"
+#include "util/rsdebug.h"
+
+#include <chrono>
+
+// GXS-PROF (temporary diagnostics, do not upstream): the background scoring
+// loads full board posts; log each request and its completion so that a slow
+// GXS-PROF retrieveNxsMsgs line on posted_db can be attributed to it or not.
+static std::chrono::steady_clock::time_point sPostBaseBgReqT0;
 
 /****
  * #define POSTBASE_DEBUG 1
@@ -454,6 +462,10 @@ void p3PostBase::background_requestUnprocessedGroup()
 
 void p3PostBase::background_requestGroupMsgs(const RsGxsGroupId &grpId, bool unprocessedOnly)
 {
+	sPostBaseBgReqT0 = std::chrono::steady_clock::now();
+	RsWarn() << "GXS-PROF posted background scoring: requesting "
+	         << (unprocessedOnly ? "unprocessed" : "all") << " posts of group " << grpId;
+
 #ifdef POSTBASE_DEBUG
     std::cerr << "p3PostBase::background_requestGroupMsgs() id: " << grpId;
     std::cerr << std::endl;
@@ -513,6 +525,16 @@ void p3PostBase::background_loadMsgs(const uint32_t &token, bool unprocessed)
 
 	std::map<RsGxsGroupId, std::vector<RsGxsMsgItem*> > msgData;
 	bool ok = RsGenExchange::getMsgData(token, msgData);
+
+	{
+		size_t n = 0;
+		for(auto& g: msgData) n += g.second.size();
+		RsWarn() << "GXS-PROF posted background scoring: got " << n << " posts in "
+		         << msgData.size() << " groups (" << (unprocessed ? "unprocessed" : "all")
+		         << "), " << std::chrono::duration_cast<std::chrono::milliseconds>(
+		                std::chrono::steady_clock::now() - sPostBaseBgReqT0).count()
+		         << " ms after the request";
+	}
 
 	if (!ok)
 	{
