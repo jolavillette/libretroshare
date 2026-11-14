@@ -39,8 +39,10 @@
 #if __has_include("pqi/pqiechoprobe.h")
 #	include "pqi/pqiechoprobe.h"
 static uint64_t probeTrArrival(uint32_t rid,const TurtlePeerId& from) { return PqiEchoProbe::instance().trArrival(rid,from) ; }
+static std::string probeLinkState(const TurtlePeerId& p) { return PqiEchoProbe::instance().linkState(p) ; }
 #else
 static uint64_t probeTrArrival(uint32_t,const TurtlePeerId&) { return 0 ; }
+static std::string probeLinkState(const TurtlePeerId&) { return std::string() ; }
 #endif
 
 static const uint32_t MAX_EVENTS_PER_TUNNEL = 24 ;	// first half kept, last half rolling
@@ -231,6 +233,7 @@ TurtleJournal::TurtleJournal()
     : mJournalMtx("TurtleJournal"),mLastSummaryMs(0)
 {
 	mRebornLinesThisLapse   = 0 ;
+	mDirectLostLinesThisLapse = 0 ;
 	mSelfLoopLinesThisLapse = 0 ;
 	mTrLagN = mTrLagMax = mTrLagOver5 = 0 ;
 	mTrNewMin = mTrNewTotal = 0 ;
@@ -359,6 +362,12 @@ void TurtleJournal::trIn(TurtleTunnelRequestId rid,const TurtlePeerId& from,uint
 	uint32_t hash4 = (uint32_t(hb[0]) << 24) | (uint32_t(hb[1]) << 16) | (uint32_t(hb[2]) << 8) | uint32_t(hb[3]) ;
 	uint16_t from_idx = peerIdx(from) ;
 
+	if(depth == 1)
+	{
+		++mPeerStats[from_idx].d1_in ;
+		++mDirectTotals[from_idx].first ;
+	}
+
 	std::unordered_map<uint32_t,RidSeen>::iterator h(mRidHistory.find(rid)) ;
 
 	if(h == mRidHistory.end())
@@ -483,6 +492,58 @@ void TurtleJournal::trBounce(TurtleTunnelRequestId rid,const TurtlePeerId& from,
 
 	if(it == mRequests.end())
 		return ;
+
+	// A friend's own copy (depth 1) that comes after a relayed one lost the race.
+	if(depth == 1)
+	{
+		uint16_t pidx = peerIdx(from) ;
+		PeerTurtleStat& ps(mPeerStats[pidx]) ;
+		std::pair<uint64_t,uint64_t>& tot(mDirectTotals[pidx]) ;
+		++ps.d1_in ;
+		++tot.first ;
+
+		if(it->second.depth >= 2)
+		{
+			++ps.d1_lost ;
+			++tot.second ;
+
+			uint64_t a_this  = probeTrArrival(rid,from) ;
+			uint64_t a_first = probeTrArrival(rid,it->second.origin) ;
+			if(a_this != 0 && a_first != 0 && a_this >= a_first)
+			{
+				uint64_t g = a_this - a_first ;
+				++ps.d1_gap_n ;
+				ps.d1_gap_sum += g ;
+				if(g > ps.d1_gap_max) ps.d1_gap_max = g ;
+			}
+
+			// One line per lost race (capped): the request id matches the sender's
+			// TRHELD lines (echo probe), and both links are described as the kernel
+			// sees them right now.
+			if(mDirectLostLinesThisLapse < 100)
+			{
+				++mDirectLostLinesThisLapse ;
+				uint64_t now_ms = nowMs() ;
+				std::ostringstream o ;
+				o << "DIRECTLOST " << timeStr(now_ms) << " req=" << hex32(rid) << " hash=" << it->second.hash.toStdString().substr(0,8)
+				  << " direct from=" << from << " came " << (now_ms > it->second.ms ? now_ms - it->second.ms : 0)
+				  << " ms (router) after the copy from " << it->second.origin << " at depth " << it->second.depth
+				  << "; pqi arrivals: direct " ;
+				if(a_this == 0 || a_first == 0)
+					o << "? (untimed)" ;
+				else if(a_this >= a_first)
+					o << "+" << (a_this - a_first) << " ms after the winner" ;
+				else
+					o << (a_first - a_this) << " ms BEFORE the winner (lost in our own processing)" ;
+				o << ""
+				  << " | direct link: " << probeLinkState(from)
+				  << " | winner link: " << probeLinkState(it->second.origin) << std::endl ;
+				mPendingDumps.push_back(o.str()) ;
+				mPendingPeerInfo.insert(from) ;
+				mPendingPeerInfo.insert(it->second.origin) ;
+			}
+		}
+	}
 
 	if(it->second.bounces.size() >= MAX_BOUNCES_PER_REQ)
 	{
@@ -1417,6 +1478,41 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 						mPendingPeerInfo.insert(mPeers[ps->first]) ;
 					}
 
+				// DIRECT: depth-1 copies that lost the race to a relayed copy. One summary
+				// line, then one line per friend that lost at least one race this minute.
+				{
+					uint64_t in = 0, lost = 0, tin = 0, tlost = 0 ;
+					for(std::map<uint16_t,PeerTurtleStat>::const_iterator ps(mPeerStats.begin());ps!=mPeerStats.end();++ps)
+					{
+						in += ps->second.d1_in ;
+						lost += ps->second.d1_lost ;
+					}
+					for(std::map<uint16_t,std::pair<uint64_t,uint64_t> >::const_iterator t(mDirectTotals.begin());t!=mDirectTotals.end();++t)
+					{
+						tin += t->second.first ;
+						tlost += t->second.second ;
+					}
+
+					std::ostringstream so ;
+					so << "DIRECT " << timeStr(now) << " last minute: " << lost << " of " << in
+					   << " depth-1 copies arrived after a relayed copy; since start: " << tlost << " of " << tin << std::endl ;
+
+					for(std::map<uint16_t,PeerTurtleStat>::const_iterator ps(mPeerStats.begin());ps!=mPeerStats.end();++ps)
+						if(ps->first != 0 && ps->second.d1_lost > 0)
+						{
+							const std::pair<uint64_t,uint64_t>& t(mDirectTotals[ps->first]) ;
+							so << "DIRECT " << timeStr(now) << " " << mPeers[ps->first] << " last minute: lost "
+							   << ps->second.d1_lost << " of " << ps->second.d1_in << " (pqi gap " ;
+							if(ps->second.d1_gap_n > 0)
+								so << "avg " << ps->second.d1_gap_sum/ps->second.d1_gap_n << " ms, max " << ps->second.d1_gap_max
+								   << " ms on " << ps->second.d1_gap_n ;
+							else
+								so << "unknown" ;
+							so << "); since start: lost " << t.second << " of " << t.first << std::endl ;
+						}
+					mPendingDumps.push_back(so.str()) ;
+				}
+
 				for(std::map<uint16_t,uint64_t>::iterator it(mSuspects.begin());it!=mSuspects.end();)
 					if(now > it->second + FOLLOW_MS)
 						it = mSuspects.erase(it) ;
@@ -1534,6 +1630,7 @@ void TurtleJournal::tick(uint32_t live_tunnels,uint32_t live_requests)
 
 			mCounters.clear() ;
 			mRebornLinesThisLapse = 0 ;
+			mDirectLostLinesThisLapse = 0 ;
 			mSelfLoopLinesThisLapse = 0 ;
 			mLastSummaryMs = now ;
 		}

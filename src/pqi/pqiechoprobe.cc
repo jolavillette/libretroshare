@@ -30,6 +30,19 @@
 #include <set>
 #include <sstream>
 
+// TCP state of friend links (debug/tr-race-probe). Socket headers first: on
+// Windows winsock2 must come before anything that pulls windows.h.
+#include "util/rsnet.h"
+#ifdef WINDOWS_SYS
+#	include <mstcpip.h>
+#else
+#	include <sys/types.h>
+#	include <sys/socket.h>
+#	include <sys/ioctl.h>
+#	include <netinet/in.h>
+#	include <netinet/tcp.h>
+#endif
+
 #include "pqi/pqiechoprobe.h"
 
 static const uint32_t FLUSH_LAPSE_MS            = 60000 ;
@@ -76,7 +89,7 @@ PqiEchoProbe& PqiEchoProbe::instance()
 PqiEchoProbe::PqiEchoProbe()
     : mMtx("PqiEchoProbe"),mLastFlushMs(0),mSamplesThisLapse(0),
       mNextWatchId(1),mWatchesThisLapse(0),mMinorWatchesThisLapse(0),
-      mMultiSendThisLapse(0),mMultiSendLinesThisLapse(0),mQWaitLinesThisLapse(0),mQStale(0),mQMatched(0)
+      mMultiSendThisLapse(0),mMultiSendLinesThisLapse(0),mQWaitLinesThisLapse(0),mQStale(0),mQMatched(0),mTrHeldLinesThisLapse(0)
 {
 	const char *e = getenv("RS_ECHO_PROBE") ;
 	mEnabled = (e != NULL && e[0] != '\0' && e[0] != '0') ;
@@ -497,6 +510,8 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 			mQStale = 0 ;
 			mQMatched = 0 ;
 			mQDelay.clear() ;
+			mTrSend.clear() ;
+			mTrHeldLinesThisLapse = 0 ;
 
 			// items dropped from a queue (connection reset) never leave it: forget them after 15 min
 			for(std::unordered_map<const void*,Queued>::iterator q(mQueued.begin());q!=mQueued.end();)
@@ -566,6 +581,24 @@ std::string PqiEchoProbe::summary(uint64_t now)
 		o << "  output queue: " << mQueued.size() << " items waiting or untracked, " << shown_q << " friend/class pairs with a wait above 5 s, "
 		  << mQMatched << " items measured, " << mQStale << " stale pointers ignored" << std::endl ;
 	}
+
+	// Tunnel requests sent, per friend (debug/tr-race-probe). "nagle" = left our queue
+	// while the socket still had bytes queued and TCP_NODELAY was off: the kernel may
+	// have held it until the previous segment was acknowledged.
+	for(std::map<uint16_t,TrSendStat>::const_iterator t(mTrSend.begin());t!=mTrSend.end();++t)
+	{
+		const TrSendStat& m(t->second) ;
+		const TrSendStat& a(mTrSendTotal[t->first]) ;
+		o << "TRSEND " << timeStr(now) << " to=" << mPeers[t->first] << " last minute: " << m.n << " sent (" << m.own << " ours)"
+		  << ", queue wait avg " << (m.n?m.wait_sum/m.n:0) << " ms max " << m.wait_max << " ms"
+		  << ", socket busy " << m.n_sendq << " (max " << m.sendq_max << " B), nagle " << m.n_nagle
+		  << ", nodelay off " << m.n_nodelay_off << ", unknown " << m.n_unknown
+		  << "; since start: " << a.n << " sent, socket busy " << a.n_sendq << ", nagle " << a.n_nagle << std::endl ;
+	}
+
+	// Kernel view of every friend link, once a minute.
+	for(std::map<uint16_t,int>::const_iterator sk(mSockets.begin());sk!=mSockets.end();++sk)
+		o << "LINK " << timeStr(now) << " " << mPeers[sk->first] << " " << snapStr(tcpSnap(sk->second)) << std::endl ;
 
 	return o.str() ;
 }
@@ -838,6 +871,54 @@ void PqiEchoProbe::dequeued(const RsPeerId& /*to*/,const void *data)
 		if(wait > 5000)  ++st.over5 ;
 		if(wait > 20000) ++st.over20 ;
 
+		// Tunnel request leaving our queue: socket state right now (debug/tr-race-probe).
+		if(c == 0)
+		{
+			const uint8_t *d = (const uint8_t*)data ;
+			uint32_t rid = 0 ;
+			uint16_t depth = 0xffff ;
+			if(q->second.size == 38)
+			{
+				rid   = (uint32_t(d[28]) << 24) | (uint32_t(d[29]) << 16) | (uint32_t(d[30]) << 8) | uint32_t(d[31]) ;
+				depth = uint16_t((d[36] << 8) | d[37]) ;
+			}
+			bool own = (depth == 1) ;	// our own request (or a relay that did not increase the depth)
+
+			TcpSnap s ;
+			std::map<uint16_t,int>::const_iterator sk(mSockets.find(q->second.peer)) ;
+			if(sk != mSockets.end())
+				s = tcpSnap(sk->second) ;
+
+			TrSendStat *stats[2] = { &mTrSend[q->second.peer], &mTrSendTotal[q->second.peer] } ;
+			for(int i=0;i<2;++i)
+			{
+				TrSendStat& t(*stats[i]) ;
+				++t.n ;
+				if(own) ++t.own ;
+				t.wait_sum += wait ;
+				if(wait > t.wait_max) t.wait_max = wait ;
+				if(!s.ok || s.nodelay < 0) ++t.n_unknown ;
+				if(s.nodelay == 0) ++t.n_nodelay_off ;
+				if(s.sendq > 0)
+				{
+					++t.n_sendq ;
+					if(s.sendq > t.sendq_max) t.sendq_max = s.sendq ;
+					if(s.nodelay == 0) ++t.n_nagle ;
+				}
+			}
+
+			// Our own requests that may be held: one line each (capped), with the request
+			// id, to match against the friend's journal (DIRECTLOST lines).
+			if(own && ((s.sendq > 0 && s.nodelay != 1) || wait > 20) && mTrHeldLinesThisLapse < 200)
+			{
+				++mTrHeldLinesThisLapse ;
+				std::ostringstream o ;
+				o << "TRHELD " << timeStr(now) << " req=" << std::hex << std::setw(8) << std::setfill('0') << rid << std::dec << std::setfill(' ')
+				  << " to=" << mPeers[q->second.peer] << " waited " << wait << " ms in our queue; socket: " << snapStr(s) << std::endl ;
+				mPending.push_back(o.str()) ;
+			}
+		}
+
 		// Tunnel requests and results that wait more than 20 s reach the friend after
 		// its own 20 s result window: worth a line each.
 		if(c <= 2 && wait > 20000 && mQWaitLinesThisLapse < 100)
@@ -913,4 +994,116 @@ uint64_t PqiEchoProbe::trArrival(uint32_t rid,const RsPeerId& from)
 
 	std::map<std::pair<uint32_t,uint16_t>,uint64_t>::const_iterator it(mTrArrival.find(std::make_pair(rid,p->second))) ;
 	return (it == mTrArrival.end())?0:it->second ;
+}
+
+//=============================================================================//
+//                 TCP state of friend links (debug/tr-race-probe)             //
+//=============================================================================//
+
+void PqiEchoProbe::setSocket(const RsPeerId& peer,int fd)
+{
+	if(!mEnabled)
+		return ;
+	RS_STACK_MUTEX(mMtx) ;
+	mSockets[peerIdx(peer)] = fd ;
+}
+
+void PqiEchoProbe::clearSocket(const RsPeerId& peer,int fd)
+{
+	if(!mEnabled)
+		return ;
+	RS_STACK_MUTEX(mMtx) ;
+	std::map<uint16_t,int>::iterator it(mSockets.find(peerIdx(peer))) ;
+	if(it != mSockets.end() && it->second == fd)
+		mSockets.erase(it) ;
+}
+
+std::string PqiEchoProbe::linkState(const RsPeerId& peer)
+{
+	if(!mEnabled)
+		return std::string() ;
+	RS_STACK_MUTEX(mMtx) ;
+	std::map<RsPeerId,uint16_t>::const_iterator p(mPeerIdx.find(peer)) ;
+	if(p == mPeerIdx.end())
+		return "no socket" ;
+	std::map<uint16_t,int>::const_iterator sk(mSockets.find(p->second)) ;
+	if(sk == mSockets.end())
+		return "no socket" ;
+	return snapStr(tcpSnap(sk->second)) ;
+}
+
+PqiEchoProbe::TcpSnap PqiEchoProbe::tcpSnap(int fd)
+{
+	TcpSnap s ;
+	if(fd < 0)
+		return s ;
+
+	int nd = 0 ;
+	socklen_t len = sizeof(nd) ;
+	if(getsockopt(fd,IPPROTO_TCP,TCP_NODELAY,(char*)&nd,&len) != 0)
+		return s ;
+	s.ok = true ;
+	s.nodelay = (nd != 0)?1:0 ;
+
+#if defined(__linux__)
+	int q = 0 ;
+	if(ioctl(fd,TIOCOUTQ,&q) == 0)
+		s.sendq = q ;
+
+	struct tcp_info ti ;
+	socklen_t tl = sizeof(ti) ;
+	if(getsockopt(fd,IPPROTO_TCP,TCP_INFO,&ti,&tl) == 0)
+	{
+		s.info      = true ;
+		s.rtt_us    = ti.tcpi_rtt ;
+		s.rttvar_us = ti.tcpi_rttvar ;
+		s.ato_us    = ti.tcpi_ato ;
+		s.unacked   = ti.tcpi_unacked ;
+		s.cwnd      = ti.tcpi_snd_cwnd ;
+		s.retrans   = ti.tcpi_total_retrans ;
+		s.mss       = ti.tcpi_snd_mss ;
+		s.rcv_rtt_us= ti.tcpi_rcv_rtt ;
+	}
+#elif defined(WINDOWS_SYS) && defined(SIO_TCP_INFO)
+	DWORD ver = 0 ;
+	TCP_INFO_v0 ti ;
+	DWORD got = 0 ;
+	if(WSAIoctl((SOCKET)fd,SIO_TCP_INFO,&ver,sizeof(ver),&ti,sizeof(ti),&got,NULL,NULL) == 0)
+	{
+		s.info    = true ;
+		s.sendq   = int64_t(ti.BytesInFlight) ;	// unacknowledged only (Windows does not give the unsent part)
+		s.rtt_us  = ti.RttUs ;
+		s.cwnd    = ti.Cwnd ;
+		s.retrans = uint32_t(ti.BytesRetrans) ;
+		s.mss     = ti.Mss ;
+	}
+#elif defined(SO_NWRITE)
+	int q = 0 ;
+	socklen_t ql = sizeof(q) ;
+	if(getsockopt(fd,SOL_SOCKET,SO_NWRITE,&q,&ql) == 0)
+		s.sendq = q ;
+#endif
+	return s ;
+}
+
+std::string PqiEchoProbe::snapStr(const TcpSnap& s)
+{
+	if(!s.ok)
+		return "no socket state" ;
+
+	std::ostringstream o ;
+	o << "nodelay=" << (s.nodelay == 1?"on":(s.nodelay == 0?"off":"?")) ;
+	o << " sendq=" ;
+	if(s.sendq >= 0) o << s.sendq << "B" ; else o << "?" ;
+	if(s.info)
+	{
+		o << std::fixed << std::setprecision(1) << " rtt=" << s.rtt_us/1000.0 << "ms" ;
+#if defined(__linux__)
+		o << " rttvar=" << s.rttvar_us/1000.0 << "ms ato=" << s.ato_us/1000.0 << "ms rcv_rtt=" << s.rcv_rtt_us/1000.0
+		  << "ms unacked=" << s.unacked << "seg cwnd=" << s.cwnd << "seg retrans=" << s.retrans << " mss=" << s.mss ;
+#else
+		o << " cwnd=" << s.cwnd << "B retrans=" << s.retrans << "B mss=" << s.mss ;
+#endif
+	}
+	return o.str() ;
 }

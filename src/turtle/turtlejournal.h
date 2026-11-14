@@ -310,6 +310,7 @@ class TurtleJournal
 		std::unordered_map<uint32_t,RidSeen>          mRidHistory ;
 		std::deque<std::pair<uint64_t,uint32_t> >     mRidOrder ;     // (first ms, rid), oldest first
 		uint32_t mRebornLinesThisLapse ;
+		uint32_t mDirectLostLinesThisLapse ;
 		uint32_t mSelfLoopLinesThisLapse ;
 		uint64_t mTrLagN,mTrLagMax,mTrLagOver5 ;   // pqi arrival -> router processing of tunnel requests, current minute
 
@@ -334,13 +335,20 @@ class TurtleJournal
 		{
 			public:
 				PeerTurtleStat() : ok_in(0),ok_twice(0),t_via(0),acc_from(0),drop_from(0),
-				                   bounces(0),slow_bounces(0),max_bounce_ms(0),ok_late(0) {}
+				                   bounces(0),slow_bounces(0),max_bounce_ms(0),ok_late(0),
+				                   d1_in(0),d1_lost(0),d1_gap_n(0),d1_gap_sum(0),d1_gap_max(0) {}
 
 				uint32_t ok_in,ok_twice,t_via,acc_from,drop_from ;
 				uint32_t bounces,slow_bounces,max_bounce_ms,ok_late ;   // how late this friend delivers requests / results
+				// Depth-1 copies (the friend dug the tunnel itself) and how many of them reached
+				// us after a relayed copy (depth >= 2) of the same request: the direct copy lost
+				// the race and the tunnel goes through another friend. Gap = pqi arrival times.
+				uint32_t d1_in,d1_lost,d1_gap_n ;
+				uint64_t d1_gap_sum,d1_gap_max ;
 		};
 
 		std::map<uint16_t,PeerTurtleStat> mPeerStats ;   // current minute, all peers
+		std::map<uint16_t,std::pair<uint64_t,uint64_t> > mDirectTotals ;  // since start: (depth-1 copies, lost the race)
 		std::map<uint16_t,uint64_t>       mSuspects ;    // peer index -> last dropped item / duplicate result (ms)
 		std::map<TurtlePeerId,int>        mLastOnline ;  // only touched from tick(): -1 unknown, 0 offline, 1 online
 
