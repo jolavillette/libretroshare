@@ -947,6 +947,7 @@ private:
     RsMutex mGenMtx;
     RsGxsDataAccess* mDataAccess;
     RsGeneralDataService* mDataStore;
+    rstime_t mLastMemProbe = 0;
     RsNetworkExchangeService *mNetService;
     RsSerialType *mSerialiser; // WARNING: used concurrently via OpenMP in getMsgData() -- must remain stateless/re-entrant
     /// service type
