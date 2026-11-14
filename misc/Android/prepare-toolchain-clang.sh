@@ -916,7 +916,13 @@ endif(CMAKE_CROSSCOMPILING_EMULATOR)' \
 	# explicitly, as a linked library rather than CMAKE_EXE_LINKER_FLAGS so
 	# it is ordered after libcrypto.a for linkers that resolve archives in a
 	# single pass (lld does not care, GNU ld does).
-	# Submitted upstream as rnpgp/rnp#2473; drop this sed once it is in.
+	# Fixed upstream by rnpgp/rnp#2473 (merged 2026-08-31, in no release yet:
+	# v0.18.1 still needs this patch). Skip it when the checkout already links
+	# ${CMAKE_DL_LIBS} into the probe, as origin/main does, instead of adding
+	# a second dl on top.
+	# TODO: drop it once no supported rnp version needs it
+	grep -q CMAKE_DL_LIBS \
+		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake" ||
 	sed -i \
 		's|(findopensslfeatures PRIVATE OpenSSL::Crypto)|(findopensslfeatures PRIVATE OpenSSL::Crypto dl)|' \
 		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
