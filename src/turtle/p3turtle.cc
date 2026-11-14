@@ -77,8 +77,14 @@ void TS_dumpState() ;
 //    - The total number of TR per second emmited from self will be MAX_TUNNEL_REQS_PER_SECOND / TIME_BETWEEN_TUNNEL_MANAGEMENT_CALLS = 0.5
 //    - I updated forward probabilities to higher values, and min them to 1/nb_connected_friends to prevent blocking tunnels.
 //
-static const rstime_t TUNNEL_REQUESTS_LIFE_TIME                = 600 ; /// life time for tunnel requests in the cache.
+// Requests are kept much longer than the time they need to travel: over slow links
+// (i2p, Tor, a node with a stalled turtle queue) a copy can arrive more than 10 min
+// later. A request we already forgot would be taken for a new one, with whoever
+// brought it back as origin, and later results for it would leave their route.
+static const rstime_t TUNNEL_REQUESTS_LIFE_TIME                = 1800 ; /// life time for tunnel requests in the cache.
 static const rstime_t TUNNEL_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known tunnel requests
+static const rstime_t TUNNEL_REQUEST_IDS_SLICE_TIME            = 600 ; /// time slice of the long memory of tunnel request ids
+static const uint32_t TUNNEL_REQUEST_IDS_SLICES                =  12 ; /// slices kept: tunnel request ids are remembered 2 hours
 static const rstime_t SEARCH_REQUESTS_LIFE_TIME                = 600 ; /// life time for search requests in the cache
 static const rstime_t SEARCH_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known search requests
 static const rstime_t REGULAR_TUNNEL_DIGGING_TIME              = 300 ; /// maximum interval between two tunnel digging campaigns.
@@ -99,6 +105,7 @@ static const int MAX_TR_FORWARD_PER_SEC                =  20 ;
 static const int MAX_TR_FORWARD_PER_SEC_UPPER_LIMIT    = 100 ;
 static const int MAX_TR_FORWARD_PER_SEC_LOWER_LIMIT    =  10 ;
 static const int DISTANCE_SQUEEZING_POWER              =   8 ;
+static const rstime_t TURTLE_ROUTING_ANOMALY_REPORT_PERIOD =  60 ; /// period of the aggregated routing anomaly report
 
 #define HEX_PRINT(a) std::hex << a << std::dec
 
@@ -126,6 +133,16 @@ p3turtle::p3turtle(p3ServiceControl *sc,p3LinkMgr *lm)
 	_last_tunnel_management_time = 0 ;
 	_last_tunnel_campaign_time = 0 ;
 	_last_tunnel_speed_estimate_time = 0 ;
+
+	_nb_mismatching_items_dropped = 0 ;
+	_nb_duplicate_tunnel_results = 0 ;
+	_nb_colliding_tunnel_results = 0 ;
+	_nb_results_from_origin = 0 ;
+	_nb_long_memory_drops = 0 ;
+	_last_routing_anomaly_report_time = time(NULL) ;
+
+	_seen_tunnel_request_ids.resize(1) ;
+	_last_seen_ids_rotation = time(NULL) ;
 
 	_traffic_info.reset() ;
 	_max_tr_up_rate = MAX_TR_FORWARD_PER_SEC ;
@@ -250,6 +267,28 @@ int p3turtle::tick()
 			//
 			_traffic_info = _traffic_info*0.9 + _traffic_info_buffer* (0.1 / (float)TIME_BETWEEN_TUNNEL_MANAGEMENT_CALLS) ;
 			_traffic_info_buffer.reset() ;
+		}
+	}
+
+	{
+		RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
+
+		if(now >= _last_routing_anomaly_report_time + TURTLE_ROUTING_ANOMALY_REPORT_PERIOD)
+		{
+			if(_nb_mismatching_items_dropped + _nb_duplicate_tunnel_results + _nb_colliding_tunnel_results + _nb_results_from_origin + _nb_long_memory_drops > 0)
+				RsWarn() << "p3turtle: over the last " << now - _last_routing_anomaly_report_time << " s: "
+				         << _nb_mismatching_items_dropped << " tunnel items dropped (sender is neither end of the tunnel), "
+				         << _nb_duplicate_tunnel_results << " tunnel results received twice, "
+				         << _nb_colliding_tunnel_results << " tunnel results colliding with an existing tunnel id (not forwarded), "
+				         << _nb_results_from_origin << " tunnel results from the friend the request came from (dropped), "
+				         << _nb_long_memory_drops << " copies of tunnel requests older than the request table (dropped)." ;
+
+			_nb_mismatching_items_dropped = 0 ;
+			_nb_duplicate_tunnel_results = 0 ;
+			_nb_colliding_tunnel_results = 0 ;
+			_nb_results_from_origin = 0 ;
+			_nb_long_memory_drops = 0 ;
+			_last_routing_anomaly_report_time = now ;
 		}
 	}
 
@@ -547,6 +586,18 @@ void p3turtle::autoWash()
 			}
 			else
 				++it ;
+
+		// Long memory of tunnel request ids: start a new slice, forget the oldest one.
+
+		if(now >= _last_seen_ids_rotation + TUNNEL_REQUEST_IDS_SLICE_TIME)
+		{
+			_seen_tunnel_request_ids.push_back(std::unordered_set<TurtleTunnelRequestId>()) ;
+
+			while(_seen_tunnel_request_ids.size() > TUNNEL_REQUEST_IDS_SLICES)
+				_seen_tunnel_request_ids.pop_front() ;
+
+			_last_seen_ids_rotation = now ;
+		}
 	}
 
 	// Tunnels.
@@ -1344,23 +1395,14 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 
 		TurtleTunnel& tunnel(it->second) ;
 
-		// Only file data transfer updates tunnels time_stamp field, to avoid maintaining tunnel that are incomplete.
-		if(item->shouldStampTunnel())
-			tunnel.time_stamp = time(NULL) ;
-
-		tunnel.transfered_bytes += RsTurtleSerialiser().size(item);
-
 		if(item->PeerId() == tunnel.local_dst)
 			item->setTravelingDirection(RsTurtleGenericTunnelItem::DIRECTION_CLIENT) ;
 		else if(item->PeerId() == tunnel.local_src)
 			item->setTravelingDirection(RsTurtleGenericTunnelItem::DIRECTION_SERVER) ;
 		else
 		{
-			// The sender is neither end of this tunnel: we have no way to route this item.
-			// The full history of the offending tunnel id is dumped once by the journal;
-			// here we only keep an aggregated count, because this condition comes in bursts
-			// of thousands of items per minute for a single broken tunnel.
-
+			// The sender is not on this tunnel's route. Count it for the periodic report, and do not
+			// stamp the tunnel: such items must not keep an otherwise unused tunnel alive.
 			rstime_t tunnel_age = time(NULL) - (rstime_t)tunnel.time_stamp ;
 
 			TurtleJournal::instance().itemMismatch(item->tunnelId(),item->PeerId(),tunnel.local_src,tunnel.local_dst,
@@ -1376,7 +1418,7 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 				std::cerr << "(EE)            item->PeerId() = " << item->PeerId()    << std::endl;
 				std::cerr << "(EE) This item is probably lost while tunnel route got redefined. Deleting this item." << std::endl ;
 			}
-
+			++_nb_mismatching_items_dropped ;
 			delete item ;
 			return ;
 		}
@@ -1390,6 +1432,12 @@ void p3turtle::routeGenericTunnelItem(RsTurtleGenericTunnelItem *item)
 			TurtleJournal::instance().itemRouted(item->tunnelId(),item->PeerId(),(next == _own_id)?TurtlePeerId():next,
 			                                     item->PacketSubType(),TurtleJournal::fingerprint(item)) ;
 		}
+
+		// Only file data transfer updates tunnels time_stamp field, to avoid maintaining tunnel that are incomplete.
+		if(item->shouldStampTunnel())
+			tunnel.time_stamp = time(NULL) ;
+
+		tunnel.transfered_bytes += RsTurtleSerialiser().size(item);
 
 		// Let's figure out whether this packet is for us or not.
 
@@ -1658,6 +1706,15 @@ TurtleRequestId p3turtle::diggTunnel(const TurtleFileHash& hash)
 	return id ;
 }
 
+bool p3turtle::locked_tunnelRequestAlreadySeen(TurtleTunnelRequestId id) const
+{
+	for(uint32_t i=0;i<_seen_tunnel_request_ids.size();++i)
+		if(_seen_tunnel_request_ids[i].find(id) != _seen_tunnel_request_ids[i].end())
+			return true ;
+
+	return false ;
+}
+
 void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 {
 #ifdef P3TURTLE_DEBUG
@@ -1703,6 +1760,17 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 			                                   item->partial_tunnel_id) ;
 			return ;
 		}
+
+		// Not in the table any more, but seen within the long memory: a late copy that
+		// came back after the table forgot it. Accepting it would start the request
+		// again with a wrong origin. Drop it.
+		if(locked_tunnelRequestAlreadySeen(item->request_id))
+		{
+			++_nb_long_memory_drops ;
+			return ;
+		}
+		_seen_tunnel_request_ids.back().insert(item->request_id) ;
+
 		// This is a new request. Let's add it to the request map, and forward
 		// it to open peers, while the mutex is locked, so no-one can trigger the
 		// lock before the data is consistent.
@@ -1977,13 +2045,45 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 			TurtleJournal::instance().okNoRequest(item->request_id,item->tunnel_id,item->PeerId()) ;
 			return ;
 		}
+
+		// Is this result too old?
+		// Tunnel Requests younger than TUNNEL_REQUESTS_LIFE_TIME are kept in the cache, so that they are not duplicated if they bounce in the network
+		// Nevertheless results received for Tunnel Requests older than TUNNEL_REQUESTS_RESULT_TIME are considered obsolete and discarded.
+		// This must be checked before the tunnel is stored: a late result is not forwarded upstream, so a
+		// tunnel stored for it would be unknown to the upstream peer, and we would still forward to it every
+		// item the downstream peer sends through that tunnel.
+		if (time(NULL) > it->second.time_stamp + TUNNEL_REQUESTS_RESULT_TIME)
+		{
+#ifdef P3TURTLE_DEBUG
+			RsDbg() << "TURTLE p3turtle::handleTunnelResult Tunnel Request is known, but result arrives too late, dropping";
+#endif
+			TurtleJournal::instance().okLate(item->request_id,item->tunnel_id,item->PeerId(),
+			                                 uint32_t(time(NULL) - (rstime_t)it->second.time_stamp)) ;
+			return;
+		}
+
+		// A result from the friend the request came from would store a tunnel with that
+		// friend at both ends, which sends every item of the tunnel back to it (a mirror).
+		// A standard friend never answers its own request back to us: such a result can
+		// only come from crossed request generations over slow links. Drop it.
+		if(item->PeerId() == it->second.origin)
+		{
+			++_nb_results_from_origin ;
+			return ;
+		}
+
 		if(it->second.responses.find(item->tunnel_id) != it->second.responses.end())
 		{
 			TurtleJournal::instance().okTwice(item->request_id,item->tunnel_id,item->PeerId()) ;
 
-			if(TurtleJournal::instance().verboseRouting())
-				std::cerr << "p3turtle: ERROR: received a tunnel response twice. That should not happen." << std::endl;
-
+			// Each hop perturbs the partial tunnel id, so a tunnel id is unique for a given route: a
+			// second result with the same id is a copy of the first one, not a second route, whichever
+			// peer it comes from. Its sender is therefore not accepted as an end of the tunnel.
+#ifdef P3TURTLE_DEBUG
+			std::cerr << "p3turtle: received a tunnel response twice. req=" << HEX_PRINT(item->request_id)
+			          << " tunnel=" << HEX_PRINT(item->tunnel_id) << " from=" << item->PeerId() << std::endl;
+#endif
+			++_nb_duplicate_tunnel_results ;
 			return ;
 		}
 		else
@@ -2011,9 +2111,14 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "Tunnel id " << HEX_PRINT(item->tunnel_id) << " is already there. Not storing." << std::endl ;
 #endif
-			if(endpoints_mismatch && TurtleJournal::instance().guardEnabled())
+			// The id is already used by a tunnel with other endpoints (tunnel ids are 32 bits, two
+			// different requests can collide). The existing entry is kept, so this route cannot be
+			// served: forwarding the result upstream would make the upstream peer send items that
+			// routeGenericTunnelItem() then drops. Do not advertise it.
+			if(endpoints_mismatch)
 			{
 				TurtleJournal::instance().okHeld(item->tunnel_id,item->request_id,it->second.origin) ;
+				++_nb_colliding_tunnel_results ;
 				return ;
 			}
 		}
@@ -2031,19 +2136,6 @@ void p3turtle::handleTunnelResult(RsTurtleTunnelOkItem *item)
 #ifdef P3TURTLE_DEBUG
 			std::cerr << "  storing tunnel info. src=" << tunnel.local_src << ", dst=" << tunnel.local_dst << ", id=" << item->tunnel_id << std::endl ;
 #endif
-		}
-
-		// Is this result too old?
-		// Tunnel Requests younger than TUNNEL_REQUESTS_LIFE_TIME are kept in the cache, so that they are not duplicated if they bounce in the network
-		// Nevertheless results received for Tunnel Requests older than TUNNEL_REQUESTS_RESULT_TIME are considered obsolete and discarded
-		if (time(NULL) > it->second.time_stamp + TUNNEL_REQUESTS_RESULT_TIME)
-		{
-#ifdef P3TURTLE_DEBUG
-			RsDbg() << "TURTLE p3turtle::handleTunnelResult Tunnel Request is known, but result arrives too late, dropping";
-#endif
-			TurtleJournal::instance().okLate(item->request_id,item->tunnel_id,item->PeerId(),
-			                                 uint32_t(time(NULL) - (rstime_t)it->second.time_stamp)) ;
-			return;
 		}
 
 		// Is this result's target actually ours ?
