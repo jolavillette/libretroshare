@@ -1236,7 +1236,7 @@ int pqissl::Authorise_SSL_Connection()
 	       << PeerId() << " with address: " << remote_addr << std::endl;
 
 	X509_free(peercert); // SSL_get_peer_certificate() hands out a reference
-	return accept_locked(ssl_connection, sockfd, remote_addr);
+	return accept_locked(ssl_connection, sockfd, remote_addr, false);
 }
 
 
@@ -1249,11 +1249,11 @@ int pqissl::accept( SSL *ssl, int fd,
 #endif
 
 	RS_STACK_MUTEX(mSslMtx);
-	return accept_locked(ssl, fd, foreign_addr);
+	return accept_locked(ssl, fd, foreign_addr, true);
 }
 
 int pqissl::accept_locked( SSL *ssl, int fd,
-                           const sockaddr_storage &foreign_addr )
+                           const sockaddr_storage &foreign_addr, bool incoming )
 {
 	Dbg3() << __PRETTY_FUNCTION__ << std::endl;
 
@@ -1289,23 +1289,56 @@ int pqissl::accept_locked( SSL *ssl, int fd,
 
 	if(rsBanList && !rsBanList->isAddressAccepted( foreign_addr, checking_flags, check_result, ban_reason ))
 	{
+		const char* connection = incoming
+		        ? "incoming connection on our listening port"
+		        : "connection we dialed over TCP or set up through the DHT over UDP";
+		const char* reason_name =
+		        (ban_reason == RSBANLIST_REASON_USER) ? "user" :
+		        (ban_reason == RSBANLIST_REASON_DHT) ? "DHT" :
+		        (ban_reason == RSBANLIST_REASON_AUTO_RANGE) ? "automatic range" :
+		                                                      "unknown";
+
 		if( check_result == RSBANLIST_CHECK_RESULT_NOT_WHITELISTED
 		        || ban_reason == RSBANLIST_REASON_USER )
 		{
-			RsInfo() << __PRETTY_FUNCTION__
-			        << " Refusing incoming SSL connection from "
-			        << ( (check_result == RSBANLIST_CHECK_RESULT_NOT_WHITELISTED)
-			             ? "non-whitelisted" : "user-blacklisted" )
-			        << " foreign address " << foreign_addr << std::endl;
+			const bool not_whitelisted =
+			        (check_result == RSBANLIST_CHECK_RESULT_NOT_WHITELISTED);
+
+			// Report only what the check established: the address is either
+			// outside the whitelist this friend requires, or matched by a
+			// blacklist entry of reason "user". Such an entry is not
+			// necessarily ours: friends share their ban lists with us.
+			if(not_whitelisted)
+				RsInfo() << __PRETTY_FUNCTION__ << " Refusing authenticated friend "
+				         << PeerId() << " at " << foreign_addr << " (" << connection
+				         << "): this friend requires white list clearance and the "
+				         << "address is not in the IP whitelist." << std::endl;
+			else
+				RsInfo() << __PRETTY_FUNCTION__ << " Refusing authenticated friend "
+				         << PeerId() << " at " << foreign_addr << " (" << connection
+				         << "): the address is in the IP blacklist (entry of reason "
+				         << reason_name << ")." << std::endl;
 
 			if(rsEvents)
 			{
-				X509 *x509 = SSL_get_peer_certificate(ssl);
 				auto ev = std::make_shared<RsAuthSslConnectionAutenticationEvent>();
-				ev->mSslId = RsX509Cert::getCertSslId(*x509);
-				X509_free(x509); // SSL_get_peer_certificate() hands out a reference
-				ev->mLocator = RsUrl(foreign_addr);
-				ev->mErrorCode = RsAuthSslError::IP_IS_BLACKLISTED;
+				X509 *x509 = SSL_get_peer_certificate(ssl);
+				if(x509)
+				{
+					ev->mSslId = RsX509Cert::getCertSslId(*x509);
+					ev->mPgpId = RsX509Cert::getCertIssuer(*x509);
+					X509_free(x509); // SSL_get_peer_certificate() hands out a reference
+				}
+				else
+					ev->mSslId = PeerId();
+				// The dual-stack listener hands out IPv4-mapped IPv6
+				// addresses: report the IPv4 form, the one the IP filter
+				// checked and the one ban list entries are made of.
+				sockaddr_storage reported_addr = foreign_addr;
+				sockaddr_storage_ipv6_to_ipv4(reported_addr);
+				ev->mLocator = RsUrl(reported_addr);
+				ev->mErrorCode = not_whitelisted ? RsAuthSslError::IP_NOT_WHITELISTED
+				                                 : RsAuthSslError::IP_IS_BLACKLISTED;
 				rsEvents->postEvent(ev);
 			}
 
@@ -1314,12 +1347,11 @@ int pqissl::accept_locked( SSL *ssl, int fd,
 		}
 
 		RsInfo() << __PRETTY_FUNCTION__
-		        << " Accepting authenticated friend " << PeerId()
-		        << " despite automatically blacklisted foreign address "
-		        << foreign_addr << " (ban reason: " << ban_reason
-		        << "). Shared CGNAT exit addresses commonly get flagged by "
-		        << "the DHT while the friend itself is legitimate."
-		        << std::endl;
+		        << " Accepting authenticated friend " << PeerId() << " at "
+		        << foreign_addr << " (" << connection << ") although the "
+		        << "address is in the IP blacklist (entry of reason "
+		        << reason_name << "): only entries of reason \"user\" refuse "
+		        << "an authenticated friend." << std::endl;
 	}
 #endif //def RS_BANLIST_REDUNDANT_CHECK
 

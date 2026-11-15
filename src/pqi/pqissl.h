@@ -196,9 +196,11 @@ protected:
 
 virtual int reset_locked();
 
-	/// initiate incoming connection.
+	/// Finish setting up an authenticated connection. @p incoming is true for
+	/// a connection accepted on our listening port, false for one we dialed
+	/// over TCP or set up through the DHT over UDP.
 	int accept_locked( SSL *ssl, int fd,
-	                   const sockaddr_storage& foreign_addr );
+	                   const sockaddr_storage& foreign_addr, bool incoming );
 
 	// A little bit of information to describe 
 	// the SSL state, this is needed

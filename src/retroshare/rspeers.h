@@ -221,7 +221,12 @@ enum class RsAuthSslError: uint8_t
 	NO_CERTIFICATE_SUPPLIED         = 0x04,
 	NOT_A_FRIEND                    = 0x05,
 	MISSING_CERTIFICATE             = 0x06,
+	/// Authenticated friend refused: its address is in the IP blacklist
 	IP_IS_BLACKLISTED               = 0x07,
+	/// Authenticated friend refused: it requires white list clearance and its
+	/// address is not in the IP whitelist (0x0a is reserved for
+	/// PEER_CLOSED_AFTER_AUTH).
+	IP_NOT_WHITELISTED              = 0x0b,
 	PEER_REFUSED_CONNECTION         = 0x08,
 	UNKNOWN_ERROR                   = 0x09,
 };
