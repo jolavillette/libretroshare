@@ -27,6 +27,7 @@
 #include "util/rsstring.h"
 
 #include <algorithm>
+#include <cstdlib>
 
 // A turtle tunnel request (or tunnel result) is only useful for a few seconds: the node
 // that sent or forwarded a request drops its results once TUNNEL_REQUESTS_RESULT_TIME
@@ -37,6 +38,19 @@
 // such items waited for minutes. They are dropped once they waited more than this:
 static const rstime_t PQI_QOS_STALE_TUNNEL_ITEM_AGE = 10 ;	// seconds
 static const rstime_t PQI_QOS_STALE_REPORT_PERIOD    = 60 ;	// seconds
+
+// The PQISTREAMER lines (stale tunnel items dropped, congestion on/off and the
+// per-minute congestion report) are diagnostics of this experiment: printed only
+// when RS_PQI_CONGESTION_LOG is set to anything but "0". The filtering itself
+// does not depend on it.
+static bool congestionLogEnabled()
+{
+	static const bool enabled = [] {
+		const char *v = getenv("RS_PQI_CONGESTION_LOG") ;
+		return v != NULL && v[0] != '\0' && v[0] != '0' ;
+	}() ;
+	return enabled ;
+}
 
 // Congestion. Once a second, drain = bytes in our queue / measured out rate: the time the
 // friend needs to empty it (the "Drain" column of the bandwidth statistics). A fast file
@@ -144,7 +158,7 @@ void pqiQoSstreamer::locked_removeStaleTunnelItems()
 
 	if(now >= _last_stale_report + PQI_QOS_STALE_REPORT_PERIOD)
 	{
-		if(_stale_dropped > 0)
+		if(_stale_dropped > 0 && congestionLogEnabled())
 			RsInfo() << "PQISTREAMER " << PeerId().toStdString() << ": over the last " << (int)(now - _last_stale_report)
 			         << " s, " << _stale_dropped << " turtle tunnel requests/results (" << _stale_dropped_bytes
 			         << " B) waited more than " << (int)PQI_QOS_STALE_TUNNEL_ITEM_AGE << " s in the out queue and were dropped (oldest "
@@ -202,10 +216,11 @@ void pqiQoSstreamer::locked_updateCongestion(float out_rate_kBps)
 			_refused_bytes += bytes ;
 			_purged += n ;
 
-			RsInfo() << "PQISTREAMER congestion ON  for " << PeerId().toStdString() << ": queue " << queue_bytes << " B, out rate "
-			         << (int)(1024 * out_rate_kBps) << " B/s, drain " << (int)drain << " s. Queuing priority >= "
-			         << PQI_QOS_CONGESTION_MIN_PRIORITY << " only, for at least " << (int)_congestion_hold << " s; "
-			         << n << " queued items (" << bytes << " B) purged." ;
+			if(congestionLogEnabled())
+				RsInfo() << "PQISTREAMER congestion ON  for " << PeerId().toStdString() << ": queue " << queue_bytes << " B, out rate "
+				         << (int)(1024 * out_rate_kBps) << " B/s, drain " << (int)drain << " s. Queuing priority >= "
+				         << PQI_QOS_CONGESTION_MIN_PRIORITY << " only, for at least " << (int)_congestion_hold << " s; "
+				         << n << " queued items (" << bytes << " B) purged." ;
 		}
 	}
 	else
@@ -219,9 +234,10 @@ void pqiQoSstreamer::locked_updateCongestion(float out_rate_kBps)
 			_seconds_above = 0 ;
 			_seconds_below = 0 ;
 
-			RsInfo() << "PQISTREAMER congestion OFF for " << PeerId().toStdString() << " after " << (int)(now - _congested_since)
-			         << " s: queue " << _total_item_size << " B, out rate " << (int)(1024 * out_rate_kBps) << " B/s, drain "
-			         << (int)drain << " s." ;
+			if(congestionLogEnabled())
+				RsInfo() << "PQISTREAMER congestion OFF for " << PeerId().toStdString() << " after " << (int)(now - _congested_since)
+				         << " s: queue " << _total_item_size << " B, out rate " << (int)(1024 * out_rate_kBps) << " B/s, drain "
+				         << (int)drain << " s." ;
 		}
 	}
 
@@ -243,7 +259,7 @@ void pqiQoSstreamer::locked_reportCongestion(rstime_t now)
 			rs_sprintf_append(per_prio," p%d:%u",i,_refused_per_priority[i]) ;
 		}
 
-	if(total > 0)
+	if(total > 0 && congestionLogEnabled())
 		RsInfo() << "PQISTREAMER congestion for " << PeerId().toStdString() << ": over the last " << (int)(now - _last_congestion_report)
 		         << " s, " << total << " items (" << _refused_bytes << " B) not queued, per priority" << per_prio << " ("
 		         << _purged << " of them purged from the queue). Now " << (_congested ? "congested" : "not congested")
@@ -302,8 +318,9 @@ void pqiQoSstreamer::locked_clear_out_queue()
 	{
 		rstime_t now = time(NULL) ;
 
-		RsInfo() << "PQISTREAMER congestion OFF for " << PeerId().toStdString() << " after " << (int)(now - _congested_since)
-		         << " s: out queue cleared." ;
+		if(congestionLogEnabled())
+			RsInfo() << "PQISTREAMER congestion OFF for " << PeerId().toStdString() << " after " << (int)(now - _congested_since)
+			         << " s: out queue cleared." ;
 
 		_congested = false ;
 		_last_congestion_end = now ;
