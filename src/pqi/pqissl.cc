@@ -1342,7 +1342,19 @@ int pqissl::accept_locked( SSL *ssl, int fd,
 				rsEvents->postEvent(ev);
 			}
 
-			reset_locked();
+			if(incoming)
+			{
+				// The listener hands the connection over and does not close
+				// it when we fail: it is not ours yet, so close it here, or
+				// the friend keeps an authenticated, silent link to us until
+				// its heartbeat watchdog gives up. Our own state (a live link,
+				// an outgoing attempt in progress) is another connection.
+				SSL_shutdown(ssl);
+				net_internal_close(fd);
+				SSL_free(ssl);
+			}
+			else
+				reset_locked(); // the connection we dialed is ssl_connection
 			return failure;
 		}
 
