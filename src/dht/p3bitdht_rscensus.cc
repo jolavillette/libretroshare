@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <set>
 #include <sstream>
@@ -215,8 +216,15 @@ static std::string cov(rstime_t secs)
 
 /*****************************************************************************/
 
+/* Diagnostics stay off unless asked for: RS_DHT_CENSUS set to anything but "0". */
+static bool censusEnabled()
+{
+	const char *v = getenv("RS_DHT_CENSUS");
+	return v != nullptr && v[0] != '\0' && v[0] != '0';
+}
+
 DhtRsCensus::DhtRsCensus()
-	: mMtx("DhtRsCensus"), mLoaded(false),
+	: mEnabled(censusEnabled()), mMtx("DhtRsCensus"), mLoaded(false),
 	  mLookupsLost(0),
 	  mSessionStart(0), mDataStart(0), mLastPoll(0), mLastEst(0), mLastSave(0)
 {
@@ -267,6 +275,9 @@ void DhtRsCensus::occasions_locked(rstime_t now, rstime_t w, int k,
 
 void DhtRsCensus::tick(UdpBitDht *dht, bdDhtFunctions *fns, uint32_t bdAll, uint32_t bdRs)
 {
+	if (!mEnabled)
+		return;
+
 	RS_STACK_MUTEX(mMtx);
 
 	rstime_t now = time(NULL);
@@ -795,6 +806,9 @@ void DhtRsCensus::prune_locked(rstime_t now)
 
 void DhtRsCensus::save()
 {
+	if (!mEnabled)
+		return;
+
 	RS_STACK_MUTEX(mMtx);
 	save_locked();
 }

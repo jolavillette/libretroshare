@@ -13,6 +13,9 @@
  * directory); the per-poll libbitdht estimates go to dht-rs-samples.csv.      *
  * The total DHT size is also measured by random-target lookups.              *
  *                                                                             *
+ * Off unless the RS_DHT_CENSUS environment variable is set (and not "0"):     *
+ * when off it logs nothing, writes no file and does no work.                  *
+ *                                                                             *
  * This program is free software: you can redistribute it and/or modify       *
  * it under the terms of the GNU Lesser General Public License as              *
  * published by the Free Software Foundation, either version 3 of the          *
@@ -93,6 +96,8 @@ private:
 	rstime_t observed_locked(rstime_t a, rstime_t b) const;
 	/* masks of the k equal occasions of [now - w, now] each node was seen in */
 	void occasions_locked(rstime_t now, rstime_t w, int k, std::vector<uint32_t> &masks) const;
+
+	const bool mEnabled;	/* RS_DHT_CENSUS, read once at construction */
 
 	RsMutex mMtx;
 	bool mLoaded;
