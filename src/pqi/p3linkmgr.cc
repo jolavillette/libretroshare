@@ -1975,8 +1975,51 @@ bool  p3LinkMgrIMPL::addAddressIfUnique(std::list<peerConnectAddress> &addrList,
 
 
 
+/* A friend's private (10/8, 172.16/12, 192.168/16, 169.254/16), IPv6
+ * link-local or IPv6 unique-local address is only reachable from inside its
+ * own network. When our own local address is public we are in none of those
+ * networks, and a TCP attempt there never connects: it costs the connect delay
+ * plus the TCP timeout (~8 s) before the friend's next address is tried. On a
+ * node with a public address these were ~40 % of the pending connects, and
+ * they kept our dial from reaching the friend's working address before the
+ * friend dialed us. Port 0 never connects either. */
+static bool unreachableTcpAddress( const sockaddr_storage& ownLocal,
+                                   const sockaddr_storage& peerAddr )
+{
+	sockaddr_storage addr = peerAddr;
+	sockaddr_storage_ipv6_to_ipv4(addr); // ::ffff:a.b.c.d -> a.b.c.d
+	if (sockaddr_storage_port(addr) == 0) return true;
+
+	sockaddr_storage own = ownLocal;
+	sockaddr_storage_ipv6_to_ipv4(own);
+	if (own.ss_family != AF_INET || !sockaddr_storage_isExternalNet(own))
+		return false; // we may share a private network with the friend
+
+	switch (addr.ss_family)
+	{
+	case AF_INET:
+		return sockaddr_storage_isPrivateNet(addr);
+	case AF_INET6:
+	{
+		if (sockaddr_storage_isLinkLocalNet(addr)) return true; // fe80::/10
+		const sockaddr_in6& addr6 = reinterpret_cast<const sockaddr_in6&>(addr);
+		return (addr6.sin6_addr.s6_addr[0] & 0xfe) == 0xfc;     // fc00::/7
+	}
+	default:
+		return false;
+	}
+}
+
 bool  p3LinkMgrIMPL::locked_ConnectAttempt_Complete(peerConnectState *peer)
 {
+	/* drop the direct TCP addresses we cannot reach from here */
+	for (auto it = peer->connAddrs.begin(); it != peer->connAddrs.end(); )
+	{
+		if ( (it->type & (RS_NET_CONN_TCP_LOCAL | RS_NET_CONN_TCP_EXTERNAL)) &&
+		     unreachableTcpAddress(mLocalAddress, it->addr) )
+			it = peer->connAddrs.erase(it);
+		else ++it;
+	}
 
 	/* flag as last attempt to prevent loop */
 	//add a random perturbation between 0 and 2 sec.
