@@ -182,7 +182,8 @@ private:
     class GxsTunnelDHInfo
     {
     public:
-        GxsTunnelDHInfo() : dh(0), direction(0), status(0), last_dh_restart(0), dropped_packets(0) {}
+        GxsTunnelDHInfo() : dh(0), direction(0), status(0), last_dh_restart(0), dropped_packets(0)
+                          , own_dh_key_pending(false), peer_dh_item(NULL), peer_dh_item_ts(0) {}
 
         DH *dh ;
         RsGxsId gxs_id ;
@@ -193,6 +194,11 @@ private:
 	TurtleFileHash hash ;
         rstime_t last_dh_restart ;      // throttles DH restarts triggered by undecryptable packets
         uint32_t dropped_packets ;      // undecryptable packets dropped since the last DH restart
+
+        // Keys that are not in the identity cache yet are waited for across ticks, never by sleeping.
+        bool own_dh_key_pending ;                   // our DH public key is not sent yet: the private key that signs it is being loaded
+        RsGxsTunnelDHPublicKeyItem *peer_dh_item ;  // DH public key of the peer, kept while the key that signed it is being loaded
+        rstime_t peer_dh_item_ts ;                  // when peer_dh_item was received
     };
 
     struct GxsTunnelData
@@ -232,8 +238,12 @@ private:
 
     // Cryptography management
     
-    void handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item) ;
-    bool locked_sendDHPublicKey(const DH *dh, const RsGxsId& own_gxs_id, const RsPeerId& virtual_peer_id) ;
+    // Both return false when the item is kept for a later attempt: the caller then must not delete it.
+    bool handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item) ;
+    bool locked_handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item) ;
+    // Sends our DH public key, or leaves it pending when the private key that signs it is not loaded yet.
+    void locked_trySendDHPublicKey(const RsPeerId& virtual_peer_id, GxsTunnelDHInfo& dhinfo) ;
+    bool locked_sendDHPublicKey(const DH *dh, const RsGxsId& own_gxs_id, const RsPeerId& virtual_peer_id, bool& key_not_loaded) ;
     bool locked_initDHSessionKey(DH *&dh);
 	uint64_t locked_getPacketCounter();
 
