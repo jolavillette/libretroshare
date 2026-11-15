@@ -203,6 +203,11 @@ bool pqissli2psam3::setupSocket()
 		return false;
 	}
 
+	// Outgoing I2P links skip pqissl::Initiate_Connection(), where peer sockets
+	// get TCP_NODELAY: the SAM data socket is a plain TCP socket too.
+	// Not fatal: without it the link only runs with Nagle, as it always did.
+	unix_tcp_nodelay(osock);
+
 #ifdef WINDOWS_SYS
 	/* Set TCP buffer size for Windows systems */
 
