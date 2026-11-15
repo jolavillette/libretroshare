@@ -429,19 +429,22 @@ std::string TurtleJournal::trAgeLine(uint64_t n_new,const uint64_t *ages)
 	return o.str() ;
 }
 
-void TurtleJournal::trLongMemoryDrop(TurtleTunnelRequestId rid,const TurtlePeerId& from)
+void TurtleJournal::trLongMemoryDrop(TurtleTunnelRequestId rid,const TurtlePeerId& from,int64_t router_age_s)
 {
 	RS_STACK_MUTEX(mJournalMtx) ;
 
-	uint32_t b = LM_AGE_BUCKETS-1 ;
+	// Exact age from the journal history when it still knows the id (2.5 h), else the
+	// router's age (start of its 10 min slice, so up to 10 min too old).
+	uint64_t age = (router_age_s > 0)?uint64_t(router_age_s):0 ;
 	std::unordered_map<uint32_t,RidSeen>::const_iterator h(mRidHistory.find(rid)) ;
 
 	if(h != mRidHistory.end())
 	{
 		uint64_t now = nowMs() ;
-		uint64_t age = (now > h->second.first_ms)?(now - h->second.first_ms)/1000:0 ;
-		b = (age < 1800)?0:((age < 2400)?1:((age < 3600)?2:((age < 5400)?3:4))) ;
+		age = (now > h->second.first_ms)?(now - h->second.first_ms)/1000:0 ;
 	}
+	uint32_t b = (age < 1800)?0:((age < 2400)?1:((age < 3600)?2:((age < 5400)?3:((age < 9000)?4:((age < 21600)?5:((age < 43200)?6:7)))))) ;
+
 	++mLmMin[b] ;
 	++mLmTotal[b] ;
 	++mLmPeersMin[peerIdx(from)] ;
@@ -449,7 +452,7 @@ void TurtleJournal::trLongMemoryDrop(TurtleTunnelRequestId rid,const TurtlePeerI
 
 std::string TurtleJournal::lmLine(const uint64_t *b)
 {
-	static const char *names[LM_AGE_BUCKETS] = { "<30min","30-40min","40-60min","60-90min","90-150min","unknown" } ;
+	static const char *names[LM_AGE_BUCKETS] = { "<30min","30-40min","40-60min","60-90min","90-150min","150min-6h","6-12h","12-24h" } ;
 	uint64_t n = 0 ;
 	for(uint32_t i=0;i<LM_AGE_BUCKETS;++i)
 		n += b[i] ;
