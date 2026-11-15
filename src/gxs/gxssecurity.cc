@@ -1171,9 +1171,13 @@ bool GxsSecurity::validateNxsGrp(const RsNxsGrp& grp, const RsTlvKeySignature& s
 	// mServiceString was included in the signed payload. We reconstruct it
 	// and retry verification to maintain backward compatibility with 0.6.7.
 
-	std::cerr << "(WW) GxsSecurity::validateNxsGrp() Standard verification failed for group "
-	          << grpMeta.mGroupId << ". mServiceString=\"" << grpMeta.mReceivedServiceString
-	          << "\" (len=" << grpMeta.mReceivedServiceString.size() << ")" << std::endl;
+#ifdef GXS_SECURITY_DEBUG
+	// Debug only: rejected groups come back at every sync, so this fired
+	// hundreds of times per session, and the string is peer-supplied.
+	std::cerr << "GxsSecurity::validateNxsGrp() Standard verification failed for group "
+	          << grpMeta.mGroupId << ", received service string (" << grpMeta.mReceivedServiceString.size()
+	          << " bytes): \"" << grpMeta.mReceivedServiceString.substr(0, 100) << "\"" << std::endl;
+#endif
 
 	if (!grpMeta.mReceivedServiceString.empty())
 	{
@@ -1255,8 +1259,10 @@ bool GxsSecurity::validateNxsGrp(const RsNxsGrp& grp, const RsTlvKeySignature& s
 
 		if (signOk == 1)
 		{
-			std::cerr << "(II) GxsSecurity::validateNxsGrp() Legacy signature verified for group "
+#ifdef GXS_SECURITY_DEBUG
+			std::cerr << "GxsSecurity::validateNxsGrp() Legacy signature verified for group "
 			          << grpMeta.mGroupId << std::endl;
+#endif
 			return true;
 		}
 	}
