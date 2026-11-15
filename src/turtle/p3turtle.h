@@ -136,6 +136,7 @@
 #include <set>
 #include <deque>
 #include <unordered_set>
+#include <vector>
 
 #include "pqi/pqinetwork.h"
 #include "pqi/pqi.h"
@@ -418,14 +419,26 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		/// keeps trace of who emmitted a tunnel request
 		std::map<TurtleTunnelRequestId,TurtleTunnelRequestInfo> 	_tunnel_requests_origins ;
 
-		/// Ids of the tunnel requests seen, kept much longer than the request table
-		/// (time slices, the oldest one dropped at each rotation). Over slow links (Tor,
-		/// i2p, a stalled queue) copies of a request come back up to ~50 min later; once
-		/// the table forgot it, such a copy would be taken for a new request, with
-		/// whoever brought it back as origin, and its results would leave their route.
-		std::deque<std::unordered_set<TurtleTunnelRequestId> > _seen_tunnel_request_ids ;
+		/// Tunnel requests seen, kept much longer than the request table (24 h, in 10 min
+		/// slices). Over slow links (Tor, i2p, a stalled queue) copies of a request come
+		/// back long after it; once the table forgot it, such a copy would be taken for a
+		/// new request, with whoever brought it back as origin, and its results would
+		/// leave their route. A request is keyed on its id and the first 32 bits of its
+		/// hash. The current slice is a hash set; older slices are sealed as sorted
+		/// arrays, 8 bytes per request.
+		class SealedRequestKeys
+		{
+			public:
+				rstime_t start ;              // start of the slice
+				std::vector<uint64_t> keys ;  // sorted
+		};
+		std::unordered_set<uint64_t> _current_tunnel_request_keys ;
+		std::deque<SealedRequestKeys> _sealed_tunnel_request_keys ;
 		rstime_t _last_seen_ids_rotation ;
-		bool locked_tunnelRequestAlreadySeen(TurtleTunnelRequestId id) const ;
+		static uint64_t tunnelRequestKey(const RsTurtleOpenTunnelItem *item) ;
+		/// Is this request remembered? If so, first_seen (optional) gets the start of the
+		/// slice where it was recorded, i.e. its first arrival rounded down to 10 min.
+		bool locked_tunnelRequestAlreadySeen(uint64_t key,rstime_t *first_seen = NULL) const ;
 
 		/// stores adequate tunnels for each file hash locally managed
 		std::map<TurtleFileHash,TurtleHashInfo>			   	_incoming_file_hashes ;
