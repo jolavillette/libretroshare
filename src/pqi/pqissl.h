@@ -180,6 +180,11 @@ public:
 /// initiate incoming connection.
 int accept(SSL *ssl, int fd, const struct sockaddr_storage &foreign_addr);
 
+/// Called by the listener before accept(). Returns false when the incoming
+/// connection must be closed because this friend's incoming links are being
+/// damped (see "Damping of freezing incoming links" below).
+bool admitIncoming(const struct sockaddr_storage &foreign_addr);
+
 void getCryptoParams(RsPeerCryptoParams& params) ;
 bool actAsServer();
 
@@ -265,6 +270,25 @@ bool  	CheckConnectionTimeout();
 	rstime_t   mConnectTS;
 	uint32_t mConnectTimeout;
 	rstime_t   mTimeoutTS;
+
+	/* Damping of freezing incoming links. With some friends the links they
+	 * open to us freeze within seconds while the links we open to them hold
+	 * for hours (Russian ISPs freeze the TCP flows their customers open to
+	 * foreign hosting addresses). Once a friend's incoming links keep
+	 * freezing, admitIncoming() admits one of its incoming connections per
+	 * damping window (15 then 30 min) instead of one every ~140 s, and none
+	 * while one of our own links to it is up. Our own dials are never damped.
+	 * Memory only, reset by a restart. */
+	bool mLinkIncoming = false;         ///< direction of the current link
+	rstime_t mLinkSinceTS = 0;          ///< when the current link came up, 0 if none
+	rstime_t mLastReadTS = 0;           ///< last packet read on the current link
+	uint32_t mYoungIncomingDeaths = 0;  ///< consecutive incoming links that froze young
+	rstime_t mDampingPeriod = 0;        ///< current damping window, 0 if not damped
+	rstime_t mDampedUntilTS = 0;        ///< incoming refused until then
+	uint32_t mDampedIncoming = 0;       ///< refused in the current window
+
+	void noteLinkUp_locked(bool incoming);
+	void noteLinkDown_locked();
 
 	RS_SET_CONTEXT_DEBUG_LEVEL(1)
 

@@ -884,6 +884,8 @@ int pqissllistener::finaliseConnection(int fd, SSL *ssl, const RsPeerId& peerId,
 
 	// hand off ssl conection.
 	pqissl *pqis = it -> second;
+	if (!pqis->admitIncoming(remote_addr))
+		return -1; // its incoming links are damped
 	pqis -> accept(ssl, fd, remote_addr);
 
 	return 1;

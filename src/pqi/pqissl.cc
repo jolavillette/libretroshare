@@ -178,6 +178,8 @@ int pqissl::reset_locked()
 	std::string outLog;
 	bool neededReset = false;
 
+	if (active) noteLinkDown_locked(); // incoming damping bookkeeping
+
 	
 	/* a reset shouldn't cause us to stop listening 
 	 * only reasons for stoplistening() are;
@@ -1232,6 +1234,8 @@ int pqissl::Authorise_SSL_Connection()
 	}
 #endif // def RS_PQISSL_AUTH_REDUNDANT_CHECK
 
+	noteLinkUp_locked(false); // incoming damping bookkeeping
+
 	Dbg2() << __PRETTY_FUNCTION__ << " Accepting connection to peer: "
 	       << PeerId() << " with address: " << remote_addr << std::endl;
 
@@ -1239,6 +1243,125 @@ int pqissl::Authorise_SSL_Connection()
 	return accept_locked(ssl_connection, sockfd, remote_addr);
 }
 
+
+/********** Damping of freezing incoming links (see pqissl.h) ****************/
+
+/* An incoming link that dies younger than this counts as young. A frozen link
+ * is declared dead by pqiperson after ~100 s, a healthy one lives for hours. */
+static const rstime_t PQISSL_YOUNG_LINK_AGE = 300;
+/* A link that read nothing for this long before it died was frozen: a live
+ * link reads a heartbeat every 5 s and pqiperson declares a link dead after
+ * 60 s without packets. Young links the friend closed itself do not count. */
+static const rstime_t PQISSL_FROZEN_SILENCE = 30;
+/* Consecutive young frozen incoming links before damping: from then on one
+ * incoming connection is admitted per window. The first window lasts
+ * PQISSL_DAMPING_FIRST, each further frozen link doubles it up to
+ * PQISSL_DAMPING_MAX, an incoming link that lives PQISSL_YOUNG_LINK_AGE ends
+ * the damping. Our own dials to the friend are never damped. */
+static const uint32_t PQISSL_YOUNG_DEATHS_FOR_DAMPING = 3;
+static const rstime_t PQISSL_DAMPING_FIRST = 15*60;
+static const rstime_t PQISSL_DAMPING_MAX = 30*60;
+
+void pqissl::noteLinkUp_locked(bool incoming)
+{
+	if (active) noteLinkDown_locked(); // the new link replaces this one
+
+	mLinkIncoming = incoming;
+	mLinkSinceTS = time(nullptr);
+	mLastReadTS = mLinkSinceTS;
+}
+
+void pqissl::noteLinkDown_locked()
+{
+	if (!mLinkSinceTS) return;
+
+	const rstime_t now = time(nullptr);
+	const rstime_t age = now - mLinkSinceTS;
+	mLinkSinceTS = 0;
+
+	if (!mLinkIncoming) return;
+
+	// Tor and I2P links run through the loopback: they tell nothing about the
+	// friend's direct path.
+	sockaddr_storage to = remote_addr;
+	sockaddr_storage_ipv6_to_ipv4(to);
+	if (sockaddr_storage_isLoopbackNet(to)) return;
+
+	if (age >= PQISSL_YOUNG_LINK_AGE)
+	{
+		if (mDampingPeriod)
+			RsInfo() << __PRETTY_FUNCTION__ << " " << PeerId() << ": an "
+			         << "incoming link held " << age << " s, its incoming "
+			         << "connections are no longer damped." << std::endl;
+		mYoungIncomingDeaths = 0;
+		mDampingPeriod = 0;
+		mDampedUntilTS = 0;
+		return;
+	}
+
+	// a young link that the friend closed itself tells nothing
+	if (now - mLastReadTS < PQISSL_FROZEN_SILENCE) return;
+
+	if (++mYoungIncomingDeaths < PQISSL_YOUNG_DEATHS_FOR_DAMPING) return;
+
+	if (!mDampingPeriod) mDampingPeriod = PQISSL_DAMPING_FIRST;
+	else if (2*mDampingPeriod < PQISSL_DAMPING_MAX) mDampingPeriod *= 2;
+	else mDampingPeriod = PQISSL_DAMPING_MAX;
+	mDampedUntilTS = now + mDampingPeriod;
+	mDampedIncoming = 0;
+
+	RsInfo() << __PRETTY_FUNCTION__ << " damping incoming connections from "
+	         << PeerId() << " for " << mDampingPeriod/60 << " min: its last "
+	         << mYoungIncomingDeaths << " incoming links froze within "
+	         << PQISSL_YOUNG_LINK_AGE << " s. Our own dials go on."
+	         << std::endl;
+}
+
+bool pqissl::admitIncoming(const sockaddr_storage &foreign_addr)
+{
+	RS_STACK_MUTEX(mSslMtx);
+
+	sockaddr_storage from = foreign_addr;
+	sockaddr_storage_ipv6_to_ipv4(from);
+
+	// Tor and I2P connections all come from the loopback: never refused.
+	if (!mDampingPeriod || sockaddr_storage_isLoopbackNet(from))
+	{
+		noteLinkUp_locked(true);
+		return true;
+	}
+
+	/* An incoming connection always replaces our own link in accept_locked():
+	 * the probe that ends a window must not replace one of ours that holds. */
+	if (active && !mLinkIncoming)
+	{
+		RsInfo() << __PRETTY_FUNCTION__ << " refusing incoming connection from "
+		         << PeerId() << " at " << sockaddr_storage_iptostring(from)
+		         << ": its incoming links are damped and our own link to it "
+		         << "is up" << std::endl;
+		return false;
+	}
+
+	if (mDampedUntilTS)
+	{
+		// logged when the window starts and when it ends, not per refusal
+		if (time(nullptr) < mDampedUntilTS)
+		{
+			++mDampedIncoming;
+			return false;
+		}
+
+		RsInfo() << __PRETTY_FUNCTION__ << " admitting incoming connection from "
+		         << PeerId() << " at " << sockaddr_storage_iptostring(from)
+		         << " after " << mDampingPeriod/60 << " min of damping ("
+		         << mDampedIncoming << " refused)" << std::endl;
+		mDampedUntilTS = 0;
+		mDampedIncoming = 0;
+	}
+
+	noteLinkUp_locked(true);
+	return true;
+}
 
 /* This function is public, and callable from pqilistener - so must be mutex protected */
 int pqissl::accept( SSL *ssl, int fd,
@@ -1704,6 +1827,7 @@ int pqissl::readdata(void *data, int len)
 	}
 	total_len = 0 ;		// reset the packet pointer as we have finished a packet.
 	n_read_zero = 0;
+	mLastReadTS = time(nullptr); // incoming damping
 	return len;//tmppktlen;
 }
 
