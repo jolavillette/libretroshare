@@ -31,6 +31,8 @@
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <algorithm>
 
 #include "rsserver/p3face.h"
 #include "crypto/rscrypto.h"
@@ -82,8 +84,8 @@ void TS_dumpState() ;
 // brought it back as origin, and later results for it would leave their route.
 static const rstime_t TUNNEL_REQUESTS_LIFE_TIME                = 1800 ; /// life time for tunnel requests in the cache.
 static const rstime_t TUNNEL_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known tunnel requests
-static const rstime_t TUNNEL_REQUEST_IDS_SLICE_TIME            = 600 ; /// time slice of the long memory of tunnel request ids
-static const uint32_t TUNNEL_REQUEST_IDS_SLICES                =  12 ; /// slices kept: tunnel request ids are remembered 2 hours
+static const rstime_t TUNNEL_REQUEST_IDS_SLICE_TIME            = 600 ; /// time slice of the long memory of tunnel requests
+static const uint32_t TUNNEL_REQUEST_IDS_SLICES                = 144 ; /// slices kept: tunnel requests are remembered 24 hours
 static const rstime_t SEARCH_REQUESTS_LIFE_TIME                = 600 ; /// life time for search requests in the cache
 static const rstime_t SEARCH_REQUESTS_RESULT_TIME              =  20 ; /// maximum time during which we process/forward results for known search requests
 static const rstime_t REGULAR_TUNNEL_DIGGING_TIME              = 300 ; /// maximum interval between two tunnel digging campaigns.
@@ -140,7 +142,6 @@ p3turtle::p3turtle(p3ServiceControl *sc,p3LinkMgr *lm)
 	_nb_long_memory_drops = 0 ;
 	_last_routing_anomaly_report_time = time(NULL) ;
 
-	_seen_tunnel_request_ids.resize(1) ;
 	_last_seen_ids_rotation = time(NULL) ;
 
 	_traffic_info.reset() ;
@@ -571,14 +572,20 @@ void p3turtle::autoWash()
 			else
 				++it ;
 
-		// Long memory of tunnel request ids: start a new slice, forget the oldest one.
+		// Long memory of tunnel requests: seal the current slice as a sorted array (8 bytes
+		// per request, a day of requests stays a few MB), forget the oldest slice.
 
 		if(now >= _last_seen_ids_rotation + TUNNEL_REQUEST_IDS_SLICE_TIME)
 		{
-			_seen_tunnel_request_ids.push_back(std::unordered_set<TurtleTunnelRequestId>()) ;
+			_sealed_tunnel_request_keys.push_back(SealedRequestKeys()) ;
+			SealedRequestKeys& sealed(_sealed_tunnel_request_keys.back()) ;
+			sealed.start = _last_seen_ids_rotation ;
+			sealed.keys.assign(_current_tunnel_request_keys.begin(),_current_tunnel_request_keys.end()) ;
+			std::sort(sealed.keys.begin(),sealed.keys.end()) ;
+			_current_tunnel_request_keys.clear() ;
 
-			while(_seen_tunnel_request_ids.size() > TUNNEL_REQUEST_IDS_SLICES)
-				_seen_tunnel_request_ids.pop_front() ;
+			while(_sealed_tunnel_request_keys.size() >= TUNNEL_REQUEST_IDS_SLICES)	// the current slice is one of them
+				_sealed_tunnel_request_keys.pop_front() ;
 
 			_last_seen_ids_rotation = now ;
 		}
@@ -1639,11 +1646,33 @@ TurtleRequestId p3turtle::diggTunnel(const TurtleFileHash& hash)
 	return id ;
 }
 
-bool p3turtle::locked_tunnelRequestAlreadySeen(TurtleTunnelRequestId id) const
+uint64_t p3turtle::tunnelRequestKey(const RsTurtleOpenTunnelItem *item)
 {
-	for(uint32_t i=0;i<_seen_tunnel_request_ids.size();++i)
-		if(_seen_tunnel_request_ids[i].find(id) != _seen_tunnel_request_ids[i].end())
+	// The request id alone is 32 random bits: over a day of requests, new ones would
+	// match remembered ones by chance hundreds of times. The first 32 bits of the
+	// requested hash, which relays do not change (unlike the partial tunnel id), make
+	// such matches negligible.
+	uint32_t hash_bits = 0 ;
+	memcpy(&hash_bits,item->file_hash.toByteArray(),sizeof(hash_bits)) ;
+
+	return (uint64_t(item->request_id) << 32) | hash_bits ;
+}
+
+bool p3turtle::locked_tunnelRequestAlreadySeen(uint64_t key,rstime_t *first_seen) const
+{
+	if(_current_tunnel_request_keys.find(key) != _current_tunnel_request_keys.end())
+	{
+		if(first_seen) *first_seen = _last_seen_ids_rotation ;
+		return true ;
+	}
+
+	// Newest slices first: late copies of recent requests are the common case.
+	for(std::deque<SealedRequestKeys>::const_reverse_iterator it(_sealed_tunnel_request_keys.rbegin());it!=_sealed_tunnel_request_keys.rend();++it)
+		if(std::binary_search(it->keys.begin(),it->keys.end(),key))
+		{
+			if(first_seen) *first_seen = it->start ;
 			return true ;
+		}
 
 	return false ;
 }
@@ -1694,12 +1723,14 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 		// Not in the table any more, but seen within the long memory: a late copy that
 		// came back after the table forgot it. Accepting it would start the request
 		// again with a wrong origin. Drop it.
-		if(locked_tunnelRequestAlreadySeen(item->request_id))
+		uint64_t request_key = tunnelRequestKey(item) ;
+
+		if(locked_tunnelRequestAlreadySeen(request_key))
 		{
 			++_nb_long_memory_drops ;
 			return ;
 		}
-		_seen_tunnel_request_ids.back().insert(item->request_id) ;
+		_current_tunnel_request_keys.insert(request_key) ;
 
 		// This is a new request. Let's add it to the request map, and forward
 		// it to open peers, while the mutex is locked, so no-one can trigger the
