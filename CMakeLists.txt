@@ -923,12 +923,14 @@ endif(RS_ANDROID)
 
 
 set(V_VERSION_SET OFF)
+set(V_VERSION_FIXED OFF)
 
 if( NOT RS_MAJOR_VERSION STREQUAL "" AND
     NOT RS_MINOR_VERSION STREQUAL "" AND
     NOT RS_MINI_VERSION  STREQUAL "" )
 	message(STATUS "libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} defined in command line")
 	set(V_VERSION_SET ON)
+	set(V_VERSION_FIXED ON)
 else()
 	set(V_GIT_DESCRIBE_OUTPUT "")
 	set(V_GIT_DESCRIBE_REGEXP "^v([0-9]+).([0-9]+).([0-9]+)(.*)\n$")
@@ -984,46 +986,63 @@ else()
 endif()
 
 if(V_VERSION_SET)
+	# These three only change with a new tag, so they can be compile definitions
+	# of every object, here and in the targets that link libretroshare.
 	target_compile_definitions(
 		${PROJECT_NAME}
 		PUBLIC RS_MAJOR_VERSION=${RS_MAJOR_VERSION}
 		PUBLIC RS_MINOR_VERSION=${RS_MINOR_VERSION}
-		PUBLIC RS_MINI_VERSION=${RS_MINI_VERSION}
-		PUBLIC RS_EXTRA_VERSION="${RS_EXTRA_VERSION}" )
+		PUBLIC RS_MINI_VERSION=${RS_MINI_VERSION} )
 endif(V_VERSION_SET)
+
+if(V_VERSION_FIXED)
+	# Given on the command line: it does not follow the commits
+	target_compile_definitions(
+		${PROJECT_NAME} PUBLIC RS_EXTRA_VERSION="${RS_EXTRA_VERSION}" )
+endif(V_VERSION_FIXED)
 
 ################################################################################
 
-# Engine build hash exposed through RsInit::libRetroShareVersion().
-# Ported from the qmake build (libretroshare.pro RS_LIB_VERSION_HASH block):
-# describe the libretroshare submodule itself and drop the leading 'v' to
-# match the GUI version style. Used only inside libretroshare, hence PRIVATE.
-execute_process(
-	COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
-	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-	OUTPUT_VARIABLE RS_LIB_VERSION_HASH
-	OUTPUT_STRIP_TRAILING_WHITESPACE
-	RESULT_VARIABLE V_GIT_HASH_RESULT ) # Avoid CMake failure if git fails
+# Version strings that change at every commit: the extra version (the
+# "-963-g49d11c2f" of `git describe --tags --long`) and the engine build hash
+# returned by RsInit::libRetroShareVersion().
+#
+# They are not compile definitions: as such they would change the command line
+# of every object at every commit, which rebuilds everything and defeats
+# compiler caches, and they would only be refreshed when CMake runs again.
+# cmake/RsVersionStamp.cmake writes them at build time into rsversion_build.h,
+# that only rsinit.cc includes.
+set(RS_VERSION_BUILD_DIR "${CMAKE_CURRENT_BINARY_DIR}/rsversion_build")
+set(
+	RS_VERSION_STAMP_COMMAND
+	"${CMAKE_COMMAND}"
+	"-DRS_STAMP_SOURCE_DIR=${CMAKE_CURRENT_SOURCE_DIR}"
+	"-DRS_STAMP_TEMPLATE=${CMAKE_CURRENT_SOURCE_DIR}/cmake/rsversion_build.h.in"
+	"-DRS_STAMP_OUTPUT=${RS_VERSION_BUILD_DIR}/rsversion_build.h"
+	"-DGIT_EXECUTABLE=${GIT_EXECUTABLE}"
+	"-DRS_STAMP_FIXED_VERSION=${V_VERSION_FIXED}"
+	"-DRS_STAMP_MAJOR=${RS_MAJOR_VERSION}"
+	"-DRS_STAMP_MINOR=${RS_MINOR_VERSION}"
+	"-DRS_STAMP_MINI=${RS_MINI_VERSION}"
+	-P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/RsVersionStamp.cmake" )
 
-# Source tarball fallback: reuse the Source_Version file (see the version
-# detection above) when git metadata is absent.
-if(NOT V_GIT_HASH_RESULT EQUAL 0 OR RS_LIB_VERSION_HASH STREQUAL "")
-	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
-		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version" RS_LIB_VERSION_HASH)
-		string(STRIP "${RS_LIB_VERSION_HASH}" RS_LIB_VERSION_HASH)
-		set(V_GIT_HASH_RESULT 0)
-	endif()
-endif()
+# Once now, so that the header exists whatever the generator does first
+execute_process(COMMAND ${RS_VERSION_STAMP_COMMAND})
 
-if(V_GIT_HASH_RESULT EQUAL 0 AND NOT RS_LIB_VERSION_HASH STREQUAL "")
-	string(REGEX REPLACE "^v" "" RS_LIB_VERSION_HASH "${RS_LIB_VERSION_HASH}")
-	message(STATUS "libRetroShare engine hash ${RS_LIB_VERSION_HASH}")
-	target_compile_definitions(
-		${PROJECT_NAME}
-		PRIVATE RS_LIB_VERSION_HASH="${RS_LIB_VERSION_HASH}" )
-else()
-	message(WARNING "Determining libRetroShare engine hash via git failed")
-endif()
+# Then at every build: a target without output is always out of date
+add_custom_target(
+	${PROJECT_NAME}_version_stamp
+	COMMAND ${RS_VERSION_STAMP_COMMAND}
+	BYPRODUCTS "${RS_VERSION_BUILD_DIR}/rsversion_build.h"
+	COMMENT "Checking libRetroShare version"
+	VERBATIM )
+add_dependencies(${PROJECT_NAME} ${PROJECT_NAME}_version_stamp)
+
+target_include_directories(${PROJECT_NAME} PRIVATE "${RS_VERSION_BUILD_DIR}")
+set_property(
+	SOURCE "${CMAKE_CURRENT_SOURCE_DIR}/src/rsserver/rsinit.cc"
+	TARGET_DIRECTORY ${PROJECT_NAME}
+	APPEND PROPERTY COMPILE_DEFINITIONS RS_VERSION_BUILD_HEADER )
 
 ################################################################################
 

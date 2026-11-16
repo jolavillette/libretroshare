@@ -988,8 +988,8 @@ void JsonApiServer::run()
 	major = RS_MAJOR_VERSION;
 	minor = RS_MINOR_VERSION;
 	mini = RS_MINI_VERSION;
-	extra = RS_EXTRA_VERSION;
-	human = RS_HUMAN_READABLE_VERSION;
+	extra = rsExtraVersion();
+	human = rsHumanReadableVersion();
 }
 
 std::error_condition RsJsonApiErrorCategory::default_error_condition(int ev) const noexcept
