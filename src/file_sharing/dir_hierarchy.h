@@ -193,8 +193,8 @@ private:
 
     std::map<RsFileHash,DirectoryStorage::EntryIndex> mFileHashes ;
 
-    // True when an entry was removed from mFileHashes, or left pointing to a deleted node, and files with the
-    // same hash may be left without an entry. check() restores them.
+    // True when an entry was removed from mFileHashes, and files with the same hash may be left without an
+    // entry. check() restores them.
 
     bool mFileHashesIncomplete ;
 

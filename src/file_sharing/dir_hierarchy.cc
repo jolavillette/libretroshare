@@ -354,6 +354,7 @@ bool InternalFileHierarchyStorage::updateSubFilesList(
 		if(it->second.modtime != f.file_modtime || it->second.size != f.file_size)
         {
 			// hash needs recomputing
+			forgetFileHash(f.file_hash,d.subfiles[i]);
 			f.file_hash.clear();
             f.file_modtime = it->second.modtime;
             f.file_size = it->second.size;
@@ -473,7 +474,9 @@ void InternalFileHierarchyStorage::forgetFileHash(const RsFileHash& hash,Directo
 	if(it != mFileHashes.end() && it->second == file_index)
 	{
 		mFileHashes.erase(it) ;
-		mFileHashesIncomplete = true ;
+
+		if(!hash.isNull())	// files that are not hashed yet are not looked up by hash
+			mFileHashesIncomplete = true ;
 	}
 }
 void InternalFileHierarchyStorage::deleteNode(uint32_t index)
