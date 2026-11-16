@@ -315,6 +315,13 @@ class p3FileDatabase: public p3Service, public p3Config, public ftSearch //, pub
         uint64_t mCumulativeUploadedAll;
         int mUploadStatsRetentionDays;
 
+        /**
+         * @brief For each hash with upload stats that is found neither in the shared files nor in the extra files,
+         * the number of sweeps of the shared directories started when it was first seen missing.
+         * @see cleanupUploadStats()
+         */
+        std::map<RsFileHash, uint32_t> mUploadStatsMissingSince;
+
         void locked_sendBanInfo(const RsPeerId& pid);
         void handleBannedFilesInfo(RsFileListsBannedHashesItem *item);
 };

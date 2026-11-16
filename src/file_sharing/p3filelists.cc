@@ -542,6 +542,7 @@ bool p3FileDatabase::loadList(std::list<RsItem *>& load)
     mPrimaryBanList.clear();
         mCumulativeUploaded.clear();
         mCumulativeUploadedAll = 0;
+        mUploadStatsMissingSince.clear();
 
     for(std::list<RsItem *>::iterator it = load.begin(); it != load.end(); ++it)
     {
@@ -1132,6 +1133,7 @@ void p3FileDatabase::addUploadStats(const RsFileHash& hash, uint64_t size)
 void p3FileDatabase::clearUploadStats()
 {
 	RS_STACK_MUTEX(mFLSMtx);
+    mUploadStatsMissingSince.clear();
     RsDbg() << "UPLOADSTATS clearing all stats";
 	mCumulativeUploaded.clear();
     mCumulativeUploadedAll = 0;
@@ -1145,22 +1147,45 @@ void p3FileDatabase::cleanupUploadStats(int days)
     uint32_t removed_count = 0;
 
     // RsDbg() << "UPLOADSTATS cleanup stats (retention: " << days << " days)";
-    
+
+    // A file that is not found is not always gone. A renamed or moved file is hashed again and has no hash until
+    // that is done, and the files of a shared directory that is not there (unplugged drive) come back with it.
+    // So the stats of a file that is not found are only dropped when a sweep that started after the file was
+    // first seen missing went through all the shared directories, and nothing is left to hash: by then the file
+    // would be back.
+
+    const uint32_t last_complete_sweep = mLocalDirWatcher->lastCompleteSweep();
+    const bool hashing = mLocalDirWatcher->inDirectoryCheck();	// true while the hashing thread runs, paused or not
+
     for (auto it = mCumulativeUploaded.begin(); it != mCumulativeUploaded.end(); )
     {
         bool expired = (days > 0) && (it->second.last_upload_ts < cutoff);
-        bool still_shared = false;
-        
-        // Optional: check if file is still shared. 
-        // We only do this check if it's not already expired, to save some time.
+        bool gone = false;
+
+        // Check if the file is still shared. We only do this check if it's not already expired, to save some time.
         if (!expired)
         {
             RsFileHash real_hash;
             DirectoryStorage::EntryIndex indx;
-            still_shared = mLocalSharedDirs->searchHash(it->first, real_hash, indx);
+            bool found = mLocalSharedDirs->searchHash(it->first, real_hash, indx);
+
+            if (!found)
+            {
+                FileInfo info;
+                found = mExtraFiles->search(it->first, RS_FILE_HINTS_EXTRA, info);
+            }
+
+            if (found)
+                mUploadStatsMissingSince.erase(it->first);
+            else
+            {
+                // The number of sweeps is read now, after the search: the sweep that removed the file has started.
+                uint32_t missing_since = mUploadStatsMissingSince.insert(std::make_pair(it->first, mLocalDirWatcher->sweepsStarted())).first->second;
+                gone = !hashing && last_complete_sweep > missing_since;
+            }
         }
 
-        if (expired || !still_shared)
+        if (expired || gone)
         {
             if (expired)
             {
@@ -1172,6 +1197,7 @@ void p3FileDatabase::cleanupUploadStats(int days)
             }
 
             mCumulativeUploadedAll -= it->second.total_bytes;
+            mUploadStatsMissingSince.erase(it->first);
             it = mCumulativeUploaded.erase(it);
             removed_count++;
         }

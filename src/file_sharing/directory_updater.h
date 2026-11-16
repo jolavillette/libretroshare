@@ -29,6 +29,8 @@
 #include "file_sharing/directory_storage.h"
 #include "util/rstime.h"
 
+#include <atomic>
+
 class LocalDirectoryUpdater: public HashStorageClient, public RsTickingThread
 {
 public:
@@ -37,6 +39,18 @@ public:
 
     void forceUpdate(bool add_safe_delay);
     bool inDirectoryCheck() const ;
+
+    /**
+     * @brief Number of sweeps of the shared directories started so far, the current one included.
+     */
+    uint32_t sweepsStarted() const { return mSweepsStarted; }
+
+    /**
+     * @brief Number, as counted by sweepsStarted(), of the last sweep that went through everything: every shared
+     * directory was there and no file was left for later. 0 when there has been none. A file that is in the
+     * shared directories has been seen by such a sweep, and either has its hash or waits in the hashing queue.
+     */
+    uint32_t lastCompleteSweep() const { return mLastCompleteSweep; }
 	void togglePauseHashingProcess();
 	bool hashingProcessPaused();
 
@@ -88,6 +102,9 @@ private:
     bool mNeedsFullRecheck ;
     bool mIsChecking ;
     bool mForceUpdate ;
+
+	std::atomic<uint32_t> mSweepsStarted ;
+	std::atomic<uint32_t> mLastCompleteSweep ;
 
 	uint32_t mIgnoreFlags ;
 	uint32_t mMaxShareDepth ;

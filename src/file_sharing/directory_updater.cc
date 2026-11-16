@@ -44,7 +44,7 @@ LocalDirectoryUpdater::LocalDirectoryUpdater(HashStorage *hc,LocalDirectoryStora
     , mIgnoreDuplicates(true)
     /* Can be left to false, but setting it to true will force to re-hash any file that has been left unhashed in the last session.*/
     , mNeedsFullRecheck(true)
-    , mIsChecking(false), mForceUpdate(false), mIgnoreFlags (0),  mMaxShareDepth(0)
+    , mIsChecking(false), mForceUpdate(false), mSweepsStarted(0), mLastCompleteSweep(0), mIgnoreFlags (0),  mMaxShareDepth(0)
 {
 }
 
@@ -137,6 +137,9 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 
 	mIsChecking = true;
 
+	const uint32_t sweep_number = ++mSweepsStarted;
+	bool some_directory_missing = false;
+
     if(rsEvents)
     {
         auto ev = std::make_shared<RsSharedDirectoriesEvent>();
@@ -185,8 +188,12 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 				         "probably being written to. Keep it for later");
 			}
 		}
-		else RS_WARN( "Got non existent file \"", fPath,
-		              "\" in shared directories list. Ignored." );
+		else
+		{
+			some_directory_missing = true;
+			RS_WARN( "Got non existent file \"", fPath,
+			         "\" in shared directories list. Ignored." );
+		}
 	}
 
 	{
@@ -233,6 +240,8 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 			            stored_dir_it.name(), *stored_dir_it,
 			            existing_dirs, current_branch_real_paths, 1, some_files_not_ready );
 		}
+		else
+			some_directory_missing = true;
 		/* here we need to use the list that was stored, instead of the shared
 		 * dir list, because the two are not necessarily in the same order. */
 	}
@@ -244,6 +253,9 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
         rsEvents->postEvent(ev);
     }
     mIsChecking = false;
+
+	if(!some_files_not_ready && !some_directory_missing)
+		mLastCompleteSweep = sweep_number;
 
 	return true;
 }
