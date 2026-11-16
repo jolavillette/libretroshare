@@ -130,6 +130,14 @@ void RsThread::askForStop()
 void RsThread::wrapRun()
 {
 	{RS_STACK_MUTEX(mInitMtx);} // Waiting Init done.
+
+	/* The thread names itself: on macOS pthread_setname_np() only names the
+	 * calling thread, so naming it from start() renamed the thread that
+	 * started it. The name is cut to 15 characters plus the terminating null
+	 * byte, the Linux limit. */
+	if(pthread_setname_np && !mFullName.empty())
+		RS_pthread_setname_np(pthread_self(), mFullName.substr(0, 15).c_str());
+
 	run();
 	resetTid();
 	mHasStopped = true;
@@ -221,13 +229,10 @@ bool RsThread::start(const std::string& threadName)
 		/* Store an extra copy of thread id for debugging */
 		mLastTid = mTid;
 
-		/* Store thread full name as PThread is not able to keep it entirely */
+		/* Store thread full name as PThread is not able to keep it entirely.
+		 * The new thread names itself with it in wrapRun(), once mInitMtx is
+		 * released. */
 		mFullName = threadName;
-
-		/* Set PThread thread name which is restricted to 16 characters
-		 * including the terminating null byte */
-		if(pthread_setname_np && !threadName.empty())
-			RS_pthread_setname_np(mTid, threadName.substr(0, 15).c_str());
 
 		return true;
 	}
