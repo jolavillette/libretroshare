@@ -150,8 +150,8 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 	 *   A single sweep is performed over the whole directory structure.
 	 * - the information that is costly to compute (the hash) is stored
 	 *   externally into a separate structure.
-	 * - doing so, changing directory names or moving files between directories
-	 * does not cause a re-hash of the content. */
+	 * - the hashes are stored by file path: a file or directory that is renamed
+	 *   or moved is hashed again. */
 	std::list<SharedDirInfo> shared_directory_list;
 	mSharedDirectories->getSharedDirectoryList(shared_directory_list);
 	std::set<std::string> sub_dir_list;

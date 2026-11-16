@@ -171,6 +171,11 @@ private:
     void deleteNode(DirectoryStorage::EntryIndex);
     void deleteFileNode(DirectoryStorage::EntryIndex);
 
+    // Removes the entry of mFileHashes for this hash when it points to the given file, which is going away or
+    // getting another hash. Another file with the same content may remain: check() gives it the entry.
+
+    void forgetFileHash(const RsFileHash& hash,DirectoryStorage::EntryIndex file_index);
+
     // Recomputes the row of every child of d (sub-directories first, then files). Must be called after
     // any change to d.subdirs or d.subfiles.
 
@@ -187,6 +192,11 @@ private:
     // Unlike directories, multiple files may have the same hash. So this cannot be used for anything else than FT.
 
     std::map<RsFileHash,DirectoryStorage::EntryIndex> mFileHashes ;
+
+    // True when an entry was removed from mFileHashes, or left pointing to a deleted node, and files with the
+    // same hash may be left without an entry. check() restores them.
+
+    bool mFileHashesIncomplete ;
 
     // The directory hashes are the sha1sum of the
     // full public path to the directory.

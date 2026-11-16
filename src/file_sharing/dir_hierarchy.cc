@@ -56,7 +56,7 @@ template<class T> typename std::set<T>::iterator erase_from_set(typename std::se
 // A Mutex is used to ensure total coherence at this level. So only abstracted operations are allowed,
 // so that the hierarchy stays completely coherent between calls.
 
-InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0)
+InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0), mFileHashesIncomplete(false)
 {
     DirEntry *de = new DirEntry("") ;
 
@@ -121,6 +121,7 @@ bool InternalFileHierarchyStorage::getIndexFromFileHash(
 	{
 		RS_INFO("removing non existing file hash: ", hash, " from file hash list");
 		mFileHashes.erase(it);
+		mFileHashesIncomplete = true;
 		return false;
 	}
 
@@ -399,6 +400,10 @@ bool InternalFileHierarchyStorage::updateHash(
 #endif
 
     RsFileHash& old_hash (static_cast<FileEntry*>(mNodes[file_index])->file_hash) ;
+
+    if(old_hash != hash)
+        forgetFileHash(old_hash,file_index) ;
+
     mFileHashes[hash] = file_index ;
 
     old_hash = hash ;
@@ -422,6 +427,9 @@ bool InternalFileHierarchyStorage::updateFile(const DirectoryStorage::EntryIndex
 		mTotalSize -= fe.file_size;
 
 	mTotalSize += size ;
+
+    if(fe.file_hash != hash)
+        forgetFileHash(fe.file_hash,file_index) ;
 
     fe.file_hash = hash;
     fe.file_size = size;
@@ -451,9 +459,21 @@ void InternalFileHierarchyStorage::deleteFileNode(uint32_t index)
         if(mTotalFiles > 0)
 			mTotalFiles -= 1;
 
+		forgetFileHash(fe.file_hash,index) ;
+
 		delete mNodes[index] ;
 		mFreeNodes.push_back(index) ;
 		mNodes[index] = NULL ;
+	}
+}
+void InternalFileHierarchyStorage::forgetFileHash(const RsFileHash& hash,DirectoryStorage::EntryIndex file_index)
+{
+	auto it = mFileHashes.find(hash) ;
+
+	if(it != mFileHashes.end() && it->second == file_index)
+	{
+		mFileHashes.erase(it) ;
+		mFileHashesIncomplete = true ;
 	}
 }
 void InternalFileHierarchyStorage::deleteNode(uint32_t index)
@@ -955,8 +975,38 @@ bool InternalFileHierarchyStorage::check(std::string& error_string) // checks co
         {
             if(!bOrphean){ error_string += " - Orphean node!"; bOrphean = true;}
 
+            if(mNodes[i]->type() == FileStorageNode::TYPE_FILE)
+                forgetFileHash(static_cast<FileEntry*>(mNodes[i])->file_hash,i) ;
+
             deleteNode(i) ;	// we don't care if it's a file or a dir.
         }
+
+    // mFileHashes keeps a single file per hash. When that file went away, or got another hash, its entry was
+    // removed. Files with the same content that are still here get the entry back, so that they can be found.
+
+    if(mFileHashesIncomplete)
+    {
+        for(uint32_t i=0;i<mNodes.size();++i)
+            if(mNodes[i] != NULL && mNodes[i]->type() == FileStorageNode::TYPE_FILE)
+            {
+                const RsFileHash& hash(static_cast<FileEntry*>(mNodes[i])->file_hash) ;
+
+                if(hash.isNull())
+                    continue ;
+
+                auto res = mFileHashes.insert(std::make_pair(hash,i)) ;
+
+                if(!res.second)		// keep an existing entry, unless it points to a deleted node, or to a node with another hash.
+                {
+                    uint32_t j = res.first->second ;
+
+                    if(j >= mNodes.size() || mNodes[j] == NULL || mNodes[j]->type() != FileStorageNode::TYPE_FILE || static_cast<FileEntry*>(mNodes[j])->file_hash != hash)
+                        res.first->second = i ;
+                }
+            }
+
+        mFileHashesIncomplete = false ;
+    }
 
     return error_string.empty();;
 }
