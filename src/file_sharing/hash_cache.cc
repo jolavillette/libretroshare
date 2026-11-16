@@ -19,6 +19,9 @@
  * along with this program. If not, see <https://www.gnu.org/licenses/>.       *
  *                                                                             *
  ******************************************************************************/
+#include <chrono>
+#include <thread>
+
 #include "util/rsdir.h"
 #include "util/rsprint.h"
 #include "util/rstime.h"
@@ -145,7 +148,11 @@ void HashStorage::threadTick()
 
                 mInactivitySleepTime = MAX_INACTIVITY_SLEEP_TIME;
 
-                if(!mChanged)	// otherwise it might prevent from saving the hash cache
+                // A file may have been queued while we were sleeping off the mutex: requestHash() saw the thread
+                // running and did not start it. Stopping now would leave that file unhashed.
+                if(!mFilesToHash.empty())
+                    mInactivitySleepTime = DEFAULT_INACTIVITY_SLEEP_TIME;
+                else if(!mChanged)	// otherwise it might prevent from saving the hash cache
                 {
                     stopHashThread();
                 }
@@ -317,7 +324,10 @@ bool HashStorage::requestHash(const std::string& full_path,uint64_t size,rstime_
     // we need to schedule a re-hashing
 
     if(mFilesToHash.find(real_path) != mFilesToHash.end())
+    {
+        startHashThread();	// does nothing when the thread runs. Otherwise the last attempt to start it failed.
         return false ;
+    }
 
     FileHashJob job ;
 
@@ -345,6 +355,14 @@ void HashStorage::startHashThread()
 {
     if(!mRunning)
     {
+        // stopHashThread() only asks the thread to stop: it may still be on its way out, and start() refuses to
+        // start a thread that has not finished. It is past its last use of mHashMtx, so waiting here is safe.
+        for(uint32_t i=0; i<1000 && isRunning(); ++i)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+
+        if(!start("fs hash cache"))
+            return;		// mRunning stays false: the next request tries again.
+
         mRunning = true ;
         std::cerr << "Starting hashing thread." << std::endl;
         mHashCounter = 0;
@@ -356,7 +374,6 @@ void HashStorage::startHashThread()
             ev->mEventCode = RsSharedDirectoriesEventCode::HASHING_PROCESS_STARTED;
             rsEvents->postEvent(ev);
         }
-        start("fs hash cache") ;
     }
 }
 
