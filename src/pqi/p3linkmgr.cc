@@ -25,6 +25,7 @@
 
 #include "pqi/p3peermgr.h"
 #include "pqi/p3netmgr.h"
+#include "pqi/pqinetwork.h"
 
 #include "rsserver/p3face.h"
 #include "pqi/authssl.h"
@@ -1975,26 +1976,9 @@ bool  p3LinkMgrIMPL::addAddressIfUnique(std::list<peerConnectAddress> &addrList,
 
 
 
-/* A friend's private (10/8, 172.16/12, 192.168/16, 169.254/16), IPv6
- * link-local or IPv6 unique-local address is only reachable from inside its
- * own network. When our own local address is public we are in none of those
- * networks, and a TCP attempt there never connects: it costs the connect delay
- * plus the TCP timeout (~8 s) before the friend's next address is tried. On a
- * node with a public address these were ~40 % of the pending connects, and
- * they kept our dial from reaching the friend's working address before the
- * friend dialed us. Port 0 never connects either. */
-static bool unreachableTcpAddress( const sockaddr_storage& ownLocal,
-                                   const sockaddr_storage& peerAddr )
+/* addr must have gone through sockaddr_storage_ipv6_to_ipv4() */
+static bool privateScopeAddress(const sockaddr_storage& addr)
 {
-	sockaddr_storage addr = peerAddr;
-	sockaddr_storage_ipv6_to_ipv4(addr); // ::ffff:a.b.c.d -> a.b.c.d
-	if (sockaddr_storage_port(addr) == 0) return true;
-
-	sockaddr_storage own = ownLocal;
-	sockaddr_storage_ipv6_to_ipv4(own);
-	if (own.ss_family != AF_INET || !sockaddr_storage_isExternalNet(own))
-		return false; // we may share a private network with the friend
-
 	switch (addr.ss_family)
 	{
 	case AF_INET:
@@ -2008,6 +1992,54 @@ static bool unreachableTcpAddress( const sockaddr_storage& ownLocal,
 	default:
 		return false;
 	}
+}
+
+/* Our local address is only one of the addresses of this machine: a second
+ * interface (LAN side of a router, VPN, container bridge) can put us inside
+ * the friend's private network. Ask the routing table: connect() on a UDP
+ * socket sends nothing and gives the socket the source address the kernel
+ * would use towards addr. A private source means such an interface exists. */
+static bool routedFromPrivateSource(const sockaddr_storage& addr)
+{
+	int fd = unix_socket(addr.ss_family, SOCK_DGRAM, 0);
+	if (fd < 0) return false;
+
+	bool res = false;
+	sockaddr_storage src;
+	sockaddr_storage_clear(src);
+	socklen_t len = sizeof(src);
+	if ( unix_connect(fd, addr) == 0 &&
+	     getsockname(fd, reinterpret_cast<sockaddr*>(&src), &len) == 0 )
+	{
+		sockaddr_storage_ipv6_to_ipv4(src);
+		res = privateScopeAddress(src);
+	}
+
+	unix_close(fd);
+	return res;
+}
+
+/* A friend's private (10/8, 172.16/12, 192.168/16, 169.254/16), IPv6
+ * link-local or IPv6 unique-local address is only reachable from inside its
+ * own network. When our own local address is public and no other interface
+ * of ours leads there, a TCP attempt never connects: it costs the connect
+ * delay plus the TCP timeout (~8 s) before the friend's next address is tried.
+ * On a node with a public address these were ~40 % of the pending connects,
+ * and they kept our dial from reaching the friend's working address before
+ * the friend dialed us. Port 0 never connects either. */
+static bool unreachableTcpAddress( const sockaddr_storage& ownLocal,
+                                   const sockaddr_storage& peerAddr )
+{
+	sockaddr_storage addr = peerAddr;
+	sockaddr_storage_ipv6_to_ipv4(addr); // ::ffff:a.b.c.d -> a.b.c.d
+	if (sockaddr_storage_port(addr) == 0) return true;
+
+	sockaddr_storage own = ownLocal;
+	sockaddr_storage_ipv6_to_ipv4(own);
+	if (own.ss_family != AF_INET || !sockaddr_storage_isExternalNet(own))
+		return false; // we may share a private network with the friend
+
+	return privateScopeAddress(addr) && !routedFromPrivateSource(addr);
 }
 
 bool  p3LinkMgrIMPL::locked_ConnectAttempt_Complete(peerConnectState *peer)
