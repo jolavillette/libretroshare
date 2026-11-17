@@ -263,7 +263,8 @@ private:
 	/** Wait the thread while it is stopping */
 	void waitWhileStopping();
 
-	/** To be sure Init (pthread_setname_np) is done before continue thread.
+	/** Held by start() until the thread id and the thread name are stored:
+	 * the new thread waits for it in wrapRun() before it reads them and runs.
 	 * Else can finish before and crash. */
 	RsMutex mInitMtx;
 
