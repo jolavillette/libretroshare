@@ -176,6 +176,10 @@ private:
 
     void forgetFileHash(const RsFileHash& hash,DirectoryStorage::EntryIndex file_index);
 
+    // Records that the entry of this hash was removed from mFileHashes, for check() to restore it.
+
+    void fileHashEntryRemoved(const RsFileHash& hash);
+
     // Recomputes the row of every child of d (sub-directories first, then files). Must be called after
     // any change to d.subdirs or d.subfiles.
 
@@ -193,10 +197,12 @@ private:
 
     std::map<RsFileHash,DirectoryStorage::EntryIndex> mFileHashes ;
 
-    // True when an entry was removed from mFileHashes, and files with the same hash may be left without an
-    // entry. check() restores them.
+    // Hashes whose entry was removed from mFileHashes, while files with the same hash may be left without an
+    // entry. check() restores them. When too many hashes were removed at once the list is dropped, and check()
+    // looks at every file instead (mRestoreAllFileHashes).
 
-    bool mFileHashesIncomplete ;
+    std::set<RsFileHash> mFileHashesToRestore ;
+    bool mRestoreAllFileHashes ;
 
     // The directory hashes are the sha1sum of the
     // full public path to the directory.

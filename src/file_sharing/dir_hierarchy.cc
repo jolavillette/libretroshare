@@ -38,6 +38,9 @@
 
 //#define DEBUG_DIRECTORY_STORAGE 1
 
+// Past this number of hashes removed from mFileHashes between two checks, check() looks at every file.
+static const uint32_t MAX_FILE_HASHES_TO_RESTORE = 1000 ;
+
 typedef FileListIO::read_error read_error;
 
 /******************************************************************************************************************/
@@ -56,7 +59,7 @@ template<class T> typename std::set<T>::iterator erase_from_set(typename std::se
 // A Mutex is used to ensure total coherence at this level. So only abstracted operations are allowed,
 // so that the hierarchy stays completely coherent between calls.
 
-InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0), mFileHashesIncomplete(false)
+InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0), mRestoreAllFileHashes(false)
 {
     DirEntry *de = new DirEntry("") ;
 
@@ -121,7 +124,7 @@ bool InternalFileHierarchyStorage::getIndexFromFileHash(
 	{
 		RS_INFO("removing non existing file hash: ", hash, " from file hash list");
 		mFileHashes.erase(it);
-		mFileHashesIncomplete = true;
+		fileHashEntryRemoved(hash);
 		return false;
 	}
 
@@ -474,9 +477,20 @@ void InternalFileHierarchyStorage::forgetFileHash(const RsFileHash& hash,Directo
 	if(it != mFileHashes.end() && it->second == file_index)
 	{
 		mFileHashes.erase(it) ;
+		fileHashEntryRemoved(hash) ;
+	}
+}
+void InternalFileHierarchyStorage::fileHashEntryRemoved(const RsFileHash& hash)
+{
+	if(hash.isNull() || mRestoreAllFileHashes)	// files that are not hashed yet are not looked up by hash
+		return ;
 
-		if(!hash.isNull())	// files that are not hashed yet are not looked up by hash
-			mFileHashesIncomplete = true ;
+	mFileHashesToRestore.insert(hash) ;
+
+	if(mFileHashesToRestore.size() > MAX_FILE_HASHES_TO_RESTORE)
+	{
+		mFileHashesToRestore.clear() ;
+		mRestoreAllFileHashes = true ;
 	}
 }
 void InternalFileHierarchyStorage::deleteNode(uint32_t index)
@@ -986,8 +1000,10 @@ bool InternalFileHierarchyStorage::check(std::string& error_string) // checks co
 
     // mFileHashes keeps a single file per hash. When that file went away, or got another hash, its entry was
     // removed. Files with the same content that are still here get the entry back, so that they can be found.
+    // Only the hashes that lost their entry are looked up in mFileHashes: looking up every file of a large
+    // list takes long (0.8 s for a million files), and this runs each time a file leaves the list.
 
-    if(mFileHashesIncomplete)
+    if(mRestoreAllFileHashes || !mFileHashesToRestore.empty())
     {
         for(uint32_t i=0;i<mNodes.size();++i)
             if(mNodes[i] != NULL && mNodes[i]->type() == FileStorageNode::TYPE_FILE)
@@ -995,6 +1011,9 @@ bool InternalFileHierarchyStorage::check(std::string& error_string) // checks co
                 const RsFileHash& hash(static_cast<FileEntry*>(mNodes[i])->file_hash) ;
 
                 if(hash.isNull())
+                    continue ;
+
+                if(!mRestoreAllFileHashes && mFileHashesToRestore.find(hash) == mFileHashesToRestore.end())
                     continue ;
 
                 auto res = mFileHashes.insert(std::make_pair(hash,i)) ;
@@ -1008,7 +1027,8 @@ bool InternalFileHierarchyStorage::check(std::string& error_string) // checks co
                 }
             }
 
-        mFileHashesIncomplete = false ;
+        mFileHashesToRestore.clear() ;
+        mRestoreAllFileHashes = false ;
     }
 
     return error_string.empty();;
