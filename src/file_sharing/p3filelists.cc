@@ -309,15 +309,18 @@ void p3FileDatabase::startThreads()
 void p3FileDatabase::stopThreads()
 {
     RS_STACK_MUTEX(mFLSMtx) ;
+
+    // The directory watcher goes first: it is the only caller of HashStorage::requestHash(), which starts the
+    // hashing thread when that one has stopped by itself. Stopped second, it could start it again after its stop.
 #ifdef DEBUG_P3FILELISTS
-    P3FILELISTS_DEBUG() << "Stopping hash cache thread..." ; std::cerr.flush() ;
-#endif
-    mHashCache->fullstop();
-#ifdef DEBUG_P3FILELISTS
-    P3FILELISTS_DEBUG() << "Done." << std::endl;
     P3FILELISTS_DEBUG() << "Stopping directory watcher thread..." ; std::cerr.flush() ;
 #endif
     mLocalDirWatcher->fullstop();
+#ifdef DEBUG_P3FILELISTS
+    P3FILELISTS_DEBUG() << "Done." << std::endl;
+    P3FILELISTS_DEBUG() << "Stopping hash cache thread..." ; std::cerr.flush() ;
+#endif
+    mHashCache->fullstop();
 #ifdef DEBUG_P3FILELISTS
     P3FILELISTS_DEBUG() << "Done." << std::endl;
 #endif
