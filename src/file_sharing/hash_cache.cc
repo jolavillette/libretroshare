@@ -39,6 +39,7 @@ HashStorage::HashStorage(const std::string& save_file_name)
 {
     mInactivitySleepTime = DEFAULT_INACTIVITY_SLEEP_TIME;
     mRunning = false ;
+    mChanged = false ;
     mLastSaveTime = 0 ;
     mTotalSizeToHash = 0;
     mTotalFilesToHash = 0;
