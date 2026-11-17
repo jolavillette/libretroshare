@@ -370,6 +370,12 @@ void HashStorage::stopHashThread()
 
 		RsThread::askForStop();
         mRunning = false ;
+
+        // A pause only makes sense for the run it was asked in: the status bar forgets it when hashing finishes,
+        // and togglePauseHashingProcess() does nothing while the thread is stopped. Left set, the next run would
+        // start paused with nothing on screen to tell.
+        mHashingProcessPaused = false ;
+
         mTotalSizeToHash = 0;
         mTotalFilesToHash = 0;
     }
