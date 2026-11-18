@@ -132,6 +132,11 @@ p3BitDht::p3BitDht(const RsPeerId& id, pqiConnectCb *cb, p3NetMgr *nm,
 
 	mMinuteTS = 0; 
 
+	mDhtActive = false;
+	mDhtNetSize = 0;
+	mDhtRsNetSize = 0;
+	mDhtStatsTS = 0;
+
 #ifdef DEBUG_BITDHT
 	std::cerr << "p3BitDht::p3BitDht()" << std::endl;
 	std::cerr << "Using Id: " << id;
@@ -292,14 +297,22 @@ bool    p3BitDht::getEnabled()
 
 bool    p3BitDht::getActive()
 {
-	return (mUdpBitDht->stateDht() >= BITDHT_MGR_STATE_ACTIVE);
+	return mDhtActive;
 }
 
 bool    p3BitDht::getNetworkStats(uint32_t &netsize, uint32_t &localnetsize)
 {
-	netsize = mUdpBitDht->statsNetworkSize();
-	localnetsize = mUdpBitDht->statsBDVersionSize();
+	netsize = mDhtNetSize;
+	localnetsize = mDhtRsNetSize;
 	return true;
+}
+
+void    p3BitDht::refreshDhtStats()
+{
+	/* each of these calls waits for the mutex of the DHT */
+	mDhtActive = (mUdpBitDht->stateDht() >= BITDHT_MGR_STATE_ACTIVE);
+	mDhtNetSize = mUdpBitDht->statsNetworkSize();
+	mDhtRsNetSize = mUdpBitDht->statsBDVersionSize();
 }
 
 #if 0

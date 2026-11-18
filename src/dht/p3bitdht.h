@@ -27,6 +27,7 @@
 #include "pqi/p3cfgmgr.h"
 #include "retroshare/rsdht.h"
 
+#include <atomic>
 #include <string>
 #include <map>
 #include "pqi/pqinetwork.h"
@@ -381,6 +382,17 @@ private:
     bdNodeId    mOwnDhtId;
 
     rstime_t mMinuteTS;
+
+    /* State and network sizes of the DHT, copied from it once per second by tick().
+     * getActive() and getNetworkStats() return the copy: asking the DHT takes its
+     * mutex, which the DHT thread holds for a whole pass, and the GUI thread calls
+     * them every second. */
+    void refreshDhtStats();
+
+    std::atomic<bool> mDhtActive;
+    std::atomic<uint32_t> mDhtNetSize;
+    std::atomic<uint32_t> mDhtRsNetSize;
+    rstime_t mDhtStatsTS;
 
     /* translation maps */
     std::map<RsPeerId, bdNodeId> mTransToNodeId;

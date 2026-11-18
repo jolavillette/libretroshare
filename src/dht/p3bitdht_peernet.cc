@@ -1095,6 +1095,13 @@ int p3BitDht::ConnectCallback(const bdId *srcId, const bdId *proxyId, const bdId
 
 int p3BitDht::tick()
 {
+	rstime_t statsNow = time(NULL);
+	if (statsNow != mDhtStatsTS)
+	{
+		mDhtStatsTS = statsNow;
+		refreshDhtStats();
+	}
+
 	doActions();
 	monitorConnections();
 
