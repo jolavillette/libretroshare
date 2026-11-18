@@ -132,6 +132,7 @@ p3BitDht::p3BitDht(const RsPeerId& id, pqiConnectCb *cb, p3NetMgr *nm,
 
 	mMinuteTS = 0; 
 
+	mDhtEnabled = false;
 	mDhtActive = false;
 	mDhtNetSize = 0;
 	mDhtRsNetSize = 0;
@@ -276,6 +277,9 @@ void    p3BitDht::enable(bool on)
 	{
 		mUdpBitDht->stopDht();
 	}
+
+	/* getEnabled() must not answer with the state of before the call */
+	refreshDhtStats();
 }
 	
 void    p3BitDht::shutdown() /* blocking call */
@@ -288,11 +292,12 @@ void	p3BitDht::restart()
 {
 	mUdpBitDht->stopDht();
 	mUdpBitDht->startDht();
+	refreshDhtStats();
 }
 
 bool    p3BitDht::getEnabled()
 {
-	return (mUdpBitDht->stateDht() != 0);
+	return mDhtEnabled;
 }
 
 bool    p3BitDht::getActive()
@@ -310,7 +315,10 @@ bool    p3BitDht::getNetworkStats(uint32_t &netsize, uint32_t &localnetsize)
 void    p3BitDht::refreshDhtStats()
 {
 	/* each of these calls waits for the mutex of the DHT */
-	mDhtActive = (mUdpBitDht->stateDht() >= BITDHT_MGR_STATE_ACTIVE);
+	int state = mUdpBitDht->stateDht();
+
+	mDhtEnabled = (state != 0);
+	mDhtActive = (state >= BITDHT_MGR_STATE_ACTIVE);
 	mDhtNetSize = mUdpBitDht->statsNetworkSize();
 	mDhtRsNetSize = mUdpBitDht->statsBDVersionSize();
 }

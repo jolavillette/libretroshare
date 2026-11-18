@@ -384,11 +384,12 @@ private:
     rstime_t mMinuteTS;
 
     /* State and network sizes of the DHT, copied from it once per second by tick().
-     * getActive() and getNetworkStats() return the copy: asking the DHT takes its
+     * getEnabled(), getActive() and getNetworkStats() return the copy: asking the DHT takes its
      * mutex, which the DHT thread holds for a whole pass, and the GUI thread calls
      * them every second. */
     void refreshDhtStats();
 
+    std::atomic<bool> mDhtEnabled;
     std::atomic<bool> mDhtActive;
     std::atomic<uint32_t> mDhtNetSize;
     std::atomic<uint32_t> mDhtRsNetSize;
