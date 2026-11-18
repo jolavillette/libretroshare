@@ -514,8 +514,8 @@ int     pqihandler::UpdateRates()
 
 void    pqihandler::getCurrentRates(float &in, float &out)
 {
-	RS_STACK_MUTEX(coreMtx); /**************** LOCKED MUTEX ****************/
-
+	// No coreMtx here: tick() holds it while it ticks every peer, and this is
+	// called from the GUI thread.
 	in = rateTotal_in;
 	out = rateTotal_out;
 }
