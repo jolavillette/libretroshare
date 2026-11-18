@@ -647,7 +647,16 @@ void p3IdService::notifyChanges(std::vector<RsGxsNotify *> &changes)
                 std::cerr << std::endl;
 #endif
 
-                if(!rsReputations->isIdentityBanned(RsGxsId(gid)))
+                if(groupChange->getType() == RsGxsNotify::TYPE_GROUP_DELETED)
+                {
+                    // Tell the UI that the identity is gone, whatever its reputation: a banned identity is listed too.
+
+                    auto ev = std::make_shared<RsGxsIdentityEvent>();
+                    ev->mIdentityId = gid;
+                    ev->mIdentityEventCode = RsGxsIdentityEventCode::DELETED_IDENTITY;
+                    rsEvents->postEvent(ev);
+                }
+                else if(!rsReputations->isIdentityBanned(RsGxsId(gid)))
                 {
                     // notify that a new identity is received, if needed
 
@@ -673,11 +682,7 @@ void p3IdService::notifyChanges(std::vector<RsGxsNotify *> &changes)
 
                         auto ev = std::make_shared<RsGxsIdentityEvent>();
                         ev->mIdentityId = gid;
-
-                        if(groupChange->getType() == RsGxsNotify::TYPE_GROUP_DELETED)
-                            ev->mIdentityEventCode = RsGxsIdentityEventCode::DELETED_IDENTITY;
-                        else
-                            ev->mIdentityEventCode = RsGxsIdentityEventCode::UPDATED_IDENTITY;
+                        ev->mIdentityEventCode = RsGxsIdentityEventCode::UPDATED_IDENTITY;
 
                         rsEvents->postEvent(ev);
 
