@@ -1764,6 +1764,36 @@ bool RNPPGPHandler::locked_writeKeyringToDisk(bool secret, const std::string& ke
     return true;
 }
 
+bool RNPPGPHandler::locked_serialiseKeyring(bool secret, std::string& data)
+{
+    RNP_OUTPUT_STRUCT(keyring_output);
+
+    data.clear();
+
+    if (rnp_output_to_memory(&keyring_output, 0) != RNP_SUCCESS)
+    {
+        RsErr() << "failed to initialize keyring serialising structure" ;
+        return false;
+    }
+    if (rnp_save_keys(mRnpFfi, "GPG", keyring_output, secret?RNP_LOAD_SAVE_SECRET_KEYS:RNP_LOAD_SAVE_PUBLIC_KEYS) != RNP_SUCCESS)
+    {
+        RsErr() << "failed to serialise keyring" ;
+        return false;
+    }
+
+    uint8_t *buf = nullptr;
+    size_t size = 0;
+
+    // The buffer belongs to keyring_output, which is released when this function returns: copy it.
+    if (rnp_output_memory_get_buf(keyring_output, &buf, &size, false) != RNP_SUCCESS || buf == nullptr || size == 0)
+    {
+        RsErr() << "failed to get the serialised keyring" ;
+        return false;
+    }
+    data.assign((const char*)buf, size);
+    return true;
+}
+
 bool RNPPGPHandler::locked_updateKeyringFromDisk(bool secret, const std::string& keyring_file)
 {
     RNP_INPUT_STRUCT(input);

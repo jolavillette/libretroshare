@@ -22,6 +22,7 @@
 #pragma once
 
 #include <stdint.h>
+#include <atomic>
 #include <string>
 #include <list>
 #include <map>
@@ -204,9 +205,15 @@ public:
         virtual bool locked_updateKeyringFromDisk(bool secret,const std::string& path) =0;
         virtual bool locked_writeKeyringToDisk(bool secret,const std::string& path) =0;
 
+        // Serialises the keyring to memory, so that the file can be written without the mutex. A handler that
+        // cannot do it returns false, and the keyring is written by locked_writeKeyringToDisk() as before.
+        virtual bool locked_serialiseKeyring(bool /*secret*/,std::string& /*data*/) { return false; }
+
         void locked_updateOwnSignatureFlag(PGPCertificateInfo&, const RsPgpId&, PGPCertificateInfo&, const RsPgpId&) ;
 
-        bool locked_syncPublicKeyring();
+        // When deferred_keyring is given and the handler can serialise the keyring, a keyring that needs saving
+        // is not written: its data is returned, for the caller to write once pgphandlerMtx is released.
+        bool locked_syncPublicKeyring(std::string *deferred_keyring = nullptr);
         void locked_readPrivateTrustDatabase() ;
 		bool locked_writePrivateTrustDatabase() ;
         bool locked_syncTrustDatabase() ;
@@ -225,10 +232,10 @@ public:
 		const std::string _trustdb_path ;
 		const std::string _pgp_lock_filename ;
 
-		bool _pubring_changed ;
+		std::atomic<bool> _pubring_changed ;		// atomic: syncDatabase() sets it again without the mutex if the write fails
 		mutable bool _trustdb_changed ;
 
-		rstime_t _pubring_last_update_time ;
+		std::atomic<rstime_t> _pubring_last_update_time ;	// atomic: syncDatabase() sets it without the mutex after the write
 		rstime_t _secring_last_update_time ;
 		rstime_t _trustdb_last_update_time ;
 

@@ -24,6 +24,8 @@
 #include <iostream>
 #include <iomanip>
 #include <stdlib.h>
+#include <stdio.h>
+#include <memory>
 #include <string.h>
 #include <sys/stat.h>
 
@@ -427,18 +429,61 @@ bool PGPHandler::locked_syncTrustDatabase()
 
 bool PGPHandler::syncDatabase()
 {
-    RsStackMutex mtx(pgphandlerMtx) ;				// lock access to PGP memory structures.
-    RsStackFileLock flck(_pgp_lock_filename) ;	// lock access to PGP directory.
+    // A keyring that needs saving is serialised under pgphandlerMtx, and the file is written after the mutex
+    // is released: the write of a keyring of several megabytes took more than a second, during which every
+    // reader of the keyring waited, the GUI thread among them.
+    //
+    // The lock of the PGP directory is taken under the mutex, as everywhere else, and kept until the file is
+    // written: the other functions that sync the keyring take it too, so none of them can run in between.
+
+    std::unique_ptr<RsStackFileLock> flck ;
+    std::string keyring_data ;
+
+    {
+        RsStackMutex mtx(pgphandlerMtx) ;				// lock access to PGP memory structures.
+        flck.reset(new RsStackFileLock(_pgp_lock_filename)) ;	// lock access to PGP directory.
 
 #ifdef DEBUG_PGPHANDLER
-    RsErr() << "Sync-ing keyrings." ;
+        RsErr() << "Sync-ing keyrings." ;
 #endif
-    locked_syncPublicKeyring() ;
-    //locked_syncSecretKeyring() ;
+        locked_syncPublicKeyring(&keyring_data) ;
+        //locked_syncSecretKeyring() ;
 
-    // Now sync the trust database as well.
-    //
-    locked_syncTrustDatabase() ;
+        // Now sync the trust database as well.
+        //
+        locked_syncTrustDatabase() ;
+    }
+
+    if(!keyring_data.empty())
+    {
+        // No mutex here: only the two atomic members are touched.
+
+        std::string tmp_keyring_file = _pubring_path + ".tmp" ;
+        bool ok = false ;
+
+        FILE *f = RsDirUtil::rs_fopen(tmp_keyring_file.c_str(),"wb") ;
+
+        if(f != NULL)
+        {
+            ok = (fwrite(keyring_data.data(),1,keyring_data.size(),f) == keyring_data.size()) ;
+
+            if(fclose(f) != 0)
+                ok = false ;
+        }
+
+        if(!ok)
+            RsErr() << "Cannot write public keyring tmp file. Disk full? Disk quota exceeded?" ;
+        else if(!RsDirUtil::renameFile(tmp_keyring_file,_pubring_path))
+        {
+            RsErr() << "Cannot rename tmp pubring file " << tmp_keyring_file << " into actual pubring file " << _pubring_path << ". Check writing permissions?!?" ;
+            ok = false ;
+        }
+
+        if(ok)
+            _pubring_last_update_time = time(NULL) ;	// should we get this value from the disk instead??
+        else
+            _pubring_changed = true ;			// try again at the next sync
+    }
 
 #ifdef DEBUG_PGPHANDLER
     RsErr() << "Done. " ;
@@ -446,7 +491,7 @@ bool PGPHandler::syncDatabase()
     return true ;
 }
 
-bool PGPHandler::locked_syncPublicKeyring()
+bool PGPHandler::locked_syncPublicKeyring(std::string *deferred_keyring)
 {
     struct stat64 buf ;
 #ifdef WINDOWS_SYS
@@ -472,6 +517,15 @@ bool PGPHandler::locked_syncPublicKeyring()
     // Now check if the pubring was locally modified, which needs saving it again
     if(_pubring_changed && RsDiscSpace::checkForDiscSpace(RS_PGP_DIRECTORY))
     {
+        if(deferred_keyring != nullptr && locked_serialiseKeyring(false,*deferred_keyring) && !deferred_keyring->empty())
+        {
+            // The caller writes the file, and sets _pubring_last_update_time when it is done.
+            _pubring_changed = false ;
+            return true ;
+        }
+        if(deferred_keyring != nullptr)
+            deferred_keyring->clear() ;
+
         std::string tmp_keyring_file = _pubring_path + ".tmp" ;
 
 #ifdef DEBUG_PGPHANDLER

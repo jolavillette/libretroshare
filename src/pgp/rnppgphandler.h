@@ -79,6 +79,7 @@ public:
         bool LoadCertificate(const unsigned char *data,uint32_t data_len,bool armoured,RsPgpId& id,std::string& error_string) override;
 
         bool locked_writeKeyringToDisk(bool secret, const std::string& keyring_file) override;
+        bool locked_serialiseKeyring(bool secret, std::string& data) override;
         bool locked_updateKeyringFromDisk(bool secret, const std::string& keyring_file) override;
 
         bool importKeyPairData(rnp_input_t input);
