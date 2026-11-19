@@ -1680,9 +1680,16 @@ bool 	ftController::FileDetails(const RsFileHash &hash, FileInfo &info)
 		}
 	}
 
-	if ((completed) || ((it->second)->mCreator->finished()))
+	if (completed)
 	{
 		info.downloadStatus = FT_STATE_COMPLETE;
+	}
+	else if ((it->second)->mCreator->finished())
+	{
+		// All chunks are verified, but the file is still in mDownloads: the
+		// final hash and the move to its destination are pending. Reporting
+		// it complete here made the status go Complete, Checking, Complete.
+		info.downloadStatus = FT_STATE_CHECKING_HASH;
 	}
 	else if (isDownloading)
 	{
