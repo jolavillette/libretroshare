@@ -235,10 +235,16 @@ int p3GRouter::tick()
     //
     handleTunnels() ;
 
-	/* Handle items in mMissingKeyQueue */
-	if(now > mMissingKeyQueueCheckLastCheck + mMissingKeyQueueCheckEvery)
+	/* Handle items in mMissingKeyQueue. An item is handled as soon as its key
+	 * is in the identity cache: the signature check does not wait for the key
+	 * any more, so a key that only had to be loaded from the database is there
+	 * a moment later. Keys that are still missing are requested from the
+	 * network every mMissingKeyQueueCheckEvery seconds only. */
 	{
-		mMissingKeyQueueCheckLastCheck = now;
+		const bool request_missing_keys = now > mMissingKeyQueueCheckLastCheck + mMissingKeyQueueCheckEvery;
+
+		if(request_missing_keys)
+			mMissingKeyQueueCheckLastCheck = now;
 
 		RS_STACK_MUTEX(mMissingKeyQueueMtx);
 		for(auto it = mMissingKeyQueue.begin(); it != mMissingKeyQueue.end();)
@@ -253,6 +259,8 @@ int p3GRouter::tick()
 				handleIncomingItem(it->first.get());
 				it = mMissingKeyQueue.erase(it);
 			}
+			else if(!request_missing_keys)
+				++it;
 			else
 			{
 				Dbg3() << __PRETTY_FUNCTION__ << " requesting missing key: "
@@ -1599,7 +1607,12 @@ void p3GRouter::handleIncomingReceiptItem(const RsGRouterSignedReceiptItem *rece
         
         uint32_t error_status ;
 
-        if(! verifySignedDataItem(receipt_item,RsIdentityUsage::GLOBAL_ROUTER_SIGNATURE_CHECK,error_status))
+        // Only the origin of the message needs the key: there, wait for it to be loaded. A node that relays the
+        // receipt checks it if the key is at hand, and must not stop the tick thread to get it.
+
+        const bool wait_for_key = it->second.routing_flags & GRouterRoutingInfo::ROUTING_FLAGS_IS_ORIGIN;
+
+        if(! verifySignedDataItem(receipt_item,RsIdentityUsage::GLOBAL_ROUTER_SIGNATURE_CHECK,error_status,wait_for_key))
             if( (it->second.routing_flags & GRouterRoutingInfo::ROUTING_FLAGS_IS_ORIGIN) || (error_status !=  RsGixs::RS_GIXS_ERROR_KEY_NOT_AVAILABLE))
 	    {
 		    std::cerr << "  checking receipt signature : FAILED. Receipt is dropped. Error status=" << error_status << std::endl;
@@ -1751,7 +1764,10 @@ void p3GRouter::handleIncomingDataItem(const RsGRouterGenericDataItem *data_item
     {
 		uint32_t error_status ;
 
-        if(!verifySignedDataItem(data_item,RsIdentityUsage::GLOBAL_ROUTER_SIGNATURE_CHECK,error_status))	// we should get proper flags out of this
+        // Do not wait for the key: this runs in tick(). If the key is not in the identity cache, the item goes to
+        // mMissingKeyQueue and is handled when the key has been loaded or received.
+
+        if(!verifySignedDataItem(data_item,RsIdentityUsage::GLOBAL_ROUTER_SIGNATURE_CHECK,error_status,false))	// we should get proper flags out of this
         {
             switch(error_status)
 			{
@@ -2085,7 +2101,7 @@ bool p3GRouter::signDataItem(RsGRouterAbstractMsgItem *item,const RsGxsId& signi
         return false ;
     }
 }
-bool p3GRouter::verifySignedDataItem(const RsGRouterAbstractMsgItem *item,const RsIdentityUsage::UsageCode& info,uint32_t& error_status)
+bool p3GRouter::verifySignedDataItem(const RsGRouterAbstractMsgItem *item,const RsIdentityUsage::UsageCode& info,uint32_t& error_status,bool wait_for_key)
 {
     try
     {
@@ -2113,7 +2129,7 @@ bool p3GRouter::verifySignedDataItem(const RsGRouterAbstractMsgItem *item,const 
 
 		RsIdentityUsage use(RsServiceType::GROUTER,info);
 
-		if(!mGixs->validateData( data, data_size, item->signature, true, use, error_status ))
+		if(!mGixs->validateData( data, data_size, item->signature, wait_for_key, use, error_status ))
 		{
 			switch(error_status)
 			{

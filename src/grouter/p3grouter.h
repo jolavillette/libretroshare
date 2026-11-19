@@ -252,7 +252,9 @@ private:
 
     // signs an item with the given key.
     bool signDataItem(RsGRouterAbstractMsgItem *item,const RsGxsId& id) ;
-    bool verifySignedDataItem(const RsGRouterAbstractMsgItem *item, const RsIdentityUsage::UsageCode &info, uint32_t &error_status) ;
+    // wait_for_key: when the key is not in the identity cache, wait up to 3 seconds for it to be loaded.
+    // Must be false for anything called from tick(), which runs on the thread shared by all services.
+    bool verifySignedDataItem(const RsGRouterAbstractMsgItem *item, const RsIdentityUsage::UsageCode &info, uint32_t &error_status, bool wait_for_key = true) ;
     bool encryptDataItem(RsGRouterGenericDataItem *item,const RsGxsId& destination_key) ;
     bool decryptDataItem(RsGRouterGenericDataItem *item) ;
 
