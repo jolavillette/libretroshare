@@ -29,10 +29,17 @@
 #include "file_sharing_defaults.h"
 #include "retroshare/rsinit.h"
 
+#include <algorithm>
+
 //#define HASHSTORAGE_DEBUG 1
 
 static const uint32_t DEFAULT_INACTIVITY_SLEEP_TIME = 50*1000;
 static const uint32_t     MAX_INACTIVITY_SLEEP_TIME = 2*1000*1000;
+
+static const double MIN_INTERVAL_BETWEEN_PROGRESS_EVENTS = 1.0;	// seconds
+static const double HASHING_SPEED_WINDOW                 = 5.0;	// seconds over which the hashing speed is averaged
+static const double HASHING_SPEED_MIN_SAMPLE_INTERVAL    = 0.25;	// seconds. Bounds the number of samples kept.
+static const double HASHING_SPEED_MIN_SPAN               = 1.0;	// seconds. Below, the speed is too noisy to be shown.
 
 HashStorage::HashStorage(const std::string& save_file_name)
     : mFilePath(save_file_name), mHashMtx("Hash Storage mutex")
@@ -46,7 +53,8 @@ HashStorage::HashStorage(const std::string& save_file_name)
     mMaxStorageDurationDays = DEFAULT_HASH_STORAGE_DURATION_DAYS ;
 	mHashingProcessPaused = false;
 	mHashedBytes = 0 ;
-	mHashingTime = 0 ;
+	mCurrentFileHashedSize = 0 ;
+	mLastProgressEventTime = 0 ;
 
     {
         RS_STACK_MUTEX(mHashMtx) ;
@@ -133,6 +141,10 @@ void HashStorage::threadTick()
         // sleep off mutex!
         if(empty)
         {
+            // The speed is measured while hashing only: the time spent waiting for files is not part of it.
+            mSpeedSamples.clear();
+            mCurrentHashingSpeed = 0;
+
 #ifdef HASHSTORAGE_DEBUG
             std::cerr << "nothing to hash. Sleeping for " << st << " us" << std::endl;
 #endif
@@ -169,6 +181,8 @@ void HashStorage::threadTick()
 
 		if(paused)	// we need to wait off mutex!!
 		{
+			mSpeedSamples.clear();
+			mCurrentHashingSpeed = 0;
 			rstime::rs_usleep(MAX_INACTIVITY_SLEEP_TIME) ;
 			std::cerr << "Hashing process currently paused." << std::endl;
 			return;
@@ -187,30 +201,18 @@ void HashStorage::threadTick()
             std::cerr << "Hashing file " << job.full_path << "..." ; std::cerr.flush();
 #endif
 
-            std::string tmpout;
+            // One event when the file starts, then one per second at most: bytesHashed() takes over while the
+            // file is being hashed. A burst of small files sends one event per second, not one per file.
+            {
+                const double now = rstime::RsScopeTimer::currentTime() ;
 
-#ifdef TO_REMOVE
-			if(mCurrentHashingSpeed > 0)
-				rs_sprintf(tmpout, "%lu/%lu (%s - %d%%, %d MB/s) : %s", (unsigned long int)mHashCounter+1, (unsigned long int)mTotalFilesToHash, friendlyUnit(mTotalHashedSize).c_str(), int(mTotalHashedSize/double(mTotalSizeToHash)*100.0), mCurrentHashingSpeed,job.full_path.c_str()) ;
-			else
-				rs_sprintf(tmpout, "%lu/%lu (%s - %d%%) : %s", (unsigned long int)mHashCounter+1, (unsigned long int)mTotalFilesToHash, friendlyUnit(mTotalHashedSize).c_str(), int(mTotalHashedSize/double(mTotalSizeToHash)*100.0), job.full_path.c_str()) ;
-#endif
+                addSpeedSample(now);
 
-			{
-				auto ev = std::make_shared<RsSharedDirectoriesEvent>();
-				ev->mEventCode = RsSharedDirectoriesEventCode::HASHING_FILE;
-                ev->mHashingSpeed = mCurrentHashingSpeed;
-                ev->mHashCounter = mHashCounter;
-                ev->mTotalFilesToHash = mTotalFilesToHash;
-                ev->mTotalHashedSize = mTotalHashedSize;
-                ev->mTotalSizeToHash = mTotalSizeToHash;
-                ev->mFilePath = job.full_path;
-                rsEvents->postEvent(ev);
-			}
+                if(now >= mLastProgressEventTime + MIN_INTERVAL_BETWEEN_PROGRESS_EVENTS)
+                    postProgressEvent(job, now);
+            }
 
-			double seconds_origin = rstime::RsScopeTimer::currentTime() ;
-
-			if(RsDirUtil::getFileHash(job.full_path, hash, size, this))
+			if(RsDirUtil::getFileHash(job.full_path, hash, size, this, [this,&job](uint64_t bytes) { bytesHashed(job, bytes); }))
 			{
 				// store the result
 
@@ -228,22 +230,26 @@ void HashStorage::threadTick()
 				info.hash = hash;
 
 				mChanged = true ;
-				mTotalHashedSize += size ;
 			}
 			else RS_ERR("Failure hashing file: ", job.full_path);
 
-			mHashingTime += rstime::RsScopeTimer::currentTime() - seconds_origin ;
-			mHashedBytes += size ;
+        }
 
-			if(mHashingTime > 3)
-			{
-				mCurrentHashingSpeed = (int)(mHashedBytes / mHashingTime ) / (1024*1024) ;
-				mHashingTime = 0 ;
-				mHashedBytes = 0 ;
-			}
+        // Whatever happened to it, the job is over: hashed, failed, or not shared anymore. All of them are counted,
+        // with the size they were queued with, so that the progress ends exactly at the totals.
+        bool queue_empty ;
+        {
+            RS_STACK_MUTEX(mHashMtx) ;
 
             ++mHashCounter ;
+            mTotalHashedSize += job.size ;
+            queue_empty = mFilesToHash.empty() ;
         }
+        mCurrentFileHashedSize = 0 ;
+
+        // Nothing left: show the final state rather than the one of up to a second ago.
+        if(queue_empty)
+            postProgressEvent(job, rstime::RsScopeTimer::currentTime());
 	}
 
 	// call the client
@@ -263,6 +269,73 @@ void HashStorage::threadTick()
     ev->mTotalSizeToHash = mTotalSizeToHash;
     rsEvents->postEvent(ev);
 #endif
+}
+
+void HashStorage::addSpeedSample(double now)
+{
+    // Samples closer than HASHING_SPEED_MIN_SAMPLE_INTERVAL replace each other: small files would otherwise add
+    // thousands of them per second.
+
+    const size_t n = mSpeedSamples.size();
+
+    if(n >= 2 && now < mSpeedSamples[n-2].first + HASHING_SPEED_MIN_SAMPLE_INTERVAL)
+        mSpeedSamples.back() = std::make_pair(now, mHashedBytes);
+    else
+        mSpeedSamples.push_back(std::make_pair(now, mHashedBytes));
+
+    // One sample older than the window is kept, so that the whole window is covered, also when a slow disk gives
+    // less than one sample per window.
+
+    while(mSpeedSamples.size() > 2 && mSpeedSamples[1].first + HASHING_SPEED_WINDOW <= now)
+        mSpeedSamples.pop_front();
+
+    const double span = now - mSpeedSamples.front().first;
+
+    if(span >= HASHING_SPEED_MIN_SPAN)
+        mCurrentHashingSpeed = (uint64_t)((mHashedBytes - mSpeedSamples.front().second) / span);
+}
+
+void HashStorage::bytesHashed(const FileHashJob& job, uint64_t bytes)
+{
+    mCurrentFileHashedSize += bytes;
+    mHashedBytes += bytes;
+
+    const double now = rstime::RsScopeTimer::currentTime() ;
+
+    addSpeedSample(now);
+
+    if(now >= mLastProgressEventTime + MIN_INTERVAL_BETWEEN_PROGRESS_EVENTS)
+        postProgressEvent(job, now);
+}
+
+void HashStorage::postProgressEvent(const FileHashJob& job, double now)
+{
+    mLastProgressEventTime = now;
+
+    if(!rsEvents)
+        return;
+
+    auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+
+    ev->mEventCode = RsSharedDirectoriesEventCode::HASHING_FILE;
+    ev->mFilePath = job.full_path;
+    ev->mHashingSpeedBytes = mCurrentHashingSpeed;
+    ev->mHashingSpeed = (uint32_t)(mCurrentHashingSpeed / (1024*1024));
+    ev->mTotalIsProvisional = job.client->hash_requests_pending();
+
+    // The file may have grown since it was queued: the progress stays within the size it was announced with.
+    ev->mCurrentFileHashedSize = std::min(mCurrentFileHashedSize, job.size);
+
+    {
+        RS_STACK_MUTEX(mHashMtx) ;
+
+        ev->mHashCounter = mHashCounter;
+        ev->mTotalFilesToHash = mTotalFilesToHash;
+        ev->mTotalSizeToHash = mTotalSizeToHash;
+        ev->mTotalHashedSize = std::min(mTotalHashedSize + ev->mCurrentFileHashedSize, mTotalSizeToHash);
+    }
+
+    rsEvents->postEvent(ev);
 }
 
 bool HashStorage::requestHash(const std::string& full_path,uint64_t size,rstime_t mod_time,RsFileHash& known_hash,HashStorageClient *c,uint32_t client_param)

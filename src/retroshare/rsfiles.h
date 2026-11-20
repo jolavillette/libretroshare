@@ -205,7 +205,8 @@ struct RsSharedDirectoriesEvent: RsEvent
 {
     RsSharedDirectoriesEvent()
        : RsEvent(RsEventType::SHARED_DIRECTORIES), mEventCode(RsSharedDirectoriesEventCode::UNKNOWN),
-                  mHashingSpeed(0) {}
+                  mHashingSpeed(0), mHashCounter(0), mTotalFilesToHash(0), mTotalHashedSize(0), mTotalSizeToHash(0),
+                  mCurrentFileHashedSize(0), mHashingSpeedBytes(0), mTotalIsProvisional(false) {}
 	~RsSharedDirectoriesEvent() override = default;
 
 	///* @see RsEvent @see RsSerializable
@@ -221,17 +222,27 @@ struct RsSharedDirectoriesEvent: RsEvent
         RS_SERIAL_PROCESS(mTotalFilesToHash) ;
         RS_SERIAL_PROCESS(mTotalHashedSize) ;
         RS_SERIAL_PROCESS(mTotalSizeToHash) ;
+        RS_SERIAL_PROCESS(mCurrentFileHashedSize) ;
+        RS_SERIAL_PROCESS(mHashingSpeedBytes) ;
+        RS_SERIAL_PROCESS(mTotalIsProvisional) ;
     }
 
     RsSharedDirectoriesEventCode mEventCode;
 
     std::string mFilePath; 			// Complete path of the file being hashed
     RsFileHash mFileHash;  			// File hash, null if error occurred
-    uint32_t mHashingSpeed;  			// Hashing speed in MB/s
-    uint64_t mHashCounter ;		// index of current file
-    uint64_t mTotalFilesToHash ;// total number of files to hash
-    uint64_t mTotalHashedSize ;		// total hashed size so far, in MB
-    uint64_t mTotalSizeToHash ;		// total size to hash in MB
+    uint32_t mHashingSpeed;  			// Hashing speed in MB/s, rounded down. See mHashingSpeedBytes.
+
+    // Progress of the current hashing run, sent with HASHING_FILE. A run starts when a first file is queued and
+    // ends when the queue has been empty for a few seconds.
+
+    uint64_t mHashCounter ;		// number of files done so far in this run. The file being hashed is number mHashCounter+1.
+    uint64_t mTotalFilesToHash ;// total number of files of this run, the ones already done included
+    uint64_t mTotalHashedSize ;		// size done so far in this run, in bytes, including the part done of the file being hashed. Never above mTotalSizeToHash.
+    uint64_t mTotalSizeToHash ;		// total size of the files of this run, in bytes, the ones already done included
+    uint64_t mCurrentFileHashedSize ;	// part done of the file being hashed, in bytes
+    uint64_t mHashingSpeedBytes ;	// hashing speed in bytes/s, over the last seconds. 0 when not known yet.
+    bool mTotalIsProvisional ;		// true while the shared directories are still being scanned: both totals may still grow
 };
 
 

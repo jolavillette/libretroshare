@@ -662,7 +662,7 @@ bool RsDirUtil::hashFile(const std::string& filepath,
 #include <iomanip>
 
 /* Function to hash, and get details of a file */
-bool RsDirUtil::getFileHash(const std::string& filepath, RsFileHash &hash, uint64_t &size, RsThread *thread /*= NULL*/)
+bool RsDirUtil::getFileHash(const std::string& filepath, RsFileHash &hash, uint64_t &size, RsThread *thread /*= NULL*/, const std::function<void(uint64_t)>& progress /*= nullptr*/)
 {
 	FILE *fd;
 
@@ -690,6 +690,8 @@ bool RsDirUtil::getFileHash(const std::string& filepath, RsFileHash &hash, uint6
 	while(isRunning && (len = fread(gblBuf,1, HASH_BUFFER_SIZE, fd)) > 0)
 	{
 		SHA1_Update(sha_ctx, gblBuf, len);
+		if (progress)
+			progress(len);
 
 		if (thread && ++runningCheckCount > (10 * 1024)) {
 			/* check all 50MB if thread is running */

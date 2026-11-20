@@ -23,6 +23,8 @@
 
 #pragma once
 
+#include <atomic>
+#include <deque>
 #include <map>
 #include "util/rsthreads.h"
 #include "retroshare/rsfiles.h"
@@ -47,6 +49,11 @@ public:
     // that are still in queue while removed from shared lists.
 
     virtual bool hash_confirm(uint32_t client_param)=0 ;
+
+    // tells whether the client is still going through its files, hence may still request hashes. The totals given
+    // in the hashing progress are only final once this returns false. Called from the hashing thread.
+
+    virtual bool hash_requests_pending() const { return false; }
 };
 
 class HashStorage: public RsTickingThread
@@ -140,10 +147,19 @@ private:
     uint64_t mTotalFilesToHash ;
     rstime_t mLastSaveTime ;
 
+	// Progress report. All of the following is only used by the hashing thread.
+
+	void addSpeedSample(double now);
+	void bytesHashed(const FileHashJob& job, uint64_t bytes);
+	void postProgressEvent(const FileHashJob& job, double now);
+
+	uint64_t mCurrentFileHashedSize ;	// bytes hashed so far in the file being hashed
+	double mLastProgressEventTime ;
+
 	// The following is used to estimate hashing speed.
 
-	double mHashingTime ;
-	uint64_t mHashedBytes ;
-	uint32_t mCurrentHashingSpeed ; // in MB/s
+	uint64_t mHashedBytes ;									// bytes hashed since the thread exists
+	std::deque<std::pair<double,uint64_t> > mSpeedSamples ;	// (time, mHashedBytes) over the last seconds
+	uint64_t mCurrentHashingSpeed ; 						// in bytes/s. 0 when not known.
 };
 

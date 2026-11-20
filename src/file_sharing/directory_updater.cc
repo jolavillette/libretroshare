@@ -456,6 +456,11 @@ bool LocalDirectoryUpdater::hash_confirm(uint32_t client_param)
 	            DirectoryStorage::EntryIndex(client_param) ) == DIR_TYPE_FILE;
 }
 
+bool LocalDirectoryUpdater::hash_requests_pending() const
+{
+	return mIsChecking;	// a sweep of the shared directories is going on
+}
+
 void LocalDirectoryUpdater::setFileWatchPeriod(int seconds)
 {
     mDelayBetweenDirectoryUpdates = seconds ;
