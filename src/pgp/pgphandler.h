@@ -209,11 +209,18 @@ public:
         // cannot do it returns false, and the keyring is written by locked_writeKeyringToDisk() as before.
         virtual bool locked_serialiseKeyring(bool /*secret*/,std::string& /*data*/) { return false; }
 
+        // Serialises only the public keys added to the keyring since it was last saved, when nothing else
+        // changed in it. The caller appends them to the keyring file: a keyring file is the plain sequence of
+        // its keys, and serialising the whole keyring (megabytes, more than a second under the mutex) for each
+        // new key made every reader of the keyring wait. Returns false when there is nothing to append, or
+        // when the handler cannot do it: the keyring is then saved whole, if it changed.
+        virtual bool locked_serialiseNewKeys(std::string& /*data*/) { return false; }
+
         void locked_updateOwnSignatureFlag(PGPCertificateInfo&, const RsPgpId&, PGPCertificateInfo&, const RsPgpId&) ;
 
         // When deferred_keyring is given and the handler can serialise the keyring, a keyring that needs saving
         // is not written: its data is returned, for the caller to write once pgphandlerMtx is released.
-        bool locked_syncPublicKeyring(std::string *deferred_keyring = nullptr);
+        bool locked_syncPublicKeyring(std::string *deferred_keyring = nullptr,bool *deferred_append = nullptr);
         void locked_readPrivateTrustDatabase() ;
 		bool locked_writePrivateTrustDatabase() ;
         bool locked_syncTrustDatabase() ;

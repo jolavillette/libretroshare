@@ -438,6 +438,7 @@ bool PGPHandler::syncDatabase()
 
     std::unique_ptr<RsStackFileLock> flck ;
     std::string keyring_data ;
+    bool append_to_keyring = false ;	// keyring_data is the new keys only, to add at the end of the file
 
     {
         RsStackMutex mtx(pgphandlerMtx) ;				// lock access to PGP memory structures.
@@ -446,7 +447,7 @@ bool PGPHandler::syncDatabase()
 #ifdef DEBUG_PGPHANDLER
         RsErr() << "Sync-ing keyrings." ;
 #endif
-        locked_syncPublicKeyring(&keyring_data) ;
+        locked_syncPublicKeyring(&keyring_data,&append_to_keyring) ;
         //locked_syncSecretKeyring() ;
 
         // Now sync the trust database as well.
@@ -460,18 +461,47 @@ bool PGPHandler::syncDatabase()
 
         std::string tmp_keyring_file = _pubring_path + ".tmp" ;
         bool ok = false ;
+        std::string current_keyring ;
 
-        FILE *f = RsDirUtil::rs_fopen(tmp_keyring_file.c_str(),"wb") ;
+        // New keys only: the new file is the current one followed by them. It still goes through the tmp
+        // file and a rename, so the keyring file is never seen half written.
+
+        bool current_ok = true ;
+
+        if(append_to_keyring)
+        {
+            current_ok = false ;
+            FILE *in = RsDirUtil::rs_fopen(_pubring_path.c_str(),"rb") ;
+
+            if(in != NULL)
+            {
+                char buf[65536] ;
+                size_t n ;
+
+                while((n = fread(buf,1,sizeof(buf),in)) > 0)
+                    current_keyring.append(buf,n) ;
+
+                current_ok = !ferror(in) && !current_keyring.empty() ;
+                fclose(in) ;
+            }
+            if(!current_ok)
+                RsErr() << "Cannot read public keyring file " << _pubring_path << " to add the new keys to it. The whole keyring will be saved at the next sync." ;
+        }
+
+        FILE *f = current_ok ? RsDirUtil::rs_fopen(tmp_keyring_file.c_str(),"wb") : NULL ;
 
         if(f != NULL)
         {
-            ok = (fwrite(keyring_data.data(),1,keyring_data.size(),f) == keyring_data.size()) ;
+            ok =       (fwrite(current_keyring.data(),1,current_keyring.size(),f) == current_keyring.size())
+                    && (fwrite(keyring_data.data(),1,keyring_data.size(),f) == keyring_data.size()) ;
 
             if(fclose(f) != 0)
                 ok = false ;
         }
 
-        if(!ok)
+        if(!current_ok)
+            ;	// reported above
+        else if(!ok)
             RsErr() << "Cannot write public keyring tmp file. Disk full? Disk quota exceeded?" ;
         else if(!RsDirUtil::renameFile(tmp_keyring_file,_pubring_path))
         {
@@ -491,8 +521,11 @@ bool PGPHandler::syncDatabase()
     return true ;
 }
 
-bool PGPHandler::locked_syncPublicKeyring(std::string *deferred_keyring)
+bool PGPHandler::locked_syncPublicKeyring(std::string *deferred_keyring,bool *deferred_append)
 {
+    if(deferred_append != nullptr)
+        *deferred_append = false ;
+
     struct stat64 buf ;
 #ifdef WINDOWS_SYS
     std::wstring wfullname;
@@ -512,6 +545,19 @@ bool PGPHandler::locked_syncPublicKeyring(std::string *deferred_keyring)
 
         locked_updateKeyringFromDisk(false,_pubring_path) ;
         _pubring_last_update_time = buf.st_mtime ;
+    }
+
+    // Only new keys since the last save: the caller adds them at the end of the file, the keyring is not
+    // serialised whole. When this fails, the handler sets _pubring_changed and the keyring is saved below.
+
+    if(!_pubring_changed && deferred_keyring != nullptr && deferred_append != nullptr && RsDiscSpace::checkForDiscSpace(RS_PGP_DIRECTORY))
+    {
+        if(locked_serialiseNewKeys(*deferred_keyring) && !deferred_keyring->empty())
+        {
+            *deferred_append = true ;
+            return true ;
+        }
+        deferred_keyring->clear() ;
     }
 
     // Now check if the pubring was locally modified, which needs saving it again
