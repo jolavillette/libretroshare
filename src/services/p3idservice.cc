@@ -4095,9 +4095,11 @@ void p3IdService::getPgpIdList()
  	std::list<RsPgpId> list;
 	mPgpUtils->getPgpAllList(list);
 
-	RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
+	// The fingerprints are read without mIdMtx: one call into the PGP handler per
+	// key of the keyring (thousands), each taking the PGP mutex, kept mIdMtx for
+	// close to a second, and every getIdDetails() of the GUI waited for it.
 
-	mPgpFingerprintMap.clear();
+	std::map<RsPgpId, RsPgpFingerprint> fingerprints;
 
  	std::list<RsPgpId>::iterator it;
 	for(it = list.begin(); it != list.end(); ++it)
@@ -4111,8 +4113,12 @@ void p3IdService::getPgpIdList()
 		std::cerr << std::endl;
 #endif // DEBUG_IDS
 
-		mPgpFingerprintMap[pgpId] = fp;
+		fingerprints[pgpId] = fp;
 	}
+
+	RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
+
+	mPgpFingerprintMap.swap(fingerprints);
 
 #ifdef DEBUG_IDS
 	std::cerr << "p3IdService::getPgpIdList() Items: " << mPgpFingerprintMap.size();
