@@ -855,6 +855,24 @@ public:
 		virtual bool changeQueuePosition(const RsFileHash& hash, QueueMove mv) = 0;
 		virtual bool changeDownloadSpeed(const RsFileHash& hash, int speed) = 0;
 		virtual bool getDownloadSpeed(const RsFileHash& hash, int & speed) = 0;
+
+	/**
+	 * @brief Set the speed new downloads start with
+	 * Downloads already in the list keep their speed. The speed of a download
+	 * is not saved: at restart every download takes the default one.
+	 * @jsonapi{development}
+	 * @param[in] speed SPEED_LOW (slower), SPEED_NORMAL (average) or
+	 *	SPEED_HIGH (faster)
+	 */
+	virtual void setDefaultDownloadSpeed(DwlSpeed speed) = 0;
+
+	/**
+	 * @brief Get the speed new downloads start with
+	 * @jsonapi{development}
+	 * @return current default download speed
+	 */
+	virtual DwlSpeed defaultDownloadSpeed() = 0;
+
 		virtual bool clearDownload(const RsFileHash& hash) = 0;
 
 	/**

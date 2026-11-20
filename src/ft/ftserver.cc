@@ -503,6 +503,14 @@ bool ftServer::changeDownloadSpeed(const RsFileHash& hash, int speed)
 	mFtController->setPriority(hash, (DwlSpeed)speed);
 	return true ;
 }
+void ftServer::setDefaultDownloadSpeed(DwlSpeed speed)
+{
+	mFtController->setDefaultDownloadSpeed(speed) ;
+}
+DwlSpeed ftServer::defaultDownloadSpeed()
+{
+	return mFtController->defaultDownloadSpeed() ;
+}
 bool ftServer::getDownloadSpeed(const RsFileHash& hash, int & speed)
 {
 	DwlSpeed _speed;

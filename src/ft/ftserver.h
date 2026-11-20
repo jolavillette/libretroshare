@@ -251,6 +251,8 @@ public:
     virtual void setQueueSize(uint32_t s) ;
     virtual bool changeQueuePosition(const RsFileHash& hash, QueueMove queue_mv);
     virtual bool changeDownloadSpeed(const RsFileHash& hash, int speed);
+    virtual void setDefaultDownloadSpeed(DwlSpeed speed) override;
+    virtual DwlSpeed defaultDownloadSpeed() override;
     virtual bool getDownloadSpeed(const RsFileHash& hash, int & speed);
     virtual bool clearDownload(const RsFileHash& hash);
     //virtual void getDwlDetails(std::list<DwlDetails> & details);
