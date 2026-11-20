@@ -185,6 +185,7 @@ enum class RsSharedDirectoriesEventCode: uint8_t {
     HASHING_PROCESS_RESUMED  = 0x04, // (void)
     HASHING_PROCESS_FINISHED = 0x05, // (void)
     HASHING_FILE             = 0x06, // mMessage: full path and hashing speed of the file being hashed
+    SCANNING_FILE            = 0x0f, // mFilePath: file the scan of the shared directories is at, mScannedFilesCount: files seen so far. Once per second at most.
     SAVING_FILE_INDEX        = 0x07, // (void)
     EXTRA_LIST_FILE_ADDED    = 0x08, // (void)
     EXTRA_LIST_FILE_REMOVED  = 0x09, // (void)
@@ -206,7 +207,7 @@ struct RsSharedDirectoriesEvent: RsEvent
     RsSharedDirectoriesEvent()
        : RsEvent(RsEventType::SHARED_DIRECTORIES), mEventCode(RsSharedDirectoriesEventCode::UNKNOWN),
                   mHashingSpeed(0), mHashCounter(0), mTotalFilesToHash(0), mTotalHashedSize(0), mTotalSizeToHash(0),
-                  mCurrentFileHashedSize(0), mHashingSpeedBytes(0), mTotalIsProvisional(false) {}
+                  mCurrentFileHashedSize(0), mHashingSpeedBytes(0), mTotalIsProvisional(false), mScannedFilesCount(0) {}
 	~RsSharedDirectoriesEvent() override = default;
 
 	///* @see RsEvent @see RsSerializable
@@ -225,6 +226,7 @@ struct RsSharedDirectoriesEvent: RsEvent
         RS_SERIAL_PROCESS(mCurrentFileHashedSize) ;
         RS_SERIAL_PROCESS(mHashingSpeedBytes) ;
         RS_SERIAL_PROCESS(mTotalIsProvisional) ;
+        RS_SERIAL_PROCESS(mScannedFilesCount) ;
     }
 
     RsSharedDirectoriesEventCode mEventCode;
@@ -243,6 +245,7 @@ struct RsSharedDirectoriesEvent: RsEvent
     uint64_t mCurrentFileHashedSize ;	// part done of the file being hashed, in bytes
     uint64_t mHashingSpeedBytes ;	// hashing speed in bytes/s, over the last seconds. 0 when not known yet.
     bool mTotalIsProvisional ;		// true while the shared directories are still being scanned: both totals may still grow
+    uint64_t mScannedFilesCount ;	// sent with SCANNING_FILE: number of files the current scan of the shared directories has gone through
 };
 
 

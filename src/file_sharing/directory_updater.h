@@ -82,6 +82,13 @@ private:
     rstime_t mLastSweepTime;
     rstime_t mLastTSUpdateTime;
 
+    // Progress of the sweep, sent as SCANNING_FILE events. Only used by the sweep itself.
+
+    void sweepingFile(const std::string& path);
+
+    uint64_t mSweptFiles ;
+    double mLastSweepEventTime ;
+
     uint32_t mDelayBetweenDirectoryUpdates;
     bool mIsEnabled ;
     bool mFollowSymLinks;

@@ -38,7 +38,7 @@
 
 LocalDirectoryUpdater::LocalDirectoryUpdater(HashStorage *hc,LocalDirectoryStorage *lds)
     : mHashCache(hc), mSharedDirectories(lds)
-    , mLastSweepTime(0), mLastTSUpdateTime(0)
+    , mLastSweepTime(0), mLastTSUpdateTime(0), mSweptFiles(0), mLastSweepEventTime(0)
     , mDelayBetweenDirectoryUpdates(DELAY_BETWEEN_DIRECTORY_UPDATES)
     , mIsEnabled(true), mFollowSymLinks(FOLLOW_SYMLINKS_DEFAULT)
     , mIgnoreDuplicates(true)
@@ -135,6 +135,9 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 		return false;
 	}
 
+	mSweptFiles = 0;
+	mLastSweepEventTime = rstime::RsScopeTimer::currentTime();	// a sweep of less than a second sends nothing
+
 	mIsChecking = true;
 
     if(rsEvents)
@@ -201,6 +204,9 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 		{
 			const auto& it = storedSingleFilesIt;
 			RsFileHash hash;
+
+			sweepingFile(it.name());
+
 			if( mHashCache->requestHash(
 			            it.name(), it.size(), it.modtime(), hash,
 			            this, *it ) )
@@ -380,8 +386,12 @@ void LocalDirectoryUpdater::recursUpdateSharedDir(
 			 * compute H(H(F)), which is used in FT.
 			 * The later is always needed. */
 
+			const std::string file_path = RsDirUtil::makePath(cumulated_path, dit.name());
+
+			sweepingFile(file_path);
+
 			if( mHashCache->requestHash(
-			            RsDirUtil::makePath(cumulated_path, dit.name()),
+			            file_path,
 			            dit.size(), dit.modtime(), hash, this, *dit ) )
 				mSharedDirectories->updateHash(*dit, hash, hash != dit.hash());
 		}
@@ -454,6 +464,27 @@ bool LocalDirectoryUpdater::hash_confirm(uint32_t client_param)
 {
 	return mSharedDirectories->getEntryType(
 	            DirectoryStorage::EntryIndex(client_param) ) == DIR_TYPE_FILE;
+}
+
+void LocalDirectoryUpdater::sweepingFile(const std::string& path)
+{
+	++mSweptFiles;
+
+	const double now = rstime::RsScopeTimer::currentTime();
+
+	if(now < mLastSweepEventTime + 1.0)
+		return;
+
+	mLastSweepEventTime = now;
+
+	if(rsEvents)
+	{
+		auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+		ev->mEventCode = RsSharedDirectoriesEventCode::SCANNING_FILE;
+		ev->mFilePath = path;
+		ev->mScannedFilesCount = mSweptFiles;
+		rsEvents->postEvent(ev);
+	}
 }
 
 bool LocalDirectoryUpdater::hash_requests_pending() const
