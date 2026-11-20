@@ -192,7 +192,23 @@ void HashStorage::threadTick()
             RS_STACK_MUTEX(mHashMtx) ;
 
             job = mFilesToHash.begin()->second ;
-            mFilesToHash.erase(mFilesToHash.begin()) ;
+        }
+
+        // Nothing is hashed while the client still goes through its files. The totals of the progress are then
+        // final from the first file on, and on a hard disk the scan and the hashing do not fight for the heads.
+        // The scan is short compared to the hashing it queues, so the wait costs next to nothing.
+        if(job.client->hash_requests_pending())
+        {
+            mSpeedSamples.clear();
+            mCurrentHashingSpeed = 0;
+
+            rstime::rs_usleep(4*DEFAULT_INACTIVITY_SLEEP_TIME) ;
+            return ;
+        }
+
+        {
+            RS_STACK_MUTEX(mHashMtx) ;
+            mFilesToHash.erase(job.real_path) ;	// this thread is the only one that takes jobs out
         }
 
         if(job.client->hash_confirm(job.client_param))
