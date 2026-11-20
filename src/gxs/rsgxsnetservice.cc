@@ -4487,33 +4487,13 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 
     if(canSendMsgIds(msgMetas, *grpMeta, peer, should_encrypt_to_this_circle_id))
     {
+	    std::map<RsGxsId,bool> author_can_be_forwarded;
+
 	    for(auto vit = msgMetas.begin();vit != msgMetas.end(); ++vit)
 		{
             const auto& m = *vit;
 
-            // Check reputation
-
-            if(!m->mAuthorId.isNull())
-			{
-				RsIdentityDetails details ;
-
-				if(!rsIdentity->getIdDetails(m->mAuthorId,details))
-				{
-#ifdef NXS_NET_DEBUG_0
-					GXSNETDEBUG_PG(item->PeerId(),item->grpId) << " not sending grp message ID " << (*vit)->mMsgId << ", because the identity of the author (" << m->mAuthorId << ") is not accessible (unknown/not cached)" << std::endl;
-#endif
-					continue ;
-				}
-
-				if(details.mReputation.mOverallReputationLevel < minReputationForForwardingMessages(grpMeta->mSignFlags, details.mFlags))
-				{
-#ifdef NXS_NET_DEBUG_0
-					GXSNETDEBUG_PG(item->PeerId(),item->grpId) << " not sending item ID " << (*vit)->mMsgId << ", because the author is flags " << std::hex << details.mFlags << std::dec << " and reputation level " << (int) details.mReputation.mOverallReputationLevel << std::endl;
-#endif
-					continue ;
-				}
-			}
-			// Check publish TS
+			// Check publish TS. This comes first: it costs nothing, and it spares the look-up of the author of every message that is too old to be sent.
 #ifndef RS_GXS_SEND_ALL
 			if(item->createdSinceTS > (*vit)->mPublishTs || ((max_send_delay > 0) && (*vit)->mPublishTs + max_send_delay < now))
 #else
@@ -4526,6 +4506,30 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 				continue ;
 			}
 
+            // Check reputation. The author is looked up once per request, not once per message: a forum has far fewer authors than messages,
+            // and this runs under mNxsMutex for every friend that asks for the list of a group that has something new.
+
+            if(!m->mAuthorId.isNull())
+			{
+				auto ait = author_can_be_forwarded.find(m->mAuthorId);
+
+				if(ait == author_can_be_forwarded.end())
+				{
+					RsIdentityDetails details ;
+					bool can_forward = rsIdentity->getIdDetails(m->mAuthorId,details)
+					                && !(details.mReputation.mOverallReputationLevel < minReputationForForwardingMessages(grpMeta->mSignFlags, details.mFlags));
+
+					ait = author_can_be_forwarded.insert(std::make_pair(m->mAuthorId,can_forward)).first;
+				}
+
+				if(!ait->second)
+				{
+#ifdef NXS_NET_DEBUG_0
+					GXSNETDEBUG_PG(item->PeerId(),item->grpId) << " not sending grp message ID " << (*vit)->mMsgId << ", because the identity of the author (" << (*vit)->mAuthorId << ") is not accessible, or its reputation is too low." << std::endl;
+#endif
+					continue ;
+				}
+			}
 			RsNxsSyncMsgItem* mItem = new RsNxsSyncMsgItem(mServType);
 			mItem->flag = RsNxsSyncGrpItem::FLAG_RESPONSE;
 			mItem->grpId = m->mGroupId;
