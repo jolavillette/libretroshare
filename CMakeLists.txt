@@ -813,6 +813,9 @@ endif()
 ## Alias target for super-builds (brought in via add_subdirectory)
 add_library(${TARGET_NAMESPACE}::${PROJECT_NAME} ALIAS ${PROJECT_NAME})
 
+## retroshare_install_rpath(), for the programs that link this library
+include(RetroShareInstallRpath)
+
 
 ################################################################################
 ### packaging
