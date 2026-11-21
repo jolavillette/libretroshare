@@ -41,11 +41,18 @@ endif()
 set(BUILD_TESTS OFF CACHE BOOL "build restbed tests")
 set(BUILD_SSL OFF CACHE BOOL "enable restbed SSL support")
 set(BUILD_DEVEL_PACKAGE OFF CACHE BOOL "install restbed headers")
+# restbed is linked statically into libretroshare: its shared variant is never
+# used, do not build it
+set(BUILD_SHARED_LIBRARY OFF CACHE BOOL "build the restbed shared library")
 
 FetchContent_Declare(restbed
 	GIT_REPOSITORY "https://github.com/Corvusoft/restbed.git"
 	GIT_TAG ${FETCH_restbed_GIT_TAG}
 	GIT_PROGRESS TRUE
+	# an internal dependency: its targets are built when something links them,
+	# and its install rules (librestbed.a and .so into the library directory)
+	# are not part of ours
+	EXCLUDE_FROM_ALL
 )
 
 # restbed is built unmodified, from fetched or local sources alike. Two things
