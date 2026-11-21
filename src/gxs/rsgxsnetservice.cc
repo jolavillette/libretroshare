@@ -2303,6 +2303,19 @@ bool RsGxsNetService::locked_checkTransacTimedOut(NxsTransaction* tr)
     if(mOnlineFriendsCache.find(tr->mPeerId) != mOnlineFriendsCache.end())
         return false;
 
+    // Not in the list: ask again before concluding, unless the list is from this very second. A friend that has
+    // just connected starts its transactions at once, and must not be taken for a peer that went away.
+
+    if(mOnlineFriendsCacheTS < now)
+    {
+        mOnlineFriendsCache.clear();
+        mNetMgr->getOnlineList(mServiceInfo.mServiceType, mOnlineFriendsCache);
+        mOnlineFriendsCacheTS = now;
+
+        if(mOnlineFriendsCache.find(tr->mPeerId) != mOnlineFriendsCache.end())
+            return false;
+    }
+
     if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != NULL && mGxsNetTunnel->isVirtualPeerOnline(RsGxsNetTunnelVirtualPeerId(tr->mPeerId)))
         return false;
 
