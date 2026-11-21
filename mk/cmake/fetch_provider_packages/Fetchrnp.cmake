@@ -40,7 +40,14 @@ FetchContent_Declare(rnp
 	GIT_PROGRESS TRUE
 	EXCLUDE_FROM_ALL
 )
+# rnp finds its dependencies with its own Find modules. Do not let our
+# CMAKE_FIND_PACKAGE_PREFER_CONFIG reach it: a config package found first
+# (e.g. Botan's) defines the targets those modules would have defined.
+set(fetch_rnp_prefer_config ${CMAKE_FIND_PACKAGE_PREFER_CONFIG})
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG FALSE)
 FetchContent_MakeAvailable(rnp)
+set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ${fetch_rnp_prefer_config})
+unset(fetch_rnp_prefer_config)
 set(rnp_FOUND TRUE)
 
 add_library(rnp::librnp ALIAS librnp)
