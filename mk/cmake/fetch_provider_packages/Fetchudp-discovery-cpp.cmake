@@ -47,9 +47,15 @@ FetchContent_Declare(udp-discovery-cpp
 	GIT_REPOSITORY "https://github.com/truvorskameikin/udp-discovery-cpp.git"
 	GIT_TAG ${FETCH_udp-discovery-cpp_GIT_TAG}
 	GIT_PROGRESS TRUE
-	PATCH_COMMAND sed -i -e "s/^cmake_minimum_required(VERSION 3.0)\$/cmake_minimum_required(VERSION 3.0...4.4)/" CMakeLists.txt
 )
+# udp-discovery-cpp asks for a CMake version older than 3.5, which CMake 4
+# refuses. CMAKE_POLICY_VERSION_MINIMUM is CMake's way to build such a project
+# without editing it; set it for this dependency only.
+set(fetch_udp_policy_version_minimum ${CMAKE_POLICY_VERSION_MINIMUM})
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 FetchContent_MakeAvailable(udp-discovery-cpp)
+set(CMAKE_POLICY_VERSION_MINIMUM ${fetch_udp_policy_version_minimum})
+unset(fetch_udp_policy_version_minimum)
 set(udp-discovery-cpp_FOUND TRUE)
 
 add_library(udp-discovery-cpp::udp-discovery ALIAS udp-discovery)
