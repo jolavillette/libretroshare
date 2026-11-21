@@ -50,6 +50,8 @@ static const uint32_t RS_GXS_TUNNEL_DH_STATUS_KEY_AVAILABLE = 0x0002 ;
 
 static const uint32_t RS_GXS_TUNNEL_DELAY_BETWEEN_RESEND     = 10 ; // re-send every 10 secs.
 static const rstime_t RS_GXS_TUNNEL_DH_RESTART_MIN_DELAY     = 10 ; // min delay between two DH restarts caused by bad packets on one virtual peer
+static const rstime_t RS_GXS_TUNNEL_OWN_KEY_LOAD_MAX_DELAY   = 10 ; // max wait for our own private key to be loaded, before giving up sending the DH public key
+static const rstime_t RS_GXS_TUNNEL_PEER_KEY_LOAD_MAX_DELAY  =  3 ; // max wait for a peer's key to be loaded, before using the one supplied in its DH item
 static const uint32_t RS_GXS_TUNNEL_DATA_PRINT_STORAGE_DELAY = 600 ; // store old message ids for 10 minutes.
 
 static const uint32_t GXS_TUNNEL_ENCRYPTION_HMAC_SIZE    = SHA_DIGEST_LENGTH ;
@@ -143,6 +145,19 @@ void p3GxsTunnelService::flush()
     // Flush pending DH items. This is a higher priority, so we deal with them first.
     {
 	    RS_STACK_MUTEX(mGxsTunnelMtx); /********** STACK LOCKED MTX ******/
+
+	    // DH exchanges that were waiting for a key to be loaded in the identity cache.
+
+	    for(std::map<TurtleVirtualPeerId,GxsTunnelDHInfo>::iterator it=_gxs_tunnel_virtual_peer_ids.begin();it!=_gxs_tunnel_virtual_peer_ids.end();++it)
+	    {
+		    if(it->second.own_dh_key_pending)
+			    locked_trySendDHPublicKey(it->first,it->second) ;
+
+		    RsGxsTunnelDHPublicKeyItem *item = it->second.peer_dh_item ;
+
+		    if(item != NULL && locked_handleRecvDHPublicKey(item))
+			    delete item ;
+	    }
 
 	    for(std::list<RsGxsTunnelDHPublicKeyItem*>::iterator it=pendingDHItems.begin();it!=pendingDHItems.end();)
 		    if(locked_sendClearTunnelData(*it) )
@@ -554,7 +569,11 @@ void p3GxsTunnelService::addVirtualPeer(const TurtleFileHash& hash,const TurtleV
 		if(dhinfo.dh != NULL)
 			DH_free(dhinfo.dh) ;
 
+		delete dhinfo.peer_dh_item ;
+
 		dhinfo.dh = NULL ;
+		dhinfo.own_dh_key_pending = false ;
+		dhinfo.peer_dh_item = NULL ;
 		dhinfo.direction = dir ;
 		dhinfo.hash = hash ;
 		dhinfo.status = RS_GXS_TUNNEL_DH_STATUS_UNINITIALIZED ;
@@ -624,8 +643,27 @@ void p3GxsTunnelService::locked_restartDHSession(const RsPeerId& virtual_peer_id
     }
     dhinfo.status = RS_GXS_TUNNEL_DH_STATUS_HALF_KEY_DONE ;
 
-    if(!locked_sendDHPublicKey(dhinfo.dh,own_gxs_id,virtual_peer_id))
-        std::cerr << "  (EE) Cannot send DH public key. Something went wrong." << std::endl;
+    locked_trySendDHPublicKey(virtual_peer_id,dhinfo) ;
+}
+
+void p3GxsTunnelService::locked_trySendDHPublicKey(const RsPeerId& virtual_peer_id,GxsTunnelDHInfo& dhinfo)
+{
+    bool key_not_loaded = false ;
+
+    dhinfo.own_dh_key_pending = false ;
+
+    if(locked_sendDHPublicKey(dhinfo.dh,dhinfo.own_gxs_id,virtual_peer_id,key_not_loaded))
+        return ;
+
+    // The private key of an identity that was just created is not in the cache yet. This runs in the tick of the turtle
+    // router, so it must not wait: the load is requested, and flush() tries again at the next ticks.
+
+    if(key_not_loaded && time(NULL) < dhinfo.last_dh_restart + RS_GXS_TUNNEL_OWN_KEY_LOAD_MAX_DELAY)
+    {
+        dhinfo.own_dh_key_pending = true ;
+        return ;
+    }
+    std::cerr << "  (EE) Cannot send DH public key. Something went wrong." << std::endl;
 }
 
 // Chooses the tunnel a contact sends on: among the keyed tunnels of that contact, the one the peer was last heard on,
@@ -679,6 +717,8 @@ void p3GxsTunnelService::removeVirtualPeer(const TurtleFileHash& hash,const Turt
 
         if(it->second.dh != NULL)
             DH_free(it->second.dh) ;
+
+        delete it->second.peer_dh_item ;
         
         _gxs_tunnel_virtual_peer_ids.erase(it) ;
 
@@ -803,7 +843,9 @@ void p3GxsTunnelService::receiveTurtleData(const RsTurtleGenericTunnelItem *gite
         if(dhitem != NULL)
         {
             dhitem->PeerId(virtual_peer_id) ;
-            handleRecvDHPublicKey(dhitem) ;
+
+            if(!handleRecvDHPublicKey(dhitem))
+                return ;	// the item is kept until the key that signed it is loaded
         }
         else
             std::cerr << "(EE) Deserialiased item has unexpected type." << std::endl;
@@ -950,14 +992,21 @@ bool p3GxsTunnelService::handleEncryptedData(const uint8_t *data_bytes,uint32_t 
     return true ;
 }
 
-void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
+bool p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
 {
     if (!item)
     {
 	    std::cerr << "p3GxsTunnelService:  Received null DH public key item. This should not happen." << std::endl;
-        return;
+        return true;
     }
 
+    RS_STACK_MUTEX(mGxsTunnelMtx); /********** STACK LOCKED MTX ******/
+
+    return locked_handleRecvDHPublicKey(item) ;
+}
+
+bool p3GxsTunnelService::locked_handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
+{
 #ifdef DEBUG_GXS_TUNNEL
     std::cerr << "GxsTunnelService:  Received DH public key." << std::endl;
     item->print(std::cerr, 0) ;
@@ -967,15 +1016,22 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
 
     TurtleVirtualPeerId vpid = item->PeerId() ;
 
-    RS_STACK_MUTEX(mGxsTunnelMtx); /********** STACK LOCKED MTX ******/
-
     std::map<RsPeerId,GxsTunnelDHInfo>::iterator it = _gxs_tunnel_virtual_peer_ids.find(vpid) ;
 
     if(it == _gxs_tunnel_virtual_peer_ids.end())
     {
         std::cerr << "  (EE) Cannot find hash in gxs_tunnel peer list!!" << std::endl;
-        return ;
+        return true ;
     }
+
+    // Either this is the item that was kept for this virtual peer, or it is a newer one that replaces it.
+
+    bool item_was_kept = (it->second.peer_dh_item == item) ;
+
+    if(!item_was_kept)
+        delete it->second.peer_dh_item ;
+
+    it->second.peer_dh_item = NULL ;
 
     // Now check the signature of the DH public key item.
 
@@ -989,50 +1045,57 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
 
     RsTlvPublicRSAKey signature_key ;
 
-    // We need to get the key of the sender, but if the key is not cached, we
-    // need to get it first. So we let the system work for 2-3 seconds before
-    // giving up. Normally this would only cause a delay for uncached keys,
-    // which is rare. To force the system to cache the key, we first call for
-    // getIdDetails().
+    // We need the key of the sender. When it is not in the identity cache, which is the normal case at the first contact
+    // with an identity, getKey() requests its loading and the key supplied in the DH item is used instead. This runs in
+    // the tick of the turtle router, so it must never wait for the cache by sleeping.
     //
-    RsIdentityDetails details  ;
     RsGxsId senders_id( item->signature.keyId ) ;
 
-    for(int i=0;i<6;++i)
-        if(!mGixs->getKey(senders_id,signature_key) || signature_key.keyData.bin_data == NULL)
-        {
-#ifdef DEBUG_GXS_TUNNEL
-            std::cerr << "  Cannot get key. Waiting for caching. try " << i << "/6" << std::endl;
-#endif
-            usleep(500 * 1000) ;	// sleep for 500 msec.
-        }
-        else
-            break ;
-
-    if(signature_key.keyData.bin_data == NULL)
+    if(!mGixs->getKey(senders_id,signature_key) || signature_key.keyData.bin_data == NULL)
     {
-	    std::cerr << "  (EE) Key unknown for checking signature from " << senders_id << ", can't verify signature. Using key provided in DH packet (without adding to the keyring)." << std::endl;
-
 	    // check GXS key for defects.
 
-	    if(!GxsSecurity::checkPublicKey(item->gxs_key))
+	    bool old_fingerprint_format = false ;
+
+	    if(!GxsSecurity::checkPublicKey(item->gxs_key,&old_fingerprint_format))
 	    {
 		    std::cerr << "(SS) Security error in distant chat DH handshake: supplied key " << item->gxs_key.keyId << " is inconsistent. Refusing chat!" << std::endl;
-		    return ;
+		    return true ;
 	    }
 	    if(item->gxs_key.keyId != item->signature.keyId)
 	    {
 		    std::cerr << "(SS) Security error in distant chat DH handshake: supplied key " << item->gxs_key.keyId << " is not the same than the item's signature key " << item->signature.keyId << ". Refusing chat!" << std::endl;
-		    return ;
+		    return true ;
 	    }
 
+	    // The id of a key is its fingerprint, so a supplied key that passes these checks is the key of that identity,
+	    // whether we know it locally or not. Ids in the old fingerprint format can be forged, though: for these, a key
+	    // that we know locally must be preferred, so the item is kept until that key is loaded, for as long as the
+	    // former blocking wait lasted. flush() brings the item back here.
+
+	    if(old_fingerprint_format)
+	    {
+		    rstime_t now = time(NULL) ;
+
+		    if(!item_was_kept)
+			    it->second.peer_dh_item_ts = now ;
+
+		    if(now < it->second.peer_dh_item_ts + RS_GXS_TUNNEL_PEER_KEY_LOAD_MAX_DELAY)
+		    {
+			    it->second.peer_dh_item = item ;
+			    return false ;
+		    }
+	    }
+#ifdef DEBUG_GXS_TUNNEL
+	    std::cerr << "  Key of " << senders_id << " is not in the cache. Using the key provided in the DH packet (without adding to the keyring)." << std::endl;
+#endif
 	    signature_key = item->gxs_key ;
     }
 
     if(!GxsSecurity::validateSignature((char*)(unsigned char*)data,pubkey_size,signature_key,item->signature))
     {
         std::cerr << "(SS) Signature was verified and it doesn't check! This is a security issue!" << std::endl;
-        return ;
+        return true ;
     }
     mGixs->timeStampKey(item->signature.keyId,RsIdentityUsage(RsServiceType::GXS_TUNNEL,RsIdentityUsage::GXS_TUNNEL_DH_SIGNATURE_CHECK));
 
@@ -1048,7 +1111,7 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
 #ifdef DEBUG_GXS_TUNNEL
         std::cerr << "  no DH session for virtual peer " << vpid << ": redundant tunnel for an already established session. Ignoring." << std::endl;
 #endif
-        return ;
+        return true ;
     }
     if(it->second.status == RS_GXS_TUNNEL_DH_STATUS_KEY_AVAILABLE)
     {
@@ -1076,7 +1139,7 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
     if(size != DH_compute_key(key_buff,item->public_key,it->second.dh))
     {
         std::cerr << "  (EE) DH computation failed. Probably a bug. Error code=" << ERR_get_error() << std::endl;
-        return ;
+        return true ;
     }
     it->second.status = RS_GXS_TUNNEL_DH_STATUS_KEY_AVAILABLE ;
 
@@ -1122,6 +1185,8 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
     cs->PeerId(RsPeerId(tunnel_id)) ;
 
     pendingGxsTunnelItems.push_back(cs) ;
+
+    return true ;
 }
 
 // Note: for some obscure reason, the typedef does not work here. Looks like a compiler error. So I use the primary type.
@@ -1150,11 +1215,24 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
     return RsGxsTunnelId( RsDirUtil::sha1sum(mem, 2*RsGxsId::SIZE_IN_BYTES).toByteArray() ) ;
 }
 
-bool p3GxsTunnelService::locked_sendDHPublicKey(const DH *dh,const RsGxsId& own_gxs_id,const RsPeerId& virtual_peer_id)
+bool p3GxsTunnelService::locked_sendDHPublicKey(const DH *dh,const RsGxsId& own_gxs_id,const RsPeerId& virtual_peer_id,bool& key_not_loaded)
 {
+	key_not_loaded = false ;
+
 	if(dh == NULL)
 	{
 		std::cerr << "  (EE) DH struct is not initialised! Error." << std::endl;
+		return false ;
+	}
+
+	// The key is fetched here rather than by RsGixs::signData(), that sleeps up to 3 seconds when the key is not in the
+	// cache. getPrivateKey() requests the loading, the caller tries again later.
+
+	RsTlvPrivateRSAKey signature_key ;
+
+	if(!mGixs->getPrivateKey(own_gxs_id,signature_key) || signature_key.keyData.bin_data == NULL)
+	{
+		key_not_loaded = true ;
 		return false ;
 	}
 
@@ -1170,10 +1248,7 @@ bool p3GxsTunnelService::locked_sendDHPublicKey(const DH *dh,const RsGxsId& own_
 	// we should also sign the data and check the signature on the other end.
 	//
 	RsTlvKeySignature  signature ;
-	RsTlvPrivateRSAKey signature_key ;
 	RsTlvPublicRSAKey  signature_key_public ;
-
-	uint32_t error_status ;
 
 	uint32_t size = BN_num_bytes(dhitem->public_key) ;
     
@@ -1187,22 +1262,18 @@ bool p3GxsTunnelService::locked_sendDHPublicKey(const DH *dh,const RsGxsId& own_
         
 	BN_bn2bin(dhitem->public_key, data) ;
 
-	if(!mGixs->signData((unsigned char*)data,size,own_gxs_id,signature,error_status))
+	if(!GxsSecurity::getSignature((char*)(unsigned char*)data,size,signature_key,signature))
 	{
-		switch(error_status)
-		{
-		case RsGixs::RS_GIXS_ERROR_KEY_NOT_AVAILABLE: std::cerr << "(EE) Key is not available. Cannot sign." << std::endl;
-			break ;
-		default: std::cerr << "(EE) Unknown error when signing" << std::endl;
-			break ;
-		}
+		std::cerr << "(EE) Cannot sign for id " << own_gxs_id << ". Signature call failed." << std::endl;
 		delete(dhitem);
 		return false;
 	}
+	mGixs->timeStampKey(own_gxs_id,RsIdentityUsage(RsServiceType::GXS_TUNNEL,RsIdentityUsage::GXS_TUNNEL_DH_SIGNATURE_CREATION));
 
 	if(!mGixs->getKey(own_gxs_id,signature_key_public))
 	{
 		std::cerr << "  (EE) Could not retrieve own public key for ID = " << own_gxs_id << ". Giging up sending DH session params." << std::endl;
+		delete(dhitem);
 		return false ;
 	}
 
@@ -1387,6 +1458,12 @@ bool p3GxsTunnelService::locked_sendEncryptedTunnelData(RsGxsTunnelItem *item)
 #endif
         return false;
     }
+
+    // Our DH public key is still waiting for its signing key: the peer cannot decrypt anything yet. The item stays in
+    // its queue until then, so that the DH key leaves first.
+
+    if(it2->second.own_dh_key_pending)
+        return false;
 
     it->second.total_sent += rssize ;	// counts the size of clear data that is sent
 

@@ -202,8 +202,11 @@ bool GxsSecurity::checkPrivateKey(const RsTlvPrivateRSAKey& key)
     return true ;
 }
 
-bool GxsSecurity::checkPublicKey(const RsTlvPublicRSAKey &key)
+bool GxsSecurity::checkPublicKey(const RsTlvPublicRSAKey &key, bool *old_fingerprint_format)
 {
+    if(old_fingerprint_format != nullptr)
+        *old_fingerprint_format = false ;
+
 #ifdef GXS_SECURITY_DEBUG
     std::cerr << "Checking public key " << key.keyId << " ..." << std::endl;
 #endif
@@ -243,6 +246,9 @@ bool GxsSecurity::checkPublicKey(const RsTlvPublicRSAKey &key)
         	std::cerr << "(WW) fingerprint was derived using old---insecure---format. It can be faked easily." << std::endl;
 #endif
 	    RSA_free(rsa_pub) ;
+
+	    if(old_fingerprint_format != nullptr)
+	        *old_fingerprint_format = true ;
         
 	    // The policy is to accept these public keys, but warn the owner, since they might be fake keys. They will be soon rejected here, by replacing
             // the return value by false.

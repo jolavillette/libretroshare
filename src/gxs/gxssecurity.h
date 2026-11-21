@@ -118,10 +118,12 @@ class GxsSecurity
          * Checks that the public key has correct fingerprint and correct flags.
          * @brief checkPublicKey
          * @param key
+         * @param old_fingerprint_format when supplied, tells whether the key id uses the old fingerprint format, that
+         *                               is accepted but can be forged.
          * @return false if the key is invalid.
          */
 
-        static bool checkPublicKey(const RsTlvPublicRSAKey &key);
+        static bool checkPublicKey(const RsTlvPublicRSAKey &key, bool *old_fingerprint_format = nullptr);
         static bool checkPrivateKey(const RsTlvPrivateRSAKey &key);
 	static bool checkFingerprint(const RsTlvPublicRSAKey& key);	// helper function to only check the fingerprint
         
