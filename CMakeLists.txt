@@ -323,10 +323,16 @@ if(RS_LIBRETROSHARE_STATIC AND RS_LIBRETROSHARE_SHARED)
 		"building both static and shared library is not supported"
 	)
 elseif(RS_LIBRETROSHARE_STATIC)
-	set(BUILD_SHARED_LIBS NO)
+	set(retroshare_LIBRARY_TYPE STATIC)
 elseif(RS_LIBRETROSHARE_SHARED)
-	set(BUILD_SHARED_LIBS YES)
+	set(retroshare_LIBRARY_TYPE SHARED)
+else()
+	# neither option: the library follows BUILD_SHARED_LIBS
+	set(retroshare_LIBRARY_TYPE "")
 endif()
+# The type is given to this library only. BUILD_SHARED_LIBS is left alone, so
+# that the dependencies built in this tree (BitDHT, restbed, ...) stay static
+# and end up inside the shared libretroshare instead of next to it.
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -341,7 +347,13 @@ endif()
 ################################################################################
 ### targets
 
-add_library(${PROJECT_NAME})
+add_library(${PROJECT_NAME} ${retroshare_LIBRARY_TYPE})
+get_target_property(retroshare_TARGET_TYPE ${PROJECT_NAME} TYPE)
+if(retroshare_TARGET_TYPE STREQUAL "SHARED_LIBRARY")
+	set(retroshare_IS_SHARED TRUE)
+else()
+	set(retroshare_IS_SHARED FALSE)
+endif()
 
 set_target_properties(${PROJECT_NAME} PROPERTIES
   OUTPUT_NAME retroshare
@@ -591,7 +603,7 @@ if(WIN32)
 	)
 	target_link_libraries(${PROJECT_NAME} PUBLIC ws2_32 winmm iphlpapi)
 
-	if(BUILD_SHARED_LIBS)
+	if(retroshare_IS_SHARED)
 		set_target_properties(${PROJECT_NAME} PROPERTIES WINDOWS_EXPORT_ALL_SYMBOLS ON)
 		if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU" OR CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
 			# We must use an explicit list of heavy 3rd-party archives instead of "ALL" for --exclude-libs.
@@ -616,7 +628,7 @@ endif()
 ### Android
 if(RS_ANDROID)
 	target_link_libraries(${PROJECT_NAME} PRIVATE log)
-	if(BUILD_SHARED_LIBS)
+	if(retroshare_IS_SHARED)
 		target_link_options(${PROJECT_NAME} PRIVATE LINKER:--no-undefined)
 	endif()
 
