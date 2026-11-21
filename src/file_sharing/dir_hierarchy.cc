@@ -1063,6 +1063,20 @@ bool InternalFileHierarchyStorage::recursRemoveDirectory(DirectoryStorage::Entry
 
 bool InternalFileHierarchyStorage::save(const std::string& fname)
 {
+    unsigned char *data = NULL ;
+    uint32_t size = 0 ;
+
+    if(!serialise(data,size))
+        return false ;
+
+    bool res = FileListIO::saveEncryptedDataToFile(fname,data,size) ;
+    free(data) ;
+
+    return res ;
+}
+
+bool InternalFileHierarchyStorage::serialise(unsigned char *& data,uint32_t& size)
+{
     unsigned char *buffer = NULL ;
     uint32_t buffer_size = 0 ;
     uint32_t buffer_offset = 0 ;
@@ -1129,12 +1143,12 @@ bool InternalFileHierarchyStorage::save(const std::string& fname)
                 if(!FileListIO::writeField(buffer,buffer_size,buffer_offset,FILE_LIST_IO_TAG_LOCAL_DIR_ENTRY,tmp_section_data,dir_section_offset)) throw std::runtime_error("Write error") ;
             }
 
-        bool res = FileListIO::saveEncryptedDataToFile(fname,buffer,buffer_offset) ;
-
-        free(buffer) ;
         free(tmp_section_data) ;
 
-        return res ;
+        data = buffer ;
+        size = buffer_offset ;
+
+        return true ;
     }
     catch(std::exception& e)
     {

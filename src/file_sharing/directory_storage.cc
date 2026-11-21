@@ -25,6 +25,9 @@
 #include "util/rstime.h"
 #include "serialiser/rstlvbinary.h"
 #include "retroshare/rspeers.h"
+#include "util/rsthreads.h"
+
+static void waitForPendingListWrites() ;	// see DirectoryStorage::save()
 #include "util/rsdir.h"
 #include "util/rsstring.h"
 #include "file_sharing_defaults.h"
@@ -101,6 +104,7 @@ DirectoryStorage::DirectoryStorage(const RsPeerId &pid,const std::string& fname)
 
 DirectoryStorage::~DirectoryStorage()
 {
+	waitForPendingListWrites();
 	delete mFileHierarchy;
 }
 
@@ -196,10 +200,103 @@ bool DirectoryStorage::load(const std::string& local_file_name)
     mChanged = false ;
     return mFileHierarchy->load(local_file_name);
 }
+// Writing a list to the disk means encrypting it and writing megabytes, which takes a second on a slow disk and
+// much more when the disk is busy. save() is called from the tick of the file database, with the file database
+// mutex taken: everything that needs that mutex (the GUI showing the shared files, the transfers) would wait for
+// the disk. So save() only builds the content in memory; a short-lived thread does the encryption and the writing,
+// one list at a time, in the order asked. A list asked again before it was written replaces the waiting content.
+
+namespace
+{
+	struct PendingListWrite
+	{
+		std::string    file_name ;
+		unsigned char *data ;
+		uint32_t       size ;
+	};
+
+	RsMutex                     pending_list_writes_mtx("Directory storage writes") ;
+	std::list<PendingListWrite> pending_list_writes ;
+	bool                        list_writer_running = false ;
+
+	void writePendingLists()
+	{
+		for(;;)
+		{
+			PendingListWrite w ;
+			{
+				RS_STACK_MUTEX(pending_list_writes_mtx) ;
+
+				if(pending_list_writes.empty())
+				{
+					list_writer_running = false ;
+					return ;
+				}
+				w = pending_list_writes.front() ;
+				pending_list_writes.pop_front() ;
+			}
+
+			FileListIO::saveEncryptedDataToFile(w.file_name,w.data,w.size) ;
+			free(w.data) ;
+		}
+	}
+
+	void queueListWrite(const std::string& file_name,unsigned char *data,uint32_t size)
+	{
+		RS_STACK_MUTEX(pending_list_writes_mtx) ;
+
+		bool replaced = false ;
+
+		for(auto& w:pending_list_writes)
+			if(w.file_name == file_name)
+			{
+				free(w.data) ;
+				w.data = data ;
+				w.size = size ;
+				replaced = true ;
+				break ;
+			}
+
+		if(!replaced)
+			pending_list_writes.push_back(PendingListWrite{file_name,data,size}) ;
+
+		if(!list_writer_running)
+		{
+			list_writer_running = true ;
+			RsThread::async(&writePendingLists) ;
+		}
+	}
+
+}
+
+// Called when a list is deleted (a friend removed, or the end of the program): nothing must be left half done.
+
+static void waitForPendingListWrites()
+{
+	for(;;)
+	{
+		{
+			RS_STACK_MUTEX(pending_list_writes_mtx) ;
+
+			if(!list_writer_running)
+				return ;
+		}
+		rstime::rs_usleep(20*1000) ;
+	}
+}
+
 void DirectoryStorage::save(const std::string& local_file_name)
 {
-    RS_STACK_MUTEX(mDirStorageMtx) ;
-    mFileHierarchy->save(local_file_name);
+    unsigned char *data = NULL ;
+    uint32_t size = 0 ;
+
+    {
+        RS_STACK_MUTEX(mDirStorageMtx) ;
+
+        if(!mFileHierarchy->serialise(data,size))
+            return ;
+    }
+    queueListWrite(local_file_name,data,size) ;
 }
 void DirectoryStorage::print()
 {

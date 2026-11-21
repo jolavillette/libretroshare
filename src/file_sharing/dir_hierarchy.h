@@ -89,6 +89,9 @@ public:
     bool load(const std::string& fname) ;
     bool save(const std::string& fname) ;
 
+    // Writes the whole hierarchy into a newly allocated memory block, to be released with free(). Nothing goes to the disk.
+    bool serialise(unsigned char *& data,uint32_t& size) ;
+
     int parentRow(DirectoryStorage::EntryIndex e);
     bool isIndexValid(DirectoryStorage::EntryIndex e) const;
     bool getChildIndex(DirectoryStorage::EntryIndex e,int row,DirectoryStorage::EntryIndex& c) const;
