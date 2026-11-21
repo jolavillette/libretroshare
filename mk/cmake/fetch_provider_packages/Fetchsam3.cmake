@@ -57,14 +57,31 @@ set(sam3_external_BUILD_ENVIRONMENT
 )
 EnvironmentModification(envmod_build ${sam3_external_BUILD_ENVIRONMENT})
 
-ExternalProject_Add(sam3_external
+set(FETCH_sam3_SOURCE_DIR "" CACHE PATH
+	"local libsam3 sources to build instead of fetching them"
+)
+if(FETCH_sam3_SOURCE_DIR)
+	# Local sources (a checked-out submodule): copy them into the build tree
+	# and build the copy, since libsam3's Makefile builds in its source
+	# directory. Nothing is downloaded and the local sources stay untouched.
+	set(sam3_external_SOURCE
+		DOWNLOAD_COMMAND ${CMAKE_COMMAND} -E copy_directory
+			"${FETCH_sam3_SOURCE_DIR}" <SOURCE_DIR>
+	)
+else()
 	# The pinned commit is the head of i2p/libsam3 pull request 30, which is on
 	# no branch of i2p/libsam3: a clone of that repository does not have it.
 	# Fetch it from the repository where it is on a branch
 	# (fix/cross-platform-and-security). Back to i2p/libsam3 once it is merged.
-	GIT_REPOSITORY "https://github.com/jolavillette/libsam3.git"
-	GIT_TAG ${FETCH_sam3_GIT_TAG}
-	GIT_PROGRESS TRUE
+	set(sam3_external_SOURCE
+		GIT_REPOSITORY "https://github.com/jolavillette/libsam3.git"
+		GIT_TAG ${FETCH_sam3_GIT_TAG}
+		GIT_PROGRESS TRUE
+	)
+endif()
+
+ExternalProject_Add(sam3_external
+	${sam3_external_SOURCE}
 	CONFIGURE_COMMAND ""
   BUILD_COMMAND ${envmod_build} make build
 	INSTALL_COMMAND ""
