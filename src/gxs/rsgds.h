@@ -215,6 +215,11 @@ public:
     virtual uint32_t cacheSize() const = 0;
 
     /*!
+     * Debug: entry counts and serialised sizes of the in-RAM group and message meta caches, one line.
+     */
+    virtual std::string debug_cacheSizeString() { return std::string(); }
+
+    /*!
      * \brief serviceType
      * \return
      *          The service type for the current data service.
