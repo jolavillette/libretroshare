@@ -226,9 +226,10 @@ public:
 	 *	any kind of function call or job into a lambda which get no paramethers
 	 *	and return nothing but can capture
 	 * This can be easly optimized later by using a thread pool
+	 * Not inline on purpose: the bookkeeping of the finished threads (see
+	 * rsthreads.cc) must exist once, also when the library is a DLL.
 	 */
-	static void async(const std::function<void()>& fn)
-	{ std::thread(fn).detach(); }
+	static void async(const std::function<void()>& fn);
 
 	/** @return RsThread full name */
 	const std::string& threadName() { return mFullName; }

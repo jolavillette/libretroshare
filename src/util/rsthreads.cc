@@ -81,10 +81,98 @@ static double getCurrentTS()
         return cts;
 }
 
+/* On Windows, with the winpthreads of MSYS2, every detached thread leaves one
+ * handle open for the rest of the process, whichever side detaches it
+ * (measured: 500 detached threads, 500 handles more; 500 joined threads, none).
+ * A node starts hundreds of short-lived threads an hour, and reached 180 000
+ * handles after a few days. So on Windows the threads are not detached: a
+ * thread that ends puts itself in a list, and the next call that creates a
+ * thread joins the threads of that list first. Joining a thread that is
+ * returning takes no time, and the list never holds more than the threads that
+ * ended since the last creation. */
+#ifdef WINDOWS_SYS
+#	define RS_THREAD_JOIN_FINISHED 1
+#endif
+
+#ifdef RS_THREAD_JOIN_FINISHED
+#include <mutex>
+#include <vector>
+
+namespace
+{
+	std::mutex& finishedThreadsMutex()
+	{
+		static std::mutex m;
+		return m;
+	}
+	std::vector<pthread_t>& finishedThreads()
+	{
+		static std::vector<pthread_t> v;
+		return v;
+	}
+
+	/* Last thing a thread does. Nothing that may be deleted by someone else
+	 * can be touched after this call. */
+	void registerFinishedThread()
+	{
+		std::lock_guard<std::mutex> lock(finishedThreadsMutex());
+		finishedThreads().push_back(pthread_self());
+	}
+
+	void joinFinishedThreads()
+	{
+		std::vector<pthread_t> to_join;
+		{
+			std::lock_guard<std::mutex> lock(finishedThreadsMutex());
+			to_join.swap(finishedThreads());
+		}
+
+		for(const pthread_t& tid: to_join)
+			pthread_join(tid, nullptr);
+	}
+
+	void* rsthread_async_init(void* p)
+	{
+		std::function<void()>* fn = static_cast<std::function<void()>*>(p);
+
+		(*fn)();
+		delete fn;
+
+		registerFinishedThread();
+		return nullptr;
+	}
+}
+#endif // def RS_THREAD_JOIN_FINISHED
+
+/*static*/ void RsThread::async(const std::function<void()>& fn)
+{
+#ifdef RS_THREAD_JOIN_FINISHED
+	joinFinishedThreads();
+
+	std::function<void()>* fn_copy = new std::function<void()>(fn);
+	pthread_t tid;
+
+	if(0 == pthread_create(&tid, nullptr, &rsthread_async_init, fn_copy))
+		return;
+
+	delete fn_copy;	// could not be created that way: do as before
+#endif
+	std::thread(fn).detach();
+}
+
 /*static*/ void* RsThread::rsthread_init(void* p)
 {
 	RsThread* thread = reinterpret_cast<RsThread *>(p);
 	if(!thread) return nullptr;
+
+#ifdef RS_THREAD_JOIN_FINISHED
+	thread->wrapRun();
+
+	/* The RsThread object may be deleted from now on (mHasStopped is true):
+	 * do not touch it any more. */
+	registerFinishedThread();
+	return nullptr;
+#endif
 
 	/* Using pthread_detach(...) the thread resources will be automatically
 	 * freed when this function return, so there is no need for pthread_join()
@@ -201,6 +289,10 @@ void RsThread::waitWhileStopping()
 
 bool RsThread::start(const std::string& threadName)
 {
+#ifdef RS_THREAD_JOIN_FINISHED
+	joinFinishedThreads();
+#endif
+
 	// Atomically check if the thread was already started and set it as running
 	if(mHasStopped.exchange(false))
 	{
