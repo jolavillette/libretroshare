@@ -25,8 +25,6 @@
 cmake_minimum_required(VERSION 3.14...4.4)
 
 include(FetchContent)
-find_package(Git REQUIRED)
-find_package(Patch REQUIRED)
 
 set(FETCH_restbed_GIT_TAG "" CACHE STRING
 	"git tag to use for fetching restbed"
@@ -48,11 +46,26 @@ FetchContent_Declare(restbed
 	GIT_REPOSITORY "https://github.com/Corvusoft/restbed.git"
 	GIT_TAG ${FETCH_restbed_GIT_TAG}
 	GIT_PROGRESS TRUE
-	PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard
-	COMMAND ${Patch_EXECUTABLE} -tNp1 -i
-		"${CMAKE_CURRENT_LIST_DIR}/restbed.patch"
 )
+
+# restbed is built unmodified, from fetched or local sources alike. Two things
+# in its CMake files have to be handled from here.
+#
+# Its Findasio.cmake stops the configure when asio.hpp is not found. Locate
+# asio first, on the system or by fetching it: its module then finds it.
+find_path(asio_INCLUDE asio.hpp)
+if(NOT asio_INCLUDE)
+	include(Fetchasio)
+endif()
+#
+# Its CMakeLists.txt replaces a default install prefix by its own
+# "distribution" directory, for the whole build. Tell it the prefix is not the
+# default one while it is added.
+set(fetch_restbed_prefix_default ${CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT})
+set(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT FALSE)
 FetchContent_MakeAvailable(restbed)
+set(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT ${fetch_restbed_prefix_default})
+unset(fetch_restbed_prefix_default)
 set(restbed_FOUND TRUE)
 
 if(BUILD_SHARED_LIBS)

@@ -31,10 +31,20 @@ mark_as_advanced(FETCH_asio_GIT_TAG)
 if(NOT FETCH_asio_GIT_TAG)
 	# A commit, not a branch: everybody builds the same sources, and git does
 	# not go back to the network once they are there.
-	# Tag asio-1-36-0.
+	# asio master of 2026-11-07: the headers are in include/ at the top of the
+	# repository there (in asio/include/ up to the 1.36 releases), which is
+	# what asio_INCLUDE below expects.
 	set(FETCH_asio_GIT_TAG
-		231cb29bab30f82712fcd54faaea42424cc6e710
+		190a8d8daf1cc62909b4e0c72ff491ba264ca98e
 	)
+endif()
+
+# asio already located, on the system or by an earlier fetch. restbed's own
+# Findasio.cmake reports success as ASIO_FOUND, which the provider does not
+# read, so the provider comes here although nothing has to be fetched.
+if(asio_INCLUDE AND EXISTS "${asio_INCLUDE}/asio.hpp")
+	set(asio_FOUND TRUE)
+	return()
 endif()
 
 include(FetchContent)
@@ -47,5 +57,7 @@ FetchContent_Declare(asio
 FetchContent_MakeAvailable(asio)
 set(asio_FOUND TRUE)
 
-set(asio_INCLUDE "${asio_SOURCE_DIR}/include")
+# in the cache: restbed's Findasio.cmake looks for asio.hpp with find_path()
+# into this very variable, and finds it set
+set(asio_INCLUDE "${asio_SOURCE_DIR}/include" CACHE PATH "asio headers" FORCE)
 add_compile_definitions(ASIO_STANDALONE=YES)
