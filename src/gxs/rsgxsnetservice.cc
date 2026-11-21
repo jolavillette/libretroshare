@@ -1947,6 +1947,7 @@ bool RsGxsNetService::locked_processTransac(RsNxsTransacItem *item)
         tr = new NxsTransaction();
         transMap[transN] = tr;
         tr->mTransaction = item;
+        tr->mPeerId = peer;
         tr->mTimeOut = item->timestamp + mTransactionTimeOut;
 #ifdef NXS_NET_DEBUG_1
     GXSNETDEBUG_P_(peer) << "  Setting timeout of " << mTransactionTimeOut << " secs, which is " << tr->mTimeOut - time(NULL) << " secs from now." << std::endl;
@@ -2278,7 +2279,32 @@ void RsGxsNetService::updateServerSyncTS()
 
 bool RsGxsNetService::locked_checkTransacTimedOut(NxsTransaction* tr)
 {
-   return tr->mTimeOut < ((uint32_t) time(NULL));
+    rstime_t now = time(NULL);
+
+    if(tr->mTimeOut < (uint32_t) now)
+        return true;
+
+    // A transaction with a peer that went away (friend disconnected, tunnel closed) cannot finish: what was queued
+    // for that peer is lost, and if it comes back it starts again from scratch. Without this test such a
+    // transaction stays here until the time-out, with its items in memory.
+
+    if(tr->mPeerId.isNull())
+        return false;
+
+    if(mOnlineFriendsCacheTS + 5 < now)
+    {
+        mOnlineFriendsCache.clear();
+        mNetMgr->getOnlineList(mServiceInfo.mServiceType, mOnlineFriendsCache);
+        mOnlineFriendsCacheTS = now;
+    }
+
+    if(mOnlineFriendsCache.find(tr->mPeerId) != mOnlineFriendsCache.end())
+        return false;
+
+    if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != NULL && mGxsNetTunnel->isVirtualPeerOnline(RsGxsNetTunnelVirtualPeerId(tr->mPeerId)))
+        return false;
+
+    return true;
 }
 
 void RsGxsNetService::processTransactions()
@@ -2878,6 +2904,7 @@ void RsGxsNetService::locked_pushMsgTransactionFromList(std::list<RsNxsItem*>& r
     // its an outgoing transaction
     newTrans->mTransaction = new RsNxsTransacItem(*transac);
     newTrans->mTransaction->PeerId(mOwnId);
+    newTrans->mPeerId = peerId;
 
     if (locked_addTransaction(newTrans))
     	generic_sendItem(transac);
@@ -3172,6 +3199,7 @@ void RsGxsNetService::locked_pushGrpTransactionFromList( std::list<RsNxsItem*>& 
     newTrans->mTimeOut = time(NULL) + mTransactionTimeOut;
 	newTrans->mTransaction = new RsNxsTransacItem(*transac);
 	newTrans->mTransaction->PeerId(mOwnId);
+	newTrans->mPeerId = peerId;
 
     if (locked_addTransaction(newTrans))
 	    generic_sendItem(transac);
@@ -3404,6 +3432,7 @@ void RsGxsNetService::locked_genSendGrpsTransaction(NxsTransaction* tr)
 
 	newTr->mTransaction = new RsNxsTransacItem(*ntr);
 	newTr->mTransaction->PeerId(mOwnId);
+	newTr->mPeerId = tr->mTransaction->PeerId();
 	newTr->mTimeOut = time(NULL) + mTransactionTimeOut;
 
 	ntr->PeerId(tr->mTransaction->PeerId());
@@ -3699,6 +3728,7 @@ void RsGxsNetService::locked_genSendMsgsTransaction(NxsTransaction* tr)
 
     newTr->mTransaction = new RsNxsTransacItem(*ntr);
     newTr->mTransaction->PeerId(mOwnId);
+    newTr->mPeerId = peerId;
     newTr->mTimeOut = time(NULL) + mTransactionTimeOut;
 
 #ifdef NXS_NET_DEBUG_5
@@ -4020,6 +4050,7 @@ void RsGxsNetService::locked_pushGrpRespFromList(std::list<RsNxsItem*>& respList
 	// also make a copy for the resident transaction
 	tr->mTransaction = new RsNxsTransacItem(*trItem);
 	tr->mTransaction->PeerId(mOwnId);
+	tr->mPeerId = peer;
     tr->mTimeOut = time(NULL) + mTransactionTimeOut;
 	// signal peer to prepare for transaction
 #ifdef NXS_NET_DEBUG_5
@@ -4615,6 +4646,7 @@ void RsGxsNetService::locked_pushMsgRespFromList(std::list<RsNxsItem*>& itemL, c
 	// also make a copy for the resident transaction
 	tr->mTransaction = new RsNxsTransacItem(*trItem);
 	tr->mTransaction->PeerId(mOwnId);
+	tr->mPeerId = sslId;
     tr->mTimeOut = time(NULL) + mTransactionTimeOut;
 
 	// This time stamp is not supposed to be used on the other side. We just set it to avoid sending an uninitialiszed value.

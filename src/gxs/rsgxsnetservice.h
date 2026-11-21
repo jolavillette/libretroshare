@@ -407,6 +407,10 @@ private:
      */
     bool locked_checkTransacTimedOut(NxsTransaction* tr);
 
+    // Friends connected for this service, as last asked to the net manager: used to drop the transactions of a peer that went away.
+    std::set<RsPeerId> mOnlineFriendsCache;
+    rstime_t mOnlineFriendsCacheTS = 0;
+
     /** E: Transaction processing **/
 
     /** S: item handlers **/

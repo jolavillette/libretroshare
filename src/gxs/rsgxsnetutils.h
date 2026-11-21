@@ -56,6 +56,18 @@ public:
     uint32_t mTimeOut;
 
     /*!
+     * The peer at the other end of this transaction. mTransaction cannot tell it for an outgoing transaction,
+     * because its peer id is then our own id. Null when not known.
+     */
+    RsPeerId mPeerId;
+
+    /*!
+     * The group this transaction is about, when it is about a single group and the creator recorded it
+     * (lists of messages sent as an answer). Null otherwise.
+     */
+    RsGxsGroupId mGrpId;
+
+    /*!
      * this contains who we
      * c what peer this transaction involves.
      * c The type of transaction
