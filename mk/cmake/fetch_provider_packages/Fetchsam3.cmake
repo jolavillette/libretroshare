@@ -33,7 +33,12 @@ set(FETCH_sam3_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_sam3_GIT_TAG)
 if(NOT FETCH_sam3_GIT_TAG)
-	set(FETCH_sam3_GIT_TAG origin/master)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# RetroShare's libsam3 submodule (i2p/libsam3 pull request 30).
+	set(FETCH_sam3_GIT_TAG
+		412ab6e7ea9a3ca69dc7fed8ae67f025b4f922f5
+	)
 endif()
 
 set(sam3_external_SOURCE_DIR "sam3_external-prefix/src/sam3_external")

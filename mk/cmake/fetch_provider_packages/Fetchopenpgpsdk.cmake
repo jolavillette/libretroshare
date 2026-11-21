@@ -29,7 +29,12 @@ set(FETCH_openpgpsdk_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_openpgpsdk_GIT_TAG)
 if(NOT FETCH_openpgpsdk_GIT_TAG)
-	set(FETCH_openpgpsdk_GIT_TAG origin/master)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# RetroShare's openpgpsdk submodule.
+	set(FETCH_openpgpsdk_GIT_TAG
+		178aa8ebcef47e3271d5a5ca5c07e45d3b71c81d
+	)
 endif()
 
 include(FetchContent)

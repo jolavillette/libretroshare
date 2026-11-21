@@ -29,7 +29,12 @@ set(FETCH_cpptrace_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_cpptrace_GIT_TAG)
 if(NOT FETCH_cpptrace_GIT_TAG)
-	set(FETCH_cpptrace_GIT_TAG origin/main)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# Tag v0.3.1, the version RetroShare master fetches.
+	set(FETCH_cpptrace_GIT_TAG
+		e1f91f18774d04d05bfbd1b37306b87573b4a99c
+	)
 endif()
 
 include(FetchContent)

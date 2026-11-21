@@ -29,7 +29,12 @@ set(FETCH_asio_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_asio_GIT_TAG)
 if(NOT FETCH_asio_GIT_TAG)
-	set(FETCH_asio_GIT_TAG origin/master)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# Tag asio-1-36-0.
+	set(FETCH_asio_GIT_TAG
+		231cb29bab30f82712fcd54faaea42424cc6e710
+	)
 endif()
 
 include(FetchContent)

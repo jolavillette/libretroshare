@@ -29,7 +29,12 @@ set(FETCH_jni.hpp_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_jni.hpp_GIT_TAG)
 if(NOT FETCH_jni.hpp_GIT_TAG)
-	set(FETCH_jni.hpp_GIT_TAG origin/master)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# RetroShare's jni.hpp submodule.
+	set(FETCH_jni.hpp_GIT_TAG
+		b1f3de8ec650b1d232b284da5b231d7355d73a53
+	)
 endif()
 
 include(FetchContent)

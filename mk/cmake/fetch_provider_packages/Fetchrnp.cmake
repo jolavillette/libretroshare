@@ -31,7 +31,12 @@ set(FETCH_rnp_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_rnp_GIT_TAG)
 if(NOT FETCH_rnp_GIT_TAG)
-	set(FETCH_rnp_GIT_TAG origin/main)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# RetroShare's librnp submodule.
+	set(FETCH_rnp_GIT_TAG
+		ec78117269461b2cdce15a085033a8c6bff6d7e3
+	)
 endif()
 
 FetchContent_Declare(rnp

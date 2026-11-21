@@ -32,7 +32,12 @@ set(FETCH_udp-discovery-cpp_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_udp-discovery-cpp_GIT_TAG)
 if(NOT FETCH_udp-discovery-cpp_GIT_TAG)
-	set(FETCH_udp-discovery-cpp_GIT_TAG origin/master)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# RetroShare's udp-discovery-cpp submodule.
+	set(FETCH_udp-discovery-cpp_GIT_TAG
+		f3a3103a6c52e5707629e8d0a7e279a7758fe845
+	)
 endif()
 
 set(BUILD_TEST FALSE)

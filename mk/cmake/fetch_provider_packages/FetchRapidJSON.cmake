@@ -29,7 +29,12 @@ set(FETCH_RapidJSON_GIT_TAG "" CACHE STRING
 )
 mark_as_advanced(FETCH_RapidJSON_GIT_TAG)
 if(NOT FETCH_RapidJSON_GIT_TAG)
-	set(FETCH_RapidJSON_GIT_TAG origin/master)
+	# A commit, not a branch: everybody builds the same sources, and git does
+	# not go back to the network once they are there.
+	# RetroShare's rapidjson submodule.
+	set(FETCH_RapidJSON_GIT_TAG
+		f54b0e47a08782a6131cc3d60f94d038fa6e0a51
+	)
 endif()
 
 set(RAPIDJSON_BUILD_EXAMPLES OFF CACHE BOOL "Build rapidjson examples.")
