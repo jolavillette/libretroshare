@@ -1865,6 +1865,7 @@ bool RsGxsNetService::handleTransaction(RsNxsItem* item)
 
             tr = transMap[transN];
             tr->mItems.push_back(item);
+            tr->mTimeOut = time(NULL) + mTransactionTimeOut;	// the time-out counts the time without activity
 
             return true;
         }
@@ -1980,6 +1981,7 @@ bool RsGxsNetService::locked_processTransac(RsNxsTransacItem *item)
 		TransactionIdMap& transMap = mTransactions[mOwnId];
 		NxsTransaction* tr = transMap[transN];
 		tr->mFlag = NxsTransaction::FLAG_STATE_SENDING;
+		tr->mTimeOut = time(NULL) + mTransactionTimeOut;	// the time-out counts the time without activity
         delete item;
         return true;
 		// end transac item for outgoing transaction
