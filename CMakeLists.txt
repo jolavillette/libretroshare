@@ -391,7 +391,20 @@ target_compile_definitions(${PROJECT_NAME}
 	V07_NON_BACKWARD_COMPATIBLE_CHANGE_003
 )
 
-target_link_options(${PROJECT_NAME} PRIVATE LINKER:--no-undefined)
+# Refuse undefined symbols when the library is linked as a shared library.
+# --no-undefined is the GNU ld / lld spelling; Apple's ld rejects the option
+# ("unknown options") and already refuses undefined symbols by default.
+if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.18)
+	include(CheckLinkerFlag)
+	check_linker_flag(CXX "LINKER:--no-undefined" RS_LINKER_HAS_NO_UNDEFINED)
+elseif(APPLE OR MSVC)
+	set(RS_LINKER_HAS_NO_UNDEFINED FALSE)
+else()
+	set(RS_LINKER_HAS_NO_UNDEFINED TRUE)
+endif()
+if(RS_LINKER_HAS_NO_UNDEFINED)
+	target_link_options(${PROJECT_NAME} PRIVATE LINKER:--no-undefined)
+endif()
 
 if(RS_SPLIT_DEBUG)
 	target_compile_options(${PROJECT_NAME} PRIVATE "-g")
