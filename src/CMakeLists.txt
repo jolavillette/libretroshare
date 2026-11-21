@@ -89,13 +89,15 @@ if(RS_BITDHT)
 		dht/p3bitdht_size.cc
 		dht/p3bitdht_peernet.cc
 		dht/p3bitdht_peers.cc
-		dht/p3bitdht_relay.cc )
+		dht/p3bitdht_relay.cc
+		dht/p3bitdht_rscensus.cc )
 
 	list(
 		APPEND RS_IMPLEMENTATION_HEADERS
 		dht/connectstatebox.h
 		dht/p3bitdht_size.h
 		dht/p3bitdht.h
+		dht/p3bitdht_rscensus.h
 		dht/stunaddrassist.h )
 endif(RS_BITDHT)
 
