@@ -42,6 +42,13 @@
 #include <filesystem>
 #include <vector>
 
+#ifdef WINDOWS_SYS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
+
 #define MSG_TABLE_NAME std::string("MESSAGES")
 #define GRP_TABLE_NAME std::string("GROUPS")
 #define DATABASE_RELEASE_TABLE_NAME std::string("DATABASE_RELEASE")
@@ -278,6 +285,19 @@ void RsDataService::preReadDatabaseFile()
             }
             mi.ignore(1024, '\n');
         }
+    }
+#elif defined(WINDOWS_SYS)
+    {
+        // Same rule as on Linux: a quarter of the memory that can be given to
+        // the file cache (free + standby). The fixed 1 GB above left a 1358 MB
+        // boards database un-read on a machine with plenty of memory: its first
+        // group took 95 s to load (3249 metas, 29 ms each), where reading the
+        // whole file front to back takes about 10 s on the same disk.
+        MEMORYSTATUSEX ms;
+        ms.dwLength = sizeof(ms);
+
+        if(GlobalMemoryStatusEx(&ms))
+            limit = ms.ullAvailPhys / 4;
     }
 #endif
 
