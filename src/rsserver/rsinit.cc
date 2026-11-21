@@ -210,7 +210,7 @@ static const int SSLPWD_LEN = 64;
 
 void RsInit::InitRsConfig()
 {
-    //RsDbg() << "libretroshare version: " << RS_HUMAN_READABLE_VERSION;
+    //RsDbg() << "libretroshare version: " << rsHumanReadableVersion();
 
 	rsInitConfig = new RsInitConfig;
 
@@ -301,17 +301,45 @@ bool doPortRestrictions = false;
 #endif
 #endif
 
+/* With CMake the version strings that change at every commit are generated at
+ * build time in rsversion_build.h, which must be included only here. Other
+ * build systems pass them as compile definitions. */
+#ifdef RS_VERSION_BUILD_HEADER
+#	include "rsversion_build.h"
+#endif
+
+#ifndef RS_BUILD_EXTRA_VERSION
+#	define RS_BUILD_EXTRA_VERSION RS_EXTRA_VERSION
+#endif
+
+#ifndef RS_BUILD_LIB_VERSION_HASH
+#	ifdef RS_LIB_VERSION_HASH
+#		define RS_BUILD_LIB_VERSION_HASH RS_LIB_VERSION_HASH
+#	else
+#		define RS_BUILD_LIB_VERSION_HASH "[version not available]"
+#	endif
+#endif
+
 /**
  * @brief Returns the specific version of the libretroshare engine.
  * This version is retrieved from the git submodule hash during compilation.
  */
 const char* RsInit::libRetroShareVersion()
 {
-#ifdef RS_LIB_VERSION_HASH
-    return RS_LIB_VERSION_HASH;
-#else
-    return "[version not available]";
-#endif
+	return RS_BUILD_LIB_VERSION_HASH;
+}
+
+const char* rsExtraVersion()
+{
+	return RS_BUILD_EXTRA_VERSION;
+}
+
+const char* rsHumanReadableVersion()
+{
+	return
+	    RS_PRIVATE_STRINGIFY(RS_MAJOR_VERSION) "."
+	    RS_PRIVATE_STRINGIFY(RS_MINOR_VERSION) "."
+	    RS_PRIVATE_STRINGIFY(RS_MINI_VERSION) RS_BUILD_EXTRA_VERSION;
 }
 
 /********

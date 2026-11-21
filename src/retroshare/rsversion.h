@@ -63,6 +63,11 @@
  * clone still gets its "-<commits>-g<hash>" suffix. Do NOT put a placeholder
  * letter here: a lone "a" looked like an alpha tag and made release/tarball
  * builds report "0.6.7a" while git builds reported "0.6.7-<n>-g<hash>".
+ *
+ * @deprecated The CMake build only defines it when the version is given on the
+ * command line. The extra string changes at every commit, so it is generated at
+ * build time and not passed to every compiled file anymore: use
+ * rsExtraVersion() to get it.
  */
 #ifndef RS_EXTRA_VERSION
 #	define RS_EXTRA_VERSION ""
@@ -82,13 +87,28 @@
 #define RS_PRIVATE_STRINGIFY2(X) #X
 #define RS_PRIVATE_STRINGIFY(X) RS_PRIVATE_STRINGIFY2(X)
 
+/* Not for the resource compiler, see the note at the end of this file */
+#ifndef RC_INVOKED
+
 /**
- * Human readable string describing RetroShare version
+ * Extra string appended to the version to make it more descriptive, for example
+ * "-963-g49d11c2f". It changes at every commit.
  */
-constexpr auto RS_HUMAN_READABLE_VERSION =
-        RS_PRIVATE_STRINGIFY(RS_MAJOR_VERSION) "." \
-        RS_PRIVATE_STRINGIFY(RS_MINOR_VERSION) "." \
-        RS_PRIVATE_STRINGIFY(RS_MINI_VERSION) RS_EXTRA_VERSION;
+const char* rsExtraVersion();
+
+/**
+ * Human readable string describing RetroShare version, for example
+ * "0.6.7-963-g49d11c2f". It changes at every commit.
+ */
+const char* rsHumanReadableVersion();
+
+/**
+ * Kept for source compatibility, this used to be a constant. Prefer
+ * rsHumanReadableVersion() in new code.
+ */
+#define RS_HUMAN_READABLE_VERSION rsHumanReadableVersion()
+
+#endif // ndef RC_INVOKED
 
 /**
  * Version string that we share with peers. This should be less precise than the
