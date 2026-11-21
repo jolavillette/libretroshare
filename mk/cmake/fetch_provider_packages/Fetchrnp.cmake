@@ -45,7 +45,12 @@ FetchContent_Declare(rnp
 # (e.g. Botan's) defines the targets those modules would have defined.
 set(fetch_rnp_prefer_config ${CMAKE_FIND_PACKAGE_PREFER_CONFIG})
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG FALSE)
+# rnp's test suite is not needed here, and configuring it downloads googletest.
+set(fetch_rnp_build_testing ${BUILD_TESTING})
+set(BUILD_TESTING OFF)
 FetchContent_MakeAvailable(rnp)
+set(BUILD_TESTING ${fetch_rnp_build_testing})
+unset(fetch_rnp_build_testing)
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ${fetch_rnp_prefer_config})
 unset(fetch_rnp_prefer_config)
 set(rnp_FOUND TRUE)
