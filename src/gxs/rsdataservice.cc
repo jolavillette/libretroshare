@@ -1503,6 +1503,13 @@ int RsDataService::retrieveGxsGrpMetaData(std::map<RsGxsGroupId,std::shared_ptr<
 
 			if(meta)
 				mit->second = meta;
+			else if(mUseCache && mGrpMetaDataCache.isCacheUpToDate())
+			{
+				// The cache holds every group of the database: this one does not exist, no need
+				// to ask the database. Lists made mostly of unknown groups come from the network:
+				// 14483 identities asked for, 222 to 1482 of them known, cost 2 to 3.5 s of
+				// queries under mDbMutex.
+			}
 			else
 			{
 #ifdef RS_DATA_SERVICE_DEBUG_CACHE
