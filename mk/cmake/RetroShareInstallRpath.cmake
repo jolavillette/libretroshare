@@ -20,18 +20,22 @@
 
 cmake_minimum_required(VERSION 3.13...4.4)
 
-# retroshare_install_rpath(<target> <executable install directory>)
+# retroshare_install_rpath(<target> <install directory of its file>)
 #
-# For a program that links libretroshare. When libretroshare is a shared
-# library built in the same build, it is installed with the program, in
-# RS_LIB_INSTALL_DIR: give the installed executable a run-time search path
-# relative to itself, so that it finds the library wherever the install tree
-# is put. <executable install directory> is where the executable file is
+# For a program or a plugin that links libretroshare. When libretroshare is a
+# shared library built in the same build, it is installed with them, in
+# RS_LIB_INSTALL_DIR: give the installed file a run-time search path relative
+# to itself, so that the library is found wherever the install tree is put.
+# <install directory of its file> is where the executable or the plugin is
 # installed, relative to the install prefix (inside the bundle on macOS).
+#
+# A plugin is loaded by a program that has the library already, but tools that
+# look at the plugin alone (ldd, linuxdeploy, dpkg-shlibdeps) resolve its
+# dependencies from its own search path.
 #
 # Does nothing on Windows (a program loads its DLLs from its own directory),
 # with a static libretroshare, or with a libretroshare found installed.
-function(retroshare_install_rpath target executable_install_dir)
+function(retroshare_install_rpath target file_install_dir)
 	if(WIN32)
 		return()
 	endif()
@@ -44,14 +48,15 @@ function(retroshare_install_rpath target executable_install_dir)
 		return()
 	endif()
 	if(APPLE)
-		set(origin "@executable_path")
+		# the directory of the file itself, valid for a program and a plugin
+		set(origin "@loader_path")
 	else()
 		set(origin "$ORIGIN")
 	endif()
-	file(RELATIVE_PATH library_from_executable
-		"/${executable_install_dir}" "/${RS_LIB_INSTALL_DIR}"
+	file(RELATIVE_PATH library_from_file
+		"/${file_install_dir}" "/${RS_LIB_INSTALL_DIR}"
 	)
 	set_property(TARGET ${target} APPEND PROPERTY
-		INSTALL_RPATH "${origin}/${library_from_executable}"
+		INSTALL_RPATH "${origin}/${library_from_file}"
 	)
 endfunction()
