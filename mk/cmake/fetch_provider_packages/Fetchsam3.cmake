@@ -58,7 +58,11 @@ set(sam3_external_BUILD_ENVIRONMENT
 EnvironmentModification(envmod_build ${sam3_external_BUILD_ENVIRONMENT})
 
 ExternalProject_Add(sam3_external
-	GIT_REPOSITORY "https://github.com/i2p/libsam3.git"
+	# The pinned commit is the head of i2p/libsam3 pull request 30, which is on
+	# no branch of i2p/libsam3: a clone of that repository does not have it.
+	# Fetch it from the repository where it is on a branch
+	# (fix/cross-platform-and-security). Back to i2p/libsam3 once it is merged.
+	GIT_REPOSITORY "https://github.com/jolavillette/libsam3.git"
 	GIT_TAG ${FETCH_sam3_GIT_TAG}
 	GIT_PROGRESS TRUE
 	CONFIGURE_COMMAND ""
