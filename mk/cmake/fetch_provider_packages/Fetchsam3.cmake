@@ -25,7 +25,6 @@ cmake_minimum_required(VERSION 3.0...4.4)
 if(NOT TARGET sam3_external)
 include(ExternalProject)
 find_package(Git REQUIRED)
-find_package(Patch REQUIRED)
 include(EnvironmentModification)
 
 set(FETCH_sam3_GIT_TAG "" CACHE STRING
@@ -64,9 +63,6 @@ ExternalProject_Add(sam3_external
 	GIT_PROGRESS TRUE
 	CONFIGURE_COMMAND ""
   BUILD_COMMAND ${envmod_build} make build
-	PATCH_COMMAND ${GIT_EXECUTABLE} reset --hard
-	COMMAND ${Patch_EXECUTABLE} -tNp1 -i
-		"${CMAKE_CURRENT_LIST_DIR}/sam3.patch"
 	INSTALL_COMMAND ""
 	BUILD_IN_SOURCE TRUE
 	BUILD_ALWAYS TRUE
