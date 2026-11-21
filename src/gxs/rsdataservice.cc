@@ -36,6 +36,7 @@
 #endif
 
 #include "rsdataservice.h"
+#include "gxsprofiler.h"
 #include "retroshare/rsgxsflags.h"
 #include "util/rsstring.h"
 
@@ -403,7 +404,7 @@ void RsDataService::initialise(bool isNewDatabase)
     int currentDatabaseRelease = 0;
     bool ok = true;
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     // initialise database
 
@@ -894,7 +895,7 @@ RsNxsMsg* RsDataService::locked_getMessage(RetroCursor &c)
 int RsDataService::storeMessage(const std::list<RsNxsMsg*>& msg)
 {
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     // start a transaction
     mDb->beginTransaction();
@@ -996,7 +997,7 @@ bool RsDataService::validSize(RsNxsMsg* msg) const
 int RsDataService::storeGroup(const std::list<RsNxsGrp*>& grp)
 {
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     // begin transaction
     mDb->beginTransaction();
@@ -1089,7 +1090,7 @@ int RsDataService::storeGroup(const std::list<RsNxsGrp*>& grp)
 int RsDataService::updateGroup(const std::list<RsNxsGrp *> &grp)
 {
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     // begin transaction
     mDb->beginTransaction();
@@ -1166,7 +1167,7 @@ int RsDataService::updateGroup(const std::list<RsNxsGrp *> &grp)
 
 int RsDataService::updateGroupKeys(const RsGxsGroupId& grpId,const RsTlvSecurityKeySet& keys,uint32_t subscribe_flags)
 {
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     // begin transaction
     mDb->beginTransaction();
@@ -1211,7 +1212,7 @@ int RsDataService::retrieveNxsGrps(std::map<RsGxsGroupId, RsNxsGrp *> &grp, bool
 
     if(grp.empty())
     {
-        RsStackMutex stack(mDbMutex);
+        RS_STACK_MUTEX(mDbMutex);
         RetroCursor* c = mDb->sqlQuery(GRP_TABLE_NAME, withMeta ? mGrpColumnsWithMeta : mGrpColumns, "", "");
 
         if(c)
@@ -1236,7 +1237,7 @@ int RsDataService::retrieveNxsGrps(std::map<RsGxsGroupId, RsNxsGrp *> &grp, bool
     }
     else
     {
-        RsStackMutex stack(mDbMutex);
+        RS_STACK_MUTEX(mDbMutex);
         std::map<RsGxsGroupId, RsNxsGrp *>::iterator mit = grp.begin();
 
         std::list<RsGxsGroupId> toRemove;
@@ -1306,6 +1307,19 @@ void RsDataService::locked_retrieveGroups(RetroCursor* c, std::vector<RsNxsGrp*>
 
 int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  bool withMeta)
 {
+    // GXS-PROF: who loads full messages, how many and how big, and how long
+    // the DB mutex is held for it (temporary diagnostics, do not upstream).
+    auto prof_t0 = std::chrono::steady_clock::now();
+    int64_t prof_wait_ms = 0;
+    size_t prof_ids_requested = 0, prof_all_groups = 0;
+    size_t prof_n_msgs = 0, prof_bytes = 0, prof_big_n = 0, prof_big_bytes = 0;
+    RsGxsGroupId prof_big_grp;
+    auto prof_lock_wait = [&](std::chrono::steady_clock::time_point tw)
+    {
+        prof_wait_ms += std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - tw).count();
+    };
+
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     rstime::RsScopeTimer timer("");
     int resultCount = 0;
@@ -1320,9 +1334,14 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
         const std::set<RsGxsMessageId>& msgIdV = mit->second;
         std::vector<RsNxsMsg*> msgSet;
 
+		prof_ids_requested += msgIdV.size();
+		if(msgIdV.empty()) ++prof_all_groups;
+		auto prof_tw = std::chrono::steady_clock::now();
+
 		if(msgIdV.empty())
 		{
 			RS_STACK_MUTEX(mDbMutex);
+			prof_lock_wait(prof_tw);
 
             RetroCursor* c = mDb->sqlQuery(MSG_TABLE_NAME, withMeta ? mMsgColumnsWithMeta : mMsgColumns, KEY_GRP_ID+ "='" + grpId.toStdString() + "'", "");
 
@@ -1334,6 +1353,7 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
 		else
 		{
 			RS_STACK_MUTEX(mDbMutex);
+			prof_lock_wait(prof_tw);
 
             // Retrieve the requested messages in batches, using a single
             // "msgId IN (...)" clause per batch. Preparing one statement per
@@ -1383,6 +1403,20 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
         resultCount += msgSet.size();
 #endif
 
+        {
+            size_t grp_bytes = 0;
+            for(const RsNxsMsg* m: msgSet)
+                if(m) grp_bytes += m->msg.bin_len + m->meta.bin_len;
+            prof_n_msgs += msgSet.size();
+            prof_bytes += grp_bytes;
+            if(grp_bytes > prof_big_bytes)
+            {
+                prof_big_bytes = grp_bytes;
+                prof_big_n = msgSet.size();
+                prof_big_grp = grpId;
+            }
+        }
+
         msg[grpId] = msgSet;
 
         msgSet.clear();
@@ -1391,6 +1425,19 @@ int RsDataService::retrieveNxsMsgs(const GxsMsgReq &reqIds, GxsMsgResult &msg,  
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     std::cerr << "RsDataService::retrieveNxsMsgs() " << mDbName << ", Requests: " << reqIds.size() << ", Results: " << resultCount << ", Time: " << timer.duration() << std::endl;
 #endif
+
+    {
+        int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - prof_t0).count();
+        if(prof_ms >= GxsTickProfiler::slowThresholdMs())
+            RsWarn() << "GXS-PROF " << mDbName << " retrieveNxsMsgs "
+                     << reqIds.size() << " groups requested (" << prof_all_groups
+                     << " whole groups, " << prof_ids_requested << " explicit ids), returned "
+                     << prof_n_msgs << " msgs / " << prof_bytes / 1024 << " KB in "
+                     << prof_ms << " ms (" << prof_wait_ms << " ms lock wait), biggest group "
+                     << prof_big_grp << ": " << prof_big_n << " msgs / "
+                     << prof_big_bytes / 1024 << " KB" << std::endl;
+    }
 
     return 1;
 }
@@ -1590,8 +1637,16 @@ void RsDataService::msgMetaWarmupThreadBody()
     {
         auto slice_t0 = std::chrono::steady_clock::now();
 
+        // GXS-PROF: how long each slice holds mDbMutex, to tell whether slices
+        // overshoot their time budget and stall the readers.
+        auto prof_locked = slice_t0;
+        int64_t prof_hold_ms = 0;
+        uint32_t prof_rows = 0;
+        const uint32_t prof_asked = slice_rows;
+
         {
             RsStackMutex stack(mDbMutex);
+            prof_locked = std::chrono::steady_clock::now();
 
             if(mMsgMetaDataCache_ContainsAllDatabase)
                 return;
@@ -1638,7 +1693,18 @@ void RsDataService::msgMetaWarmupThreadBody()
                 mMsgMetaDataCache_ContainsAllDatabase = true;
                 done = true;
             }
+
+            prof_rows = n_rows;
+            prof_hold_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - prof_locked).count();
         }
+
+        if(prof_hold_ms >= GxsTickProfiler::slowThresholdMs())
+            RsWarn() << "GXS-PROF " << mDbName << " msg meta warm-up slice " << n_slices
+                     << ": " << prof_rows << " rows (" << prof_asked << " asked) held mDbMutex "
+                     << prof_hold_ms << " ms (waited "
+                     << std::chrono::duration_cast<std::chrono::milliseconds>(prof_locked - slice_t0).count()
+                     << " ms for it)" << std::endl;
 
         if(!done)
         {
@@ -1670,7 +1736,12 @@ void RsDataService::msgMetaWarmupThreadBody()
 
 int RsDataService::retrieveGxsMsgMetaData(const GxsMsgReq& reqIds, GxsMsgMetaResult& msgMeta)
 {
-    RsStackMutex stack(mDbMutex);
+    auto prof_t0 = std::chrono::steady_clock::now();
+
+    RS_STACK_MUTEX(mDbMutex);
+
+    auto prof_t_locked = std::chrono::steady_clock::now();
+    bool prof_had_all = mMsgMetaDataCache_ContainsAllDatabase;
 
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     rstime::RsScopeTimer timer("");
@@ -1777,6 +1848,24 @@ int RsDataService::retrieveGxsMsgMetaData(const GxsMsgReq& reqIds, GxsMsgMetaRes
     std::cerr << "RsDataService::retrieveGxsMsgMetaData() " << mDbName << ", Requests: " << reqIds.size() << ", Results: " << resultCount << ", Time: " << timer.duration() << std::endl;
 #endif
 
+    {
+        int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - prof_t0).count();
+        if(prof_ms >= GxsTickProfiler::slowThresholdMs())
+        {
+            int64_t prof_wait_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        prof_t_locked - prof_t0).count();
+            size_t prof_n_metas = 0;
+            for(auto& r: msgMeta) prof_n_metas += r.second.size();
+
+            RsWarn() << "GXS-PROF " << mDbName << " retrieveGxsMsgMetaData "
+                     << reqIds.size() << " groups requested (hadFullCache="
+                     << prof_had_all << ", nowFullCache=" << mMsgMetaDataCache_ContainsAllDatabase
+                     << "), returned " << prof_n_metas << " msg metas in "
+                     << prof_ms << " ms (" << prof_wait_ms << " ms lock wait)" << std::endl;
+        }
+    }
+
     return 1;
 }
 
@@ -1828,7 +1917,12 @@ int RsDataService::retrieveGxsGrpMetaData(std::map<RsGxsGroupId,std::shared_ptr<
     std::cerr << std::endl;
 #endif
 
+	auto prof_t0 = std::chrono::steady_clock::now();
+
 	RS_STACK_MUTEX(mDbMutex);
+
+	bool prof_cache_ok = mUseCache && mGrpMetaDataCache.isCacheUpToDate();
+	size_t prof_requested = grp.size();
 
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     rstime::RsScopeTimer timer("");
@@ -1922,6 +2016,17 @@ int RsDataService::retrieveGxsGrpMetaData(std::map<RsGxsGroupId,std::shared_ptr<
 		if(!i->second) i = grp.erase(i);
 		else ++i;
 
+	{
+		int64_t prof_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+		            std::chrono::steady_clock::now() - prof_t0).count();
+		if(prof_ms >= GxsTickProfiler::slowThresholdMs())
+			RsWarn() << "GXS-PROF " << mDbName << " retrieveGxsGrpMetaData "
+			         << (prof_requested == 0 ? std::string("ALL") : std::to_string(prof_requested))
+			         << " requested (cacheUpToDate=" << prof_cache_ok
+			         << "), returned " << grp.size() << " groups in "
+			         << prof_ms << " ms" << std::endl;
+	}
+
     return 1;
 }
 
@@ -1933,7 +2038,7 @@ int RsDataService::resetDataStore()
 #endif
 
     {
-        RsStackMutex stack(mDbMutex);
+        RS_STACK_MUTEX(mDbMutex);
 
         mDb->execSQL("DROP INDEX " + MSG_INDEX_GRPID);
         mDb->execSQL("DROP TABLE " + DATABASE_RELEASE_TABLE_NAME);
@@ -1954,7 +2059,7 @@ int RsDataService::updateGroupMetaData(const GrpLocMetaData& meta)
     std::cerr << (void*)this << ": Updating Grp Meta data: grpId = " << meta.grpId << std::endl;
 #endif
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
     const RsGxsGroupId& grpId = meta.grpId;
 
 #ifdef RS_DATA_SERVICE_DEBUG_CACHE
@@ -2043,7 +2148,7 @@ int RsDataService::updateMessageMetaData(const MsgLocMetaData& metaData)
     std::cerr << (void*)this << ": Updating Msg Meta data: grpId = " << metaData.msgId.first << " msgId = " << metaData.msgId.second << std::endl;
 #endif
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
     const RsGxsGroupId& grpId = metaData.msgId.first;
     const RsGxsMessageId& msgId = metaData.msgId.second;
 
@@ -2078,7 +2183,7 @@ int RsDataService::updateMessageMetaData(const std::vector<MsgLocMetaData>& meta
     if(metaList.empty())
         return 0;
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     // Persist the whole batch inside a single transaction. Without this, every
     // row update is its own implicit transaction (one fsync per message), which
@@ -2125,7 +2230,7 @@ int RsDataService::updateMessageMetaData(const std::vector<MsgLocMetaData>& meta
 
 int RsDataService::removeMsgs(const GxsMsgReq& msgIds)
 {
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     GxsMsgReq::const_iterator mit = msgIds.begin();
 
@@ -2146,7 +2251,7 @@ int RsDataService::removeMsgs(const GxsMsgReq& msgIds)
 int RsDataService::removeGroups(const std::vector<RsGxsGroupId> &grpIds)
 {
 
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
     locked_removeGroupEntries(grpIds);
 
@@ -2155,7 +2260,7 @@ int RsDataService::removeGroups(const std::vector<RsGxsGroupId> &grpIds)
 
 int RsDataService::retrieveGroupIds(std::vector<RsGxsGroupId> &grpIds)
 {
-    RsStackMutex stack(mDbMutex);
+    RS_STACK_MUTEX(mDbMutex);
 
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
     rstime::RsScopeTimer timer("");
