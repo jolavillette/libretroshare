@@ -3182,7 +3182,12 @@ bool p3IdService::cache_request_ownids()
 	uint32_t ansType = RS_TOKREQ_ANSTYPE_DATA;
 	RsTokReqOptions opts;
 	opts.mReqType = GXS_REQUEST_TYPE_GROUP_DATA;
-	//opts.mSubscribeFlags = GXS_SERV::GROUP_SUBSCRIBE_ADMIN;
+
+	// Only our own identities are wanted (cache_load_ownids() keeps the groups with the ADMIN flag and drops
+	// the others). Without this filter the request reads the full data of every identity known to the node,
+	// thousands of them with their avatars, at every start: seconds to tens of seconds on a slow disk.
+	opts.mSubscribeMask   = GXS_SERV::GROUP_SUBSCRIBE_ADMIN;
+	opts.mSubscribeFilter = GXS_SERV::GROUP_SUBSCRIBE_ADMIN;
 
 	uint32_t token = 0;
 
