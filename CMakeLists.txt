@@ -658,7 +658,12 @@ add_subdirectory(src)
 set(BUILD_CONFIG_DIR "${PROJECT_BINARY_DIR}/cmake")
 set(INSTALL_CONFIG_DIR "${CMAKE_INSTALL_LIBDIR}/cmake/${PROJECT_NAME}")
 set(TARGET_NAMESPACE retroshare)
+# Two install components: "libretroshare" is what a program using the library
+# needs to run (the shared library, bdboot.txt); "libretroshare-dev" is what is
+# needed to build against it (headers, static archive or import library,
+# development symlink, CMake package files).
 set(INSTALL_COMPONENT COMPONENT libretroshare)
+set(INSTALL_COMPONENT_DEV COMPONENT libretroshare-dev)
 
 file(GLOB INSTALL_MODULES LIST_DIRECTORIES FALSE
 	"${PROJECT_SOURCE_DIR}/mk/cmake/*"
@@ -669,6 +674,7 @@ file(GLOB INSTALL_MODULES LIST_DIRECTORIES FALSE
 if(CMAKE_VERSION VERSION_GREATER_EQUAL 3.23)
 	set(FILESET_HEADERS_INSTALL
 		FILE_SET HEADERS DESTINATION "${RS_INCLUDE_INSTALL_DIR}"
+			${INSTALL_COMPONENT_DEV}
 	)
 else()
 	set(FILESET_HEADERS_INSTALL INCLUDES DESTINATION ${RS_INCLUDE_INSTALL_DIR})
@@ -694,16 +700,19 @@ else()
 		file(RELATIVE_PATH dest ${base} ${dest})
 		install(FILES ${source}
 			DESTINATION ${RS_INCLUDE_INSTALL_DIR}/${dest}
-			${INSTALL_COMPONENT}
+			${INSTALL_COMPONENT_DEV}
 		)
 	endforeach()
 endif()
 
 install(TARGETS ${PROJECT_NAME}
 	EXPORT ${PROJECT_NAME}_export
-	${INSTALL_COMPONENT}
-	${FILESET_HEADERS_INSTALL}
+	RUNTIME ${INSTALL_COMPONENT}
 	LIBRARY DESTINATION "${RS_LIB_INSTALL_DIR}"
+		${INSTALL_COMPONENT}
+		NAMELINK_COMPONENT libretroshare-dev
+	ARCHIVE ${INSTALL_COMPONENT_DEV}
+	${FILESET_HEADERS_INSTALL}
 )
 
 
@@ -740,7 +749,7 @@ if(NOT FETCH_DEPENDENCY_PROVIDER)
 		DESTINATION "${INSTALL_CONFIG_DIR}"
 		FILE ${PROJECT_NAME_LOWER}-targets.cmake
 		NAMESPACE ${TARGET_NAMESPACE}::
-		${INSTALL_COMPONENT}
+		${INSTALL_COMPONENT_DEV}
 		${EXPORT_PACKAGE_DEPENDENCIES}
 	)
 	include(CMakePackageConfigHelpers)
@@ -758,10 +767,13 @@ if(NOT FETCH_DEPENDENCY_PROVIDER)
 			"${BUILD_CONFIG_DIR}/${PROJECT_NAME_LOWER}-${config}-install.cmake"
 			DESTINATION "${INSTALL_CONFIG_DIR}"
 			RENAME ${PROJECT_NAME_LOWER}-${config}.cmake
-			${INSTALL_COMPONENT}
+			${INSTALL_COMPONENT_DEV}
 		)
 	endforeach()
-	install(FILES ${INSTALL_MODULES} DESTINATION ${INSTALL_CONFIG_DIR}/Modules)
+	install(FILES ${INSTALL_MODULES}
+		DESTINATION ${INSTALL_CONFIG_DIR}/Modules
+		${INSTALL_COMPONENT_DEV}
+	)
 
 
 	## config for build tree
@@ -812,7 +824,7 @@ set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION_FULL})
 
 ## misc packaging options
 set(CPACK_VERBATIM_VARIABLES TRUE)
-set(CPACK_COMPONENTS_ALL libretroshare)
+set(CPACK_COMPONENTS_ALL libretroshare libretroshare-dev)
 if(BUILD_TYPE_UPPER IN_LIST DEV_BUILD_TYPES)
   set(CPACK_STRIP_FILES FALSE)
 else()
