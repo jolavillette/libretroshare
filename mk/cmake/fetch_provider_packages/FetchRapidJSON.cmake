@@ -31,28 +31,28 @@ mark_as_advanced(FETCH_RapidJSON_GIT_TAG)
 if(NOT FETCH_RapidJSON_GIT_TAG)
 	# A commit, not a branch: everybody builds the same sources, and git does
 	# not go back to the network once they are there.
-	# RetroShare's rapidjson submodule.
+	# The commit RetroShare's builds use (master's submodule commit f54b0e47 does
+	# not compile with GCC 14 and later).
 	set(FETCH_RapidJSON_GIT_TAG
-		f54b0e47a08782a6131cc3d60f94d038fa6e0a51
+		9bd618f545ab647e2c3bcbf2f1d87423d6edf800
 	)
 endif()
 
-set(RAPIDJSON_BUILD_EXAMPLES OFF CACHE BOOL "Build rapidjson examples.")
-set(RAPIDJSON_BUILD_TESTS OFF CACHE BOOL
-	"Build rapidjson perftests and unittests."
-)
-set(CMAKE_EXPORT_NO_PACKAGE_REGISTRY TRUE)
-
+# RapidJSON is header-only: fetch its sources and use the include directory.
+# Its own CMakeLists.txt is not run (at this commit it asks for CMake 2.8, which
+# CMake 4 refuses) and its submodule (googletest, for its tests) is not fetched.
+# SOURCE_SUBDIR names a directory without a CMakeLists.txt, which is how
+# FetchContent is told to populate only.
 include(FetchContent)
 FetchContent_Declare(RapidJSON
 	GIT_REPOSITORY "https://github.com/Tencent/rapidjson.git"
 	GIT_TAG ${FETCH_RapidJSON_GIT_TAG}
 	GIT_PROGRESS TRUE
-	EXCLUDE_FROM_ALL
+	GIT_SUBMODULES ""
+	SOURCE_SUBDIR include
 )
 FetchContent_MakeAvailable(RapidJSON)
 set(RapidJSON_FOUND TRUE)
 
-target_include_directories(RapidJSON INTERFACE
-  "$<BUILD_INTERFACE:${RapidJSON_SOURCE_DIR}/include>"
-)
+# FixRapidJSONTarget.cmake makes the RapidJSON target from this variable
+set(RAPIDJSON_INCLUDE_DIRS "${rapidjson_SOURCE_DIR}/include")
