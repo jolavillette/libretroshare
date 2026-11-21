@@ -170,6 +170,12 @@ p3IdService::p3IdService( RsGeneralDataService *gds
 	mLastKeyCleaningTime = time(NULL) - int(MAX_DELAY_BEFORE_CLEANING * 0.9) ;
     mLastPGPHashProcessTime = 0;
 
+    // The service strings of identities (signature checks, tags, scores) are set one
+    // identity at a time, and each one was its own database transaction. Let them wait
+    // a few seconds and be written together. The values are also kept in the identity
+    // cache, and are computed again when lost.
+    setServiceStringWriteDelay(5);
+
 	// Kick off Cache Testing, + Others.
 	RsTickEvent::schedule_now(GXSID_EVENT_CACHEOWNIDS);//First Thing to do
 	RsTickEvent::schedule_in(GXSID_EVENT_PGPHASH, PGPHASH_PERIOD);
