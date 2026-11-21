@@ -4451,6 +4451,21 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 	    return;
     }
 
+    // A peer asks again at every sync period as long as it has not received our list in full. When the link is
+    // slow, the previous list for this group is still on its way: sending the whole list again only stacks
+    // copies of it in the same queue, and delays everything else. It will ask again, and be answered once the
+    // list on its way is finished (or dropped).
+
+    {
+        auto own_it = mTransactions.find(mOwnId);
+
+        if(own_it != mTransactions.end())
+            for(const auto& t:own_it->second)
+                if(t.second->mPeerId == peer && t.second->mGrpId == item->grpId
+                        && (t.second->mTransaction->transactFlag & RsNxsTransacItem::FLAG_TYPE_MSG_LIST_RESP))
+                    return;
+    }
+
     RsGxsGrpMetaTemporaryMap grpMetas;
     grpMetas[item->grpId] = NULL;
 
@@ -4649,6 +4664,7 @@ void RsGxsNetService::locked_pushMsgRespFromList(std::list<RsNxsItem*>& itemL, c
 	tr->mTransaction = new RsNxsTransacItem(*trItem);
 	tr->mTransaction->PeerId(mOwnId);
 	tr->mPeerId = sslId;
+	tr->mGrpId = grp_id;
     tr->mTimeOut = time(NULL) + mTransactionTimeOut;
 
 	// This time stamp is not supposed to be used on the other side. We just set it to avoid sending an uninitialiszed value.
