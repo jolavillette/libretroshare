@@ -180,6 +180,11 @@ public:
 /// initiate incoming connection.
 int accept(SSL *ssl, int fd, const struct sockaddr_storage &foreign_addr);
 
+/// Called by the listener before accept(). Returns false when the incoming
+/// connection must be closed because this friend's incoming links are being
+/// damped (see "Damping of freezing incoming links" below).
+bool admitIncoming(const struct sockaddr_storage &foreign_addr);
+
 void getCryptoParams(RsPeerCryptoParams& params) ;
 bool actAsServer();
 
@@ -196,9 +201,11 @@ protected:
 
 virtual int reset_locked();
 
-	/// initiate incoming connection.
+	/// Finish setting up an authenticated connection. @p incoming is true for
+	/// a connection accepted on our listening port, false for one we dialed
+	/// over TCP or set up through the DHT over UDP.
 	int accept_locked( SSL *ssl, int fd,
-	                   const sockaddr_storage& foreign_addr );
+	                   const sockaddr_storage& foreign_addr, bool incoming );
 
 	// A little bit of information to describe 
 	// the SSL state, this is needed
@@ -259,12 +266,43 @@ bool  	CheckConnectionTimeout();
 	int n_read_zero; /* a counter to determine if the connection is really dead */
 	rstime_t mReadZeroTS; /* timestamp of first READ_ZERO occurance */
 
+	/* Detection of a peer that authenticates us and then hangs up before
+	 * sending anything (ban list / whitelist refusal on its side). The
+	 * counter deliberately survives reset_locked(): it counts consecutive
+	 * connections, and is cleared by the first byte the peer sends. */
+	rstime_t mAcceptTS;         /* handshake completion, 0 outside the window */
+	bool mReceivedSinceAccept;  /* any byte read since mAcceptTS */
+	uint32_t mEarlyCloseCount;  /* consecutive early closes */
+
+	/* Called on every peer-initiated close path, before reset_locked().
+	 * sslErr is the ERR_get_error() value when the close was a TLS alert. */
+	void notePeerClosed_locked(unsigned long sslErr);
+
 	int ssl_connect_timeout; /* timeout to ensure that we don't get stuck (can happen on udp!) */
 
 	uint32_t mConnectDelay;
 	rstime_t   mConnectTS;
 	uint32_t mConnectTimeout;
 	rstime_t   mTimeoutTS;
+
+	/* Damping of freezing incoming links. With some friends the links they
+	 * open to us freeze within seconds while the links we open to them hold
+	 * for hours (Russian ISPs freeze the TCP flows their customers open to
+	 * foreign hosting addresses). Once a friend's incoming links keep
+	 * freezing, admitIncoming() admits one of its incoming connections per
+	 * damping window (15 then 30 min) instead of one every ~140 s, and none
+	 * while one of our own links to it is up. Our own dials are never damped.
+	 * Memory only, reset by a restart. */
+	bool mLinkIncoming = false;         ///< direction of the current link
+	rstime_t mLinkSinceTS = 0;          ///< when the current link came up, 0 if none
+	rstime_t mLastReadTS = 0;           ///< last packet read on the current link
+	uint32_t mYoungIncomingDeaths = 0;  ///< consecutive incoming links that froze young
+	rstime_t mDampingPeriod = 0;        ///< current damping window, 0 if not damped
+	rstime_t mDampedUntilTS = 0;        ///< incoming refused until then
+	uint32_t mDampedIncoming = 0;       ///< refused in the current window
+
+	void noteLinkUp_locked(bool incoming);
+	void noteLinkDown_locked();
 
 	RS_SET_CONTEXT_DEBUG_LEVEL(1)
 

@@ -111,6 +111,7 @@ ftController::ftController(ftDataMultiplex *dm, p3ServiceControl *sc, uint32_t f
     mFtActive(false),
     mFtPendingDone(false),
     mDefaultChunkStrategy(FileChunksInfo::CHUNK_STRATEGY_PROGRESSIVE),
+    mDefaultDownloadSpeed(SPEED_NORMAL),
     _max_active_downloads(5), // default queue size
     _max_uploads_per_friend(FT_FILECONTROL_MAX_UPLOAD_SLOTS_DEFAULT)
 {
@@ -1172,6 +1173,7 @@ bool ftController::FileRequest(
 
 	ftFileCreator *fc = new ftFileCreator(savepath, size, hash,assume_availability);
 	ftTransferModule *tm = new ftTransferModule(fc, mDataplex,this);
+	tm->setDownloadPriority(defaultDownloadSpeed()) ;
 
 #ifdef CONTROL_DEBUG
 	std::cerr << "Note: setting chunk strategy to " << mDefaultChunkStrategy <<std::endl ;
@@ -1680,9 +1682,16 @@ bool 	ftController::FileDetails(const RsFileHash &hash, FileInfo &info)
 		}
 	}
 
-	if ((completed) || ((it->second)->mCreator->finished()))
+	if (completed)
 	{
 		info.downloadStatus = FT_STATE_COMPLETE;
+	}
+	else if ((it->second)->mCreator->finished())
+	{
+		// All chunks are verified, but the file is still in mDownloads: the
+		// final hash and the move to its destination are pending. Reporting
+		// it complete here made the status go Complete, Checking, Complete.
+		info.downloadStatus = FT_STATE_CHECKING_HASH;
 	}
 	else if (isDownloading)
 	{
@@ -1842,6 +1851,7 @@ const std::string default_chunk_strategy_ss("DEFAULT_CHUNK_STRATEGY");
 const std::string free_space_limit_ss("FREE_SPACE_LIMIT");
 const std::string default_encryption_policy_ss("DEFAULT_ENCRYPTION_POLICY");
 const std::string file_perm_direct_dl_ss("FILE_PERM_DIRECT_DL");
+const std::string default_download_speed_ss("DEFAULT_DOWNLOAD_SPEED");
 
 
 	/* p3Config Interface */
@@ -1877,14 +1887,23 @@ bool ftController::saveList(bool &cleanup, std::list<RsItem *>& saveData)
 
 	switch(mDefaultChunkStrategy)
 	{
-		case FileChunksInfo::CHUNK_STRATEGY_STREAMING: 	configMap[default_chunk_strategy_ss] =  "STREAMING" ;
+		case FileChunksInfo::CHUNK_STRATEGY_SEQUENTIAL: 	configMap[default_chunk_strategy_ss] =  "SEQUENTIAL" ;
 																	  	break ;
 		case FileChunksInfo::CHUNK_STRATEGY_RANDOM:		configMap[default_chunk_strategy_ss] =  "RANDOM" ;
+																		break ;
+		case FileChunksInfo::CHUNK_STRATEGY_STREAMING: 	configMap[default_chunk_strategy_ss] =  "STREAMING_MP4" ;
 																		break ;
 
 		default:
 		case FileChunksInfo::CHUNK_STRATEGY_PROGRESSIVE:configMap[default_chunk_strategy_ss] =  "PROGRESSIVE" ;
 																		break ;
+	}
+
+	switch(mDefaultDownloadSpeed)
+	{
+		case SPEED_LOW:  configMap[default_download_speed_ss] = "SLOWER" ; break ;
+		case SPEED_HIGH: configMap[default_download_speed_ss] = "FASTER" ; break ;
+		default:         configMap[default_download_speed_ss] = "AVERAGE" ; break ;
 	}
 
 	rs_sprintf(s,"%lu",_max_uploads_per_friend) ;
@@ -2160,10 +2179,17 @@ bool  ftController::loadConfigMap(std::map<std::string, std::string> &configMap)
 
     if (configMap.end() != (mit = configMap.find(default_chunk_strategy_ss)))
 	{
-		if(mit->second == "STREAMING")
+		// Before the MP4-aware Streaming mode, "STREAMING" was the in-order
+		// strategy, now called Sequential: keep that meaning for saved configs.
+		if(mit->second == "STREAMING_MP4")
 		{
 			setDefaultChunkStrategy(FileChunksInfo::CHUNK_STRATEGY_STREAMING) ;
 			std::cerr << "Note: loading default value for chunk strategy: streaming" << std::endl;
+		}
+		else if(mit->second == "SEQUENTIAL" || mit->second == "STREAMING")
+		{
+			setDefaultChunkStrategy(FileChunksInfo::CHUNK_STRATEGY_SEQUENTIAL) ;
+			std::cerr << "Note: loading default value for chunk strategy: sequential" << std::endl;
 		}
 		else if(mit->second == "RANDOM")
 		{
@@ -2197,6 +2223,18 @@ bool  ftController::loadConfigMap(std::map<std::string, std::string> &configMap)
             _max_uploads_per_friend = n ;
 		}
     }
+
+	if(configMap.end() != (mit = configMap.find(default_download_speed_ss)))
+	{
+		if(mit->second == "SLOWER")
+			mDefaultDownloadSpeed = SPEED_LOW ;
+		else if(mit->second == "FASTER")
+			mDefaultDownloadSpeed = SPEED_HIGH ;
+		else if(mit->second == "AVERAGE")
+			mDefaultDownloadSpeed = SPEED_NORMAL ;
+		else
+			std::cerr << "(EE) Unknown value for default download speed in keymap: \"" << mit->second << "\"" << std::endl ;
+	}
 
 	if(configMap.end() != (mit = configMap.find(file_perm_direct_dl_ss)))
 	{
@@ -2271,6 +2309,22 @@ void ftController::setFreeDiskSpaceLimit(uint32_t size_in_mb)
 uint32_t ftController::freeDiskSpaceLimit() const
 {
 	return RsDiscSpace::freeSpaceLimit() ;
+}
+
+DwlSpeed ftController::defaultDownloadSpeed()
+{
+	RsStackMutex stack(ctrlMutex); /******* LOCKED ********/
+	return mDefaultDownloadSpeed ;
+}
+void ftController::setDefaultDownloadSpeed(DwlSpeed s)
+{
+	RsStackMutex stack(ctrlMutex); /******* LOCKED ********/
+
+	if(s != SPEED_LOW && s != SPEED_NORMAL && s != SPEED_HIGH)
+		return ;
+
+	mDefaultDownloadSpeed = s ;
+	IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_OFTEN) ;
 }
 
 FileChunksInfo::ChunkStrategy ftController::defaultChunkStrategy()

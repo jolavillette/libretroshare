@@ -39,6 +39,7 @@
 #include "retroshare/rsiface.h"
 #include "retroshare/rsinit.h"
 #include "util/rsurl.h"
+#include "util/rsstring.h"
 #include "util/rstime.h"
 #include "retroshare/rsevents.h"
 #include "retroshare/rsversion.h"
@@ -50,6 +51,9 @@
 
 static RsMutex restartMtx("JSON API Restart");	// In global scope, to make sure it's allocated in the main thread
 const std::string RsJsonApi::DEFAULT_BINDING_ADDRESS = "127.0.0.1";
+
+/* Threads restbed runs its service on, see JsonApiServer::run(). */
+static constexpr unsigned int RS_JSONAPI_SERVICE_THREADS = 4;
 
 /*static*/ const std::multimap<std::string, std::string>
 JsonApiServer::corsHeaders =
@@ -588,11 +592,15 @@ void JsonApiServer::registerHandler(
 			std::string authToken;
 			std::getline(authHeader, authToken, ' ');
 
-			if(authToken != "Basic")
+			/* The scheme is case-insensitive (RFC 7235). Log nothing of the
+			 * header: it may carry the credentials, even in place of the
+			 * scheme when a client sends a bare token. */
+			std::string authScheme;
+			stringToLowerCase(authToken, authScheme);
+			if(authScheme != "basic")
 			{
 				authFail( rb::UNAUTHORIZED,
-				          "with wrong Authorization header: ",
-				          authHeader.str() );
+				          "with a missing or non Basic Authorization header" );
 				return;
 			}
 
@@ -603,8 +611,11 @@ void JsonApiServer::registerHandler(
 			if(isAuthTokenValid(authToken, ec)) callback(session);
 			else
 			{
-				std::string tUser;
-				parseToken(authToken, tUser, RS_DEFAULT_STORAGE_PARAM(std::string));
+				/* Without a colon parseToken() puts the whole token, secret
+				 * included, into the user name: do not log it then. */
+				std::string tUser("(token without ':')");
+				if(authToken.find(':') != std::string::npos)
+					parseToken(authToken, tUser, RS_DEFAULT_STORAGE_PARAM(std::string));
 				authFail(rb::UNAUTHORIZED, "user: ", tUser, " ", ec);
 			}
 		} );
@@ -783,9 +794,11 @@ bool JsonApiServer::saveList(bool& cleanup, std::list<RsItem*>& saveItems)
 
     saveItems.push_back(itm);
 
-    std::cerr << "Saving auth tokens: " << std::endl;
-    for(auto it:mAuthTokenStorage.mAuthorizedTokens)
-        std::cerr << "  " << it.first << ":" << it.second << std::endl;
+	/* User names only: the passwords are the credentials themselves. */
+	std::cerr << "Saving auth tokens for:";
+	for(const auto& it: mAuthTokenStorage.mAuthorizedTokens)
+		std::cerr << " " << it.first;
+	std::cerr << std::endl;
     return true;
 }
 
@@ -822,9 +835,11 @@ bool JsonApiServer::loadList(std::list<RsItem*>& loadList)
 
         delete it;
     }
-    std::cerr << "Loaded auth tokens: " << std::endl;
-    for(auto it:mAuthTokenStorage.mAuthorizedTokens)
-        std::cerr << "  " << it.first << ":" << it.second << std::endl;
+	/* User names only: the passwords are the credentials themselves. */
+	std::cerr << "Loaded auth tokens for:";
+	for(const auto& it: mAuthTokenStorage.mAuthorizedTokens)
+		std::cerr << " " << it.first;
+	std::cerr << std::endl;
 	return true;
 }
 
@@ -929,6 +944,19 @@ void JsonApiServer::run()
 	settings->set_port(mListeningPort);
 	settings->set_bind_address(mBindingAddress);
 	settings->set_default_header("Connection", "close");
+
+	/* restbed defaults its worker limit to 0, which makes Service::start() run
+	 * the io_context on the calling thread alone: every request is then answered
+	 * one at a time. Together with the "Connection: close" above -- each answer
+	 * costs a fresh TCP handshake -- this is invisible over loopback and very
+	 * visible from a phone, where a web UI page needs dozens of round trips and
+	 * the browser only keeps six sockets open.
+	 *
+	 * A handful of threads is enough to overlap those round trips; the work
+	 * itself is done inside RetroShare's services, which have their own
+	 * locking. Kept deliberately small: these threads answer API calls, they do
+	 * not do the API's work. */
+	settings->set_worker_limit(RS_JSONAPI_SERVICE_THREADS);
 
 	auto tService = std::make_shared<restbed::Service>();
 

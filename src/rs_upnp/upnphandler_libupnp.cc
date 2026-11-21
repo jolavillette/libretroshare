@@ -124,6 +124,7 @@ bool upnphandler::background_setup_upnp(bool start, bool stop)
     if(! pthread_create(&tid, 0, &doSetupUPnP, (void *) data))
     {
 	pthread_detach(tid); /* so memory is reclaimed in linux */
+	/* On Windows this detached thread leaks one handle (winpthreads, mingw-w64 issue 190): see RS_THREAD_JOIN_FINISHED in util/rsthreads.cc */
 
 	return true;
     }

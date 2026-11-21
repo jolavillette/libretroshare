@@ -64,6 +64,7 @@ static const uint32_t INDEX_AUTHEN_PUBLISH      = 0x00000020; // publish key
 static const uint32_t INDEX_AUTHEN_ADMIN        = 0x00000040; // admin key
 
 static const uint32_t MSG_CLEANUP_PERIOD     = 60*59; // 59 minutes
+static const uint32_t REJECTED_GRPS_REPORT_PERIOD = 60*10; // 10 minutes
 static const uint32_t INTEGRITY_CHECK_PERIOD = 60*31; // 31 minutes
 
 #define GXS_MASK "GXS_MASK_HACK"
@@ -183,6 +184,8 @@ RsGenExchange::RsGenExchange(
   mAuthenPolicy(authenPolicy),
   mCleaning(false),
   mLastClean((int)time(NULL) - (int)(RSRandom::random_u32() % MSG_CLEANUP_PERIOD)),	// this helps unsynchronising the checks for the different services
+  mRejectedGrpsReported(0),
+  mLastRejectedGrpsReport(time(NULL)),
   mChecking(false),
   mCheckStarted(false),
   mLastCheck((int)time(NULL) - (int)(RSRandom::random_u32() % INTEGRITY_CHECK_PERIOD) + 120),	// this helps unsynchronising the checks for the different services, with 2 min security to avoid checking right away before statistics come up.
@@ -264,6 +267,26 @@ void RsGenExchange::tick()
 
 	processRoutingClues() ;
 
+	if(mLastRejectedGrpsReport + REJECTED_GRPS_REPORT_PERIOD < time(NULL))
+	{
+		RS_STACK_MUTEX(mGenMtx);
+		mLastRejectedGrpsReport = time(NULL);
+
+		size_t nb_rejected = mRejectedGrpsNoAdminSign.size() + mRejectedGrpsBadSign.size();
+
+		if(nb_rejected > mRejectedGrpsReported)
+		{
+			mRejectedGrpsReported = nb_rejected;
+
+			RsInfo() << "GXS service " << std::hex << mServType << std::dec << ": " << nb_rejected
+			         << " group(s) rejected since start because their signature does not check ("
+			         << mRejectedGrpsBadSign.size() << " with an invalid signature, "
+			         << mRejectedGrpsNoAdminSign.size() << " with no admin signature)."
+			         << " Most likely they were signed by a RetroShare version older than February 2026:"
+			         << " they come back once their owner runs a current version and saves them again." ;
+		}
+	}
+
 	{
 		std::vector<RsGxsNotify*> mNotifications_copy;
 
@@ -321,7 +344,10 @@ void RsGenExchange::tick()
 		{
 			RS_STACK_MUTEX(mGenMtx) ;
 
-			if(!mIntegrityCheck)
+			/* Never start a check once a stop was requested: onStopRequested()
+			 * takes the same mutex, so it either sees the new check and stops
+			 * it, or runs first and this test keeps it from being created. */
+			if(!mIntegrityCheck && !shouldStop())
 			{
 				mIntegrityCheck = new RsGxsIntegrityCheck( mDataStore, this,
 				                                           *mSerialiser, mGixs);
@@ -331,7 +357,7 @@ void RsGenExchange::tick()
 			}
 		}
 
-		if(mIntegrityCheck->isDone() || !mChecking)
+		if(mIntegrityCheck && (mIntegrityCheck->isDone() || !mChecking))
 		{
             std::vector<RsGxsGroupId> grpIds;
             GxsMsgReq msgIds;
@@ -362,6 +388,17 @@ void RsGenExchange::tick()
             }
 		}
 	}
+}
+
+void RsGenExchange::onStopRequested()
+{
+	/* Runs on the thread that asked this service to stop (the shutdown
+	 * sequence). Wait for the integrity check here: it reads mDataStore, which
+	 * RsServer::rsGlobalShutDown() deletes as soon as the services have
+	 * stopped. The check tests shouldStop() between groups, so this returns
+	 * quickly, and it never takes mGenMtx. */
+	RS_STACK_MUTEX(mGenMtx);
+	if(mIntegrityCheck) mIntegrityCheck->fullstop();
 }
 
 bool RsGenExchange::messagePublicationTest(const RsGxsMsgMetaData& meta)
@@ -1581,10 +1618,24 @@ bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 			const RsGxsGroupId& grpId = mit->first;
 			std::vector<RsGxsMsgItem*>& gxsMsgItems = msgItems[grpId];
 			std::vector<RsNxsMsg*>& nxsMsgsV = mit->second;
-			std::vector<RsNxsMsg*>::iterator vit = nxsMsgsV.begin();
-			for(; vit != nxsMsgsV.end(); ++vit)
+
+			// Deserialise in parallel: the database work is over (getMsgData
+			// above), what remains is pure in-memory decoding. Results land in
+			// a pre-sized array so the loop shares no mutable state; they are
+			// merged serially below, which also keeps the output order stable.
+			//
+			// THREAD-SAFETY NOTE: mSerialiser must remain stateless/re-entrant
+			// for this to be safe (see the comment on its declaration).
+			//
+			// Builds without OpenMP simply ignore the pragma and run the loop
+			// serially.
+			std::vector<RsGxsMsgItem*> tempItems(nxsMsgsV.size(), nullptr);
+			uint32_t deserialisation_errors = 0;
+
+			#pragma omp parallel for reduction(+:deserialisation_errors)
+			for(size_t i = 0; i < nxsMsgsV.size(); ++i)
 			{
-				RsNxsMsg*& msg = *vit;
+				RsNxsMsg* msg = nxsMsgsV[i];
 				RsItem* item = NULL;
 
 				if(msg->msg.bin_len != 0)
@@ -1595,23 +1646,31 @@ bool RsGenExchange::getMsgData(uint32_t token, GxsMsgDataMap &msgItems)
 					RsGxsMsgItem* mItem = dynamic_cast<RsGxsMsgItem*>(item);
 					if (mItem)
 					{
-						mItem->meta = *((*vit)->metaData); // get meta info from nxs msg
-						gxsMsgItems.push_back(mItem);
+						mItem->meta = *(msg->metaData); // get meta info from nxs msg
+						tempItems[i] = mItem;
 					}
 					else
 					{
-						std::cerr << "RsGenExchange::getMsgData() deserialisation/dynamic_cast ERROR";
-						std::cerr << std::endl;
+						++deserialisation_errors;
 						delete item;
 					}
 				}
 				else
-				{
-					std::cerr << "RsGenExchange::getMsgData() deserialisation ERROR";
-					std::cerr << std::endl;
-				}
+					++deserialisation_errors;
+
 				delete msg;
 			}
+
+			// Serial merge of the successful items. Errors are reported once,
+			// from a single thread, instead of interleaved lines from the
+			// parallel loop.
+			for(size_t i = 0; i < tempItems.size(); ++i)
+				if(tempItems[i])
+					gxsMsgItems.push_back(tempItems[i]);
+
+			if(deserialisation_errors > 0)
+				std::cerr << "RsGenExchange::getMsgData() " << deserialisation_errors
+				          << " deserialisation error(s) in group " << grpId << std::endl;
 		}
 	}
 
@@ -2539,7 +2598,12 @@ void RsGenExchange::publishMsgs()
     for(auto grpit:msgChangeMap)
         grpMetas.insert(std::make_pair(grpit.first, std::make_shared<RsGxsGrpMetaData>()));
 
-    mDataStore->retrieveGxsGrpMetaData(grpMetas);
+    // The test is here to avoid the default behavior to retrieve all groups when the list is empty. Since publishMsgs()
+    // holds mGenMtx, that full scan would otherwise block every GUI call that needs mGenMtx (getDefaultSyncPeriod(),
+    // getSyncPeriod(), etc) for as long as the data service mutex is held by another thread.
+
+    if(!grpMetas.empty())
+        mDataStore->retrieveGxsGrpMetaData(grpMetas);
 
     for(auto it(msgChangeMap.begin());it!=msgChangeMap.end();++it)
     {
@@ -2667,17 +2731,27 @@ void RsGenExchange::processGroupDelete()
 {
 	RS_STACK_MUTEX(mGenMtx);
 
+	if(mGroupDeletePublish.empty())
+		return;
+
     // get keys for group delete publish
 	typedef std::pair<bool, RsGxsGroupId> GrpNote;
 	std::map<uint32_t, GrpNote> toNotify;
 
+	// Remove all queued groups in a single call, hence a single DB
+	// transaction. One call per group meant one commit (and one fsync) per
+	// group, which kept mGenMtx locked for minutes when the identity cleaner
+	// queued hundreds of expired identities at once.
+	std::vector<RsGxsGroupId> grpIds;
+	grpIds.reserve(mGroupDeletePublish.size());
+
     for( auto vit = mGroupDeletePublish.begin();vit != mGroupDeletePublish.end(); ++vit)
 	{
-		std::vector<RsGxsGroupId> gprIds;
-		gprIds.push_back(vit->mGroupId);
-		mDataStore->removeGroups(gprIds);
+		grpIds.push_back(vit->mGroupId);
 		toNotify.insert(std::make_pair( vit->mToken, GrpNote(true, vit->mGroupId)));
 	}
+
+	mDataStore->removeGroups(grpIds);
 
 	std::list<RsGxsGroupId> grpDeleted;
     for(auto mit=toNotify.begin(); mit != toNotify.end(); ++mit)
@@ -2934,7 +3008,15 @@ void RsGenExchange::publishGrps()
 					    // Place back private keys for publisher and database storage
 					    grp->metaData->keys.private_keys = fullKeySet.private_keys;
 
-					    if(mDataStore->validSize(grp) && serialOk)
+					    const uint32_t grpNetSize = grp->grp.TlvSize() + grp->meta.TlvSize();
+
+					    if(grpNetSize > RS_GXS_MAX_GROUP_SIZE)
+					    {
+						    RsErr() << "Refusing to " << (ggps.mIsUpdate ? "update" : "create") << " group " << grp->grpId << " of service 0x" << std::hex << mServType << std::dec
+						            << ": " << grpNetSize << " bytes, more than the " << RS_GXS_MAX_GROUP_SIZE << " bytes that can be sent to friends. Reduce the image or description." << std::endl;
+						    create = CREATE_FAIL;
+					    }
+					    else if(mDataStore->validSize(grp) && serialOk)
 					    {
 						    grpId = grp->grpId;
 						    computeHash(grp->grp, grp->metaData->mHash);
@@ -3470,6 +3552,11 @@ void RsGenExchange::processRecvdGroups()
 #ifdef GEN_EXCH_DEBUG
 			std::cerr << "  failed to validate incoming meta, grpId: " << grp->grpId << ": wrong signature" << std::endl;
 #endif
+            if(grp->metaData->signSet.keySignSet.find(INDEX_AUTHEN_ADMIN) == grp->metaData->signSet.keySignSet.end())
+                mRejectedGrpsNoAdminSign.insert(grp->grpId);
+            else
+                mRejectedGrpsBadSign.insert(grp->grpId);
+
             RsGxsGroupChange* c = new RsGxsGroupChange(RsGxsNotify::TYPE_GROUP_AUTH_REJECTED, grp->grpId, false);
 
             // No need to bring the internal data for now, since this is only used to keep a list of faulty groups so as not to re-ask them again.
@@ -3597,6 +3684,8 @@ void RsGenExchange::performUpdateValidation()
 		else
         {
             RsWarn() << "Received a faulty update for group " << gu.newGrp->metaData->mGroupId << ": notifying the client." ;
+
+            mRejectedGrpsBadSign.insert(gu.newGrp->metaData->mGroupId);
 
             RsGxsGroupChange* c = new RsGxsGroupChange(RsGxsNotify::TYPE_GROUP_AUTH_REJECTED, gu.newGrp->metaData->mGroupId, false);
 

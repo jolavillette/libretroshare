@@ -48,6 +48,7 @@
 int errno;
 #else /* Windows - define errno */
 #include <netdb.h>
+#include <netinet/tcp.h>
 #endif
 
 #ifdef __HAIKU__
@@ -145,6 +146,14 @@ std::string socket_errorType(int err)
 	else if (err == EADDRNOTAVAIL)
 	{
 		return std::string("EADDRNOTAVAIL");
+	}
+	else if (err == EACCES)
+	{
+		return std::string("EACCES");
+	}
+	else if (err == EPERM)
+	{
+		return std::string("EPERM");
 	}
 	//
 
@@ -451,6 +460,29 @@ int unix_fcntl_nonblock(int fd)
 	}
 #endif
 /******************* WINDOWS SPECIFIC PART ******************/
+	return ret;
+}
+
+int unix_tcp_nodelay(int fd)
+{
+	// Testing switch, to be removed before upstreaming: RS_TCP_NODELAY=0 keeps
+	// Nagle on, so the same build can be measured with and without the fix.
+	static const bool disabled = []() {
+		const char *e = getenv("RS_TCP_NODELAY");
+		bool off = (e != nullptr && e[0] == '0');
+		if (off) RsInfo() << "TCP_NODELAY disabled by RS_TCP_NODELAY=0: peer links keep Nagle";
+		return off;
+	}();
+	if (disabled)
+		return 0;
+
+	int on = 1;
+	int ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *) &on, sizeof(on));
+
+	if (ret != 0)
+		RsWarn() << __PRETTY_FUNCTION__ << " cannot set TCP_NODELAY on socket " << fd
+		         << ", OS error " << rs_last_socket_error();
+
 	return ret;
 }
 

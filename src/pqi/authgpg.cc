@@ -34,6 +34,7 @@
 #include <stdexcept>
 #include <sstream>
 #include <algorithm>
+#include <mutex>
 #include "rsitems/rsconfigitems.h"
 
 #ifdef USE_OPENPGPSDK
@@ -444,7 +445,34 @@ const RsPgpId& AuthPGP::getPgpOwnId()
 
 std::string AuthPGP::getPgpOwnName()
 {
-    return getPgpName(instance()->mOwnGpgId) ;
+    // The name of a key does not change, so once it is known it is answered from a copy. getPgpName() waits
+    // for gpgMtxData, which is held during keyring operations, and the GUI asks for this name every second
+    // from its main thread (RsConfigNetStatus::ownName).
+
+    static std::mutex ownNameMtx;
+    static RsPgpId ownNameId;
+    static std::string ownName;
+
+    const RsPgpId ownId = instance()->mOwnGpgId;
+
+    {
+        std::lock_guard<std::mutex> lock(ownNameMtx);
+
+        if(!ownName.empty() && ownNameId == ownId)
+            return ownName;
+    }
+
+    bool success = false;
+    std::string name = getPgpName(ownId,&success);
+
+    if(success)
+    {
+        std::lock_guard<std::mutex> lock(ownNameMtx);
+
+        ownNameId = ownId;
+        ownName = name;
+    }
+    return name;
 }
 
 bool	AuthPGP::getPgpAllList(std::list<RsPgpId> &ids)

@@ -778,82 +778,121 @@ GxsRequest *RsGxsDataAccess::locked_retrieveCompletedRequest(const uint32_t& tok
 
 void RsGxsDataAccess::processRequests()
 {
-    // 1 - collect all tokens that should be treated, possibly remove the ones that are out of time
+    // The requests are handled one by one, and mDataMutex is released while a request reads the database: that
+    // can take seconds (a large forum, a busy disk), and every call of the token service, most of them made by
+    // the GUI thread, needs the same mutex. This is safe because:
+    //   - this function is only called by the thread of the service, and it is the only place where an entry
+    //     of mTokenQueue is removed and its GxsRequest deleted, so the request cannot go away meanwhile;
+    //   - a request being handled is in state PARTIAL, and its result is only handed out once it is COMPLETE;
+    //   - a request cancelled or cleared meanwhile keeps the state it was given, and is deleted by a later pass.
 
-    rstime_t now = time(nullptr); // this is ok while in the loop below
-    std::list<std::pair<uint32_t,GxsRequest*> > tokens_to_process;
+    rstime_t now = time(nullptr);
+    uint32_t last_token_of_pass = 0;
 
-    RsStackMutex stack(mDataMutex); /******* LOCKED *******/
+    // 1 - remove the requests that are over or out of time, and note where this pass ends, so that requests
+    //     arriving while it runs wait for the next one.
 
-    if(!mTokenQueue.empty())
-#ifdef DATA_DEBUG
-        GXSDATADEBUG << "  Processing token list: Service " << std::hex << mDataStore->serviceType() << std::dec << std::endl;
-#endif
-
-    for(std::map<uint32_t,TokenInfo>::iterator token_it(mTokenQueue.begin());token_it!=mTokenQueue.end();)
     {
+        RsStackMutex stack(mDataMutex); /******* LOCKED *******/
+
 #ifdef DATA_DEBUG
+        if(!mTokenQueue.empty())
+            GXSDATADEBUG << "  Processing token list: Service " << std::hex << mDataStore->serviceType() << std::dec << std::endl;
         dumpTokenQueues();
 #endif
 
-        uint32_t token = token_it->first;
-        TokenInfo& info(token_it->second);
-
-#ifdef DATA_DEBUG
-        GXSDATADEBUG << "      Token " << token << ": Status=" << tokenStatusString[(int)info.status] << "  " ;
-#endif
-
-        // Delete very old request that shouldn't be here anymore, probably because of some bug.
-
-        if(now > info.last_activity + MAX_REQUEST_AGE
-                || info.status == FAILED
-                || info.status == DONE
-                || info.status == TO_REMOVE
-                || info.status == CANCELLED)
+        for(std::map<uint32_t,TokenInfo>::iterator token_it(mTokenQueue.begin());token_it!=mTokenQueue.end();)
         {
+            TokenInfo& info(token_it->second);
+
+            // Delete very old request that shouldn't be here anymore, probably because of some bug.
+
+            if(now > info.last_activity + MAX_REQUEST_AGE
+                    || info.status == FAILED
+                    || info.status == DONE
+                    || info.status == TO_REMOVE
+                    || info.status == CANCELLED)
+            {
 #ifdef DATA_DEBUG
-            GXSDATADEBUG << " Deleting non-handled request, inactive for " << now - info.last_activity << " seconds. " ;
+                GXSDATADEBUG << "      Token " << token_it->first << ": deleting non-handled request, inactive for " << now - info.last_activity << " seconds. " << std::endl;
 #endif
 
-            delete token_it->second.request;	// this should be the only place in the code where GxsRequest is deleted.
-            auto tmp_it = token_it;
-            ++tmp_it;
-            mTokenQueue.erase(token_it);
-            token_it = tmp_it;
-            continue;
+                delete token_it->second.request;	// this should be the only place in the code where GxsRequest is deleted.
+                auto tmp_it = token_it;
+                ++tmp_it;
+                mTokenQueue.erase(token_it);
+                token_it = tmp_it;
+                continue;
+            }
+            ++token_it;
         }
 
-        if(info.status == PENDING)
-        {
-#ifdef DATA_DEBUG
-            GXSDATADEBUG << "  will be handled now. Setting status as PARTIAL." << std::endl;
-#endif
-            info.status = PARTIAL;
-            info.last_activity = now;
+        if(mTokenQueue.empty())
+            return;
 
-            if(locked_processToken(token,token_it->second.request))
-            {
-                info.status = COMPLETE;
-#ifdef DATA_DEBUG
-                GXSDATADEBUG << "          Finished. Setting status as COMPLETE." << std::endl;
-#endif
-            }
-            else
-            {
-                info.status = FAILED;
-#ifdef DATA_DEBUG
-                GXSDATADEBUG << "          Failed. Setting status as FAILED." << std::endl;
-#endif
-            }
-        }
-        else
-#ifdef DATA_DEBUG
-            GXSDATADEBUG << " Ignored." << std::endl;
-#endif
-
-        ++token_it;
+        last_token_of_pass = mTokenQueue.rbegin()->first;
     }
-} // END OF MUTEX.
+
+    // 2 - handle the pending requests, in the order of their tokens.
+
+    uint32_t next_token = 0;
+
+    for(;;)
+    {
+        uint32_t token = 0;
+        GxsRequest *request = nullptr;
+        bool found = false;
+
+        {
+            RsStackMutex stack(mDataMutex); /******* LOCKED *******/
+
+            for(auto token_it(mTokenQueue.lower_bound(next_token));token_it!=mTokenQueue.end() && token_it->first <= last_token_of_pass;++token_it)
+                if(token_it->second.status == PENDING)
+                {
+                    if(token_it->second.request == nullptr)	// should not happen: nothing to compute
+                    {
+                        token_it->second.status = FAILED;
+                        continue;
+                    }
+#ifdef DATA_DEBUG
+                    GXSDATADEBUG << "      Token " << token_it->first << " will be handled now. Setting status as PARTIAL." << std::endl;
+#endif
+                    token = token_it->first;
+                    request = token_it->second.request;
+
+                    token_it->second.status = PARTIAL;
+                    token_it->second.last_activity = time(nullptr);
+                    found = true;
+                    break;
+                }
+
+            if(!found)
+                return;
+        }
+
+        bool ok = locked_processToken(token,request);		// mDataMutex is NOT taken here, see above.
+
+        {
+            RsStackMutex stack(mDataMutex); /******* LOCKED *******/
+
+            auto token_it = mTokenQueue.find(token);
+
+            if(token_it != mTokenQueue.end() && token_it->second.status == PARTIAL)	// otherwise: cancelled or cleared meanwhile
+            {
+                token_it->second.status = ok ? COMPLETE : FAILED;
+                token_it->second.last_activity = time(nullptr);
+#ifdef DATA_DEBUG
+                GXSDATADEBUG << "          Token " << token << (ok ? ": finished. Setting status as COMPLETE." : ": failed. Setting status as FAILED.") << std::endl;
+#endif
+            }
+        }
+
+        if(token == last_token_of_pass)
+            return;
+
+        next_token = token + 1;
+    }
+}
 
 bool RsGxsDataAccess::locked_processToken(uint32_t token,GxsRequest *req)
 {

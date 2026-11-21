@@ -101,6 +101,10 @@ bool getLocalAddresses(std::vector<sockaddr_storage> & addrs);
 int unix_close(int sockfd);
 int unix_socket(int domain, int type, int protocol);
 int unix_fcntl_nonblock(int sockfd);
+/* Disable Nagle on a TCP peer socket: RS already groups items into packets, and
+ * Nagle holds small items (e.g. turtle tunnel requests) until the previous
+ * segment is acknowledged, on exactly the busiest links. */
+int unix_tcp_nodelay(int sockfd);
 int unix_connect(int sockfd, const sockaddr_storage& serv_addr);
 int unix_getsockopt_error(int sockfd, int *err);
 

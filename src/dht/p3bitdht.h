@@ -27,11 +27,13 @@
 #include "pqi/p3cfgmgr.h"
 #include "retroshare/rsdht.h"
 
+#include <atomic>
 #include <string>
 #include <map>
 #include "pqi/pqinetwork.h"
 #include "pqi/pqimonitor.h"
 #include "util/rsthreads.h"
+#include "dht/p3bitdht_size.h"
 
 #include "udp/udpstack.h"
 #include "udp/udpbitdht.h"
@@ -217,6 +219,7 @@ public:
 
     virtual bool	isAddressBanned(const struct sockaddr_storage& raddr) ;
     virtual void	getListOfBannedIps(std::list<RsDhtFilteredPeer> &lst) ;
+    virtual void	getDhtSizeEstimate(RsDhtSizeEstimate &est) override;
 
     virtual bool    setAttachMode(bool on);
 
@@ -360,6 +363,7 @@ private:
     int 	removeTranslation_locked(const RsPeerId& pid);
 
     UdpBitDht *mUdpBitDht; /* has own mutex, is static except for creation/destruction */
+    DhtSizeEstimator mSizeEstimator; /* has own mutex */
 #ifdef RS_USE_DHT_STUNNER
     UdpStunner *mDhtStunner;
     UdpStunner *mProxyStunner;
@@ -381,6 +385,18 @@ private:
     bdNodeId    mOwnDhtId;
 
     rstime_t mMinuteTS;
+
+    /* State and network sizes of the DHT, copied from it once per second by tick().
+     * getEnabled(), getActive() and getNetworkStats() return the copy: asking the DHT takes its
+     * mutex, which the DHT thread holds for a whole pass, and the GUI thread calls
+     * them every second. */
+    void refreshDhtStats();
+
+    std::atomic<bool> mDhtEnabled;
+    std::atomic<bool> mDhtActive;
+    std::atomic<uint32_t> mDhtNetSize;
+    std::atomic<uint32_t> mDhtRsNetSize;
+    rstime_t mDhtStatsTS;
 
     /* translation maps */
     std::map<RsPeerId, bdNodeId> mTransToNodeId;

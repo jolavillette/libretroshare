@@ -23,6 +23,8 @@
 #include "util/rsdebug.h"
 #include "util/rsstring.h"
 
+#include <chrono>
+
 #ifdef  SERVICE_DEBUG
 const int pqiservicezone = 60478;
 #endif
@@ -99,13 +101,31 @@ bool p3ServiceServer::getServiceItemNames(uint32_t service_type,std::map<uint8_t
 
 int p3ServiceServer::removeService(pqiService *ts)
 {
+	/* Temporary shutdown diagnostics (debug/shutdown-step-timings): split the
+	 * time spent waiting for srvMtx from the deregistration itself. */
+	auto rmT0 = std::chrono::steady_clock::now();
 	RS_STACK_MUTEX(srvMtx); /********* LOCKED *********/
+	auto rmT1 = std::chrono::steady_clock::now();
+	struct RmTiming
+	{
+		std::chrono::steady_clock::time_point t0, t1;
+		uint32_t id = 0;
+		~RmTiming()
+		{
+			using namespace std::chrono;
+			auto t2 = steady_clock::now();
+			RsInfo() << "shutdown: removeService 0x" << std::hex << id << std::dec
+			         << " srvMtx wait " << duration_cast<milliseconds>(t1 - t0).count()
+			         << " ms, deregister " << duration_cast<milliseconds>(t2 - t1).count() << " ms";
+		}
+	} rmTiming { rmT0, rmT1 };
 
 #ifdef SERVICE_DEBUG
 	pqioutput(PQL_DEBUG_BASIC, pqiservicezone, "p3ServiceServer::removeService()");
 #endif
 
 	RsServiceInfo info = ts->getServiceInfo();
+	rmTiming.id = info.mServiceType;
 
 	// This doesn't need to be in Mutex.
 	mServiceControl->deregisterService(info.mServiceType);

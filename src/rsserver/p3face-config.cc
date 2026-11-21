@@ -79,8 +79,30 @@ void RsServer::startServiceThread(RsTickingThread *t, const std::string &threadN
     mRegisteredServiceThreads.push_back(t) ;
 }
 
+#include <chrono>
+#include "util/rsdebug.h"
+
+namespace {
+/* One timestamped line per shutdown step, with its duration. The GUI's own
+ * lines are not timestamped on every platform, so these are what dates the
+ * steps of a shutdown in a log. */
+struct ShutdownStep
+{
+	std::string name;
+	std::chrono::steady_clock::time_point t0;
+	explicit ShutdownStep(const std::string& n) : name(n), t0(std::chrono::steady_clock::now())
+	{ RsInfo() << "shutdown: " << name << "..."; }
+	~ShutdownStep()
+	{
+		auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+		RsInfo() << "shutdown: " << name << " done in " << ms << " ms";
+	}
+};
+}
+
 void RsServer::rsGlobalShutDown()
 {
+	ShutdownStep total("rsGlobalShutDown");
 	bool wasReady = coreReady;
 	coreReady = false;
 
@@ -96,7 +118,7 @@ void RsServer::rsGlobalShutDown()
 	 *
 	 * Not inside the wasReady branch: retroshare-service and Android start the
 	 * JSON API before login, so a shutdown from that state must stop it too. */
-	if(rsJsonApi) rsJsonApi->fullstop();
+	if(rsJsonApi) { ShutdownStep s("stop JSON API"); rsJsonApi->fullstop(); }
 #endif
 
 	if(wasReady)
@@ -111,24 +133,31 @@ void RsServer::rsGlobalShutDown()
 		 * SmallObject allocator. Closing the accept socket now admits no new peer
 		 * for the whole shutdown; fullstopAllThreads() below then drains the
 		 * already-connected ones. */
-		if(pqih) pqih->stopListener();
+		if(pqih) { ShutdownStep s("close listener"); pqih->stopListener(); }
 
 		// save configuration before exit
-		ConfigFinalSave();
+		{ ShutdownStep s("save configuration"); ConfigFinalSave(); }
 
-		mPluginsManager->stopPlugins(pqih);
+		{ ShutdownStep s("stop plugins"); mPluginsManager->stopPlugins(pqih); }
 
 		/* Handles UPnP */
-		mNetMgr->shutdown();
+		{ ShutdownStep s("network manager shutdown (UPnP)"); mNetMgr->shutdown(); }
 
-		rsAutoProxyMonitor::instance()->stopAllRSShutdown();
+		{ ShutdownStep s("stop auto proxies"); rsAutoProxyMonitor::instance()->stopAllRSShutdown(); }
 
-		// kill all registered service threads
+		ShutdownStep services_step("stop service threads");
+
+		/* Signal every service thread first, then wait for them. Each tick
+		 * starts with an uninterruptible sleep (0.5 s for the GXS net
+		 * services), so stopping them one at a time costs the sum of those
+		 * sleeps (~5 s) instead of the longest one. */
+		for(RsTickingThread* service: mRegisteredServiceThreads)
+			service->askForStop();
 		for(RsTickingThread* service: mRegisteredServiceThreads)
 			service->fullstop();
 	}
 
-	fullstop();
+	{ ShutdownStep s("stop RsServer tick thread"); fullstop(); }
 
 	/* Stop the per-peer network I/O threads (pqithreadstreamer). They are
 	 * otherwise never stopped at shutdown and keep deserialising incoming
@@ -136,14 +165,25 @@ void RsServer::rsGlobalShutDown()
 	 * allocator and its mutex are destroyed during process teardown.
 	 * Must run after fullstop() so the RsServer tick thread is no longer
 	 * iterating the peer list concurrently. */
-	if(pqih) pqih->fullstopAllThreads();
+	if(pqih) { ShutdownStep s("stop peer streamer threads"); pqih->fullstopAllThreads(); }
 
-	AuthPGP::exit();
+	/* Stop the file transfer / file sharing threads (data multiplexer,
+	 * controller, extra list, directory watcher, hash cache). Everything they work
+	 * on reaches them through the RsServer tick thread (turtle, ftServer::tick)
+	 * or the per-peer streamer threads (p3Service::recv() runs on the streamer
+	 * thread), both stopped above, so by now they are idle and stop within a
+	 * second. */
+	if(mFtServer) { ShutdownStep s("stop file transfer threads"); mFtServer->StopThreads(); }
+
+	{ ShutdownStep s("AuthPGP exit"); AuthPGP::exit(); }
 
     // close all databases
 
     for(auto db:mRegisteredDataServices)
+    {
+        ShutdownStep s("close database " + db->dbName());
         delete db;
+    }
 
 	mShutdownCallback(0);
 }

@@ -566,6 +566,12 @@ void p3discovery2::sendPGPList(const RsPeerId &toId)
             }
 	}
 
+	// Always list our own profile (we only get here with discovery on): a
+	// friend relays our other nodes to us only if our list names our own
+	// profile, and the loop above names it only while another of our nodes is
+	// connected to us, which a lone or newly created node never is.
+	pkt->pgpIdSet.ids.insert(AuthPGP::getPgpOwnId());
+
 	pkt->PeerId(toId);
 
 #ifdef P3DISC_DEBUG
@@ -966,8 +972,12 @@ void p3discovery2::processContactInfo(const RsPeerId &fromId, const RsDiscContac
 
     // The peer the discovery info is about is a friend. We gather the nodes for that profile into the local structure and notify p3peerMgr.
 
-    if(!rsPeers->isGPGAccepted(item->pgpId))  // this is an additional check, because the friendship previously depends on the local cache. We need
-		return ;                              // fresh information here.
+    // Our own profile is never flagged as accepted (AuthPGP::loadList() skips
+    // it), so test it explicitly, like AuthSSL and p3PeerMgr::addFriend() do:
+    // otherwise every node of our own profile announced by a friend is dropped.
+    if( item->pgpId != AuthPGP::getPgpOwnId() &&
+        !rsPeers->isGPGAccepted(item->pgpId) ) // this is an additional check, because the friendship previously depends on the local cache. We need
+		return ;                               // fresh information here.
 
 	bool should_notify_discovery = false;
 
@@ -986,8 +996,12 @@ void p3discovery2::processContactInfo(const RsPeerId &fromId, const RsDiscContac
 #ifdef P3DISC_DEBUG
 		std::cerr << "--> Adding to friends list " << item->sslId << " - " << item->pgpId << std::endl;
 #endif
-		// We pass RS_NODE_PERM_ALL because the PGP id is already a friend, so we should keep the existing
-		// permission flags. Therefore the mask needs to be 0xffff.
+		// Keep the profile's existing permission flags. Pass them explicitly rather than the
+		// RS_NODE_PERM_ALL mask: addFriend() only reduces the mask when the profile already has a
+		// permission entry. Our own profile has none on a node that never added another node of ours
+		// itself, so the mask would be stored verbatim and give our other nodes DIRECT_DL | ALLOW_PUSH |
+		// REQUIRE_WL, the last one refusing them outside the IP whitelist. servicePermissionFlags()
+		// returns the existing entry, or RS_NODE_PERM_DEFAULT when there is none.
 
 		// set last seen to RS_PEER_OFFLINE_NO_DISC minus 1 so that it won't be shared with other friends
 		// until a first connection is established
@@ -999,7 +1013,7 @@ void p3discovery2::processContactInfo(const RsPeerId &fromId, const RsDiscContac
 		mPeerMgr->addFriend( item->sslId, item->pgpId, item->netMode,
 		                     RS_VS_DISC_OFF, RS_VS_DHT_FULL,
 		                     time(NULL) - RS_PEER_OFFLINE_NO_DISC - 1,
-		                     RS_NODE_PERM_ALL );
+		                     mPeerMgr->servicePermissionFlags(item->pgpId) );
 
 		updatePeerAddresses(item);
 	}

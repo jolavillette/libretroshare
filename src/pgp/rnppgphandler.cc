@@ -925,7 +925,9 @@ bool RNPPGPHandler::getGPGDetailsFromBinaryBlock(const unsigned char *mem_block,
             rnp_identifier_iterator_destroy(it);
         }
 
+#ifdef DEBUG_PGPHANDLER
         RsDbg() << "Binary block contains key ID " << key_id.toStdString() ;
+#endif
 
         RNP_KEY_HANDLE_STRUCT(key_handle);
         if(rnp_locate_key(tmp_ffi,RNP_IDENTIFIER_KEYID,key_id.toStdString().c_str(),&key_handle) != RNP_SUCCESS)
@@ -1239,7 +1241,15 @@ bool RNPPGPHandler::LoadCertificate(const unsigned char *data,uint32_t data_len,
 
     initCertificateInfo(key_handle) ;
 
-    _pubring_changed = true;
+    // What the import did to the keyring decides what is saved: a new key is added at the end of the
+    // keyring file, a key that was already there and did not change needs no save at all, and anything
+    // else (a key updated with new signatures, a status we do not know) saves the whole keyring.
+
+    if(resultstr.find("\"public\":\"new\"") != std::string::npos)
+        _new_public_keys.insert(id);
+    else if(resultstr.find("\"public\":\"unchanged\"") == std::string::npos)
+        _pubring_changed = true;
+
     return true;
 }
 
@@ -1761,6 +1771,94 @@ bool RNPPGPHandler::locked_writeKeyringToDisk(bool secret, const std::string& ke
         RsErr() << "failed to save keyring" ;
         return false;
     }
+    if(!secret)
+        _new_public_keys.clear();	// the file has every key now
+    return true;
+}
+
+bool RNPPGPHandler::locked_serialiseKeyring(bool secret, std::string& data)
+{
+    RNP_OUTPUT_STRUCT(keyring_output);
+
+    data.clear();
+
+    if (rnp_output_to_memory(&keyring_output, 0) != RNP_SUCCESS)
+    {
+        RsErr() << "failed to initialize keyring serialising structure" ;
+        return false;
+    }
+    if (rnp_save_keys(mRnpFfi, "GPG", keyring_output, secret?RNP_LOAD_SAVE_SECRET_KEYS:RNP_LOAD_SAVE_PUBLIC_KEYS) != RNP_SUCCESS)
+    {
+        RsErr() << "failed to serialise keyring" ;
+        return false;
+    }
+
+    uint8_t *buf = nullptr;
+    size_t size = 0;
+
+    // The buffer belongs to keyring_output, which is released when this function returns: copy it.
+    if (rnp_output_memory_get_buf(keyring_output, &buf, &size, false) != RNP_SUCCESS || buf == nullptr || size == 0)
+    {
+        RsErr() << "failed to get the serialised keyring" ;
+        return false;
+    }
+    data.assign((const char*)buf, size);
+
+    if(!secret)
+        _new_public_keys.clear();	// the caller writes every key
+    return true;
+}
+
+bool RNPPGPHandler::locked_serialiseNewKeys(std::string& data)
+{
+    data.clear();
+
+    if(_new_public_keys.empty())
+        return false;
+
+    std::set<RsPgpId> keys;
+    keys.swap(_new_public_keys);
+
+    // On any failure the whole keyring is saved at the next sync instead: no key is lost.
+
+    RNP_OUTPUT_STRUCT(keys_output);
+
+    if (rnp_output_to_memory(&keys_output, 0) != RNP_SUCCESS)
+    {
+        RsErr() << "failed to initialize new keys serialising structure" ;
+        _pubring_changed = true;
+        return false;
+    }
+
+    for(const RsPgpId& id : keys)
+    {
+        RNP_KEY_HANDLE_STRUCT(key_handle);
+
+        if(rnp_locate_key(mRnpFfi,"keyid",id.toStdString().c_str(),&key_handle) != RNP_SUCCESS || key_handle == nullptr)
+            continue;	// removed from the keyring since it was imported
+
+        // Not armoured: the same packets as rnp_save_keys() writes for this key.
+        if(rnp_key_export(key_handle, keys_output, RNP_KEY_EXPORT_PUBLIC | RNP_KEY_EXPORT_SUBKEYS) != RNP_SUCCESS)
+        {
+            RsErr() << "failed to serialise new key " << id ;
+            _pubring_changed = true;
+            return false;
+        }
+    }
+
+    uint8_t *buf = nullptr;
+    size_t size = 0;
+
+    if (rnp_output_memory_get_buf(keys_output, &buf, &size, false) != RNP_SUCCESS)
+    {
+        RsErr() << "failed to get the serialised new keys" ;
+        _pubring_changed = true;
+        return false;
+    }
+    if(buf == nullptr || size == 0)
+        return false;	// every new key was removed meanwhile
+
+    data.assign((const char*)buf, size);
     return true;
 }
 

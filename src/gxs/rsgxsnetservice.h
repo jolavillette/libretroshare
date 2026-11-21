@@ -407,6 +407,10 @@ private:
      */
     bool locked_checkTransacTimedOut(NxsTransaction* tr);
 
+    // Friends connected for this service, as last asked to the net manager: used to drop the transactions of a peer that went away.
+    std::set<RsPeerId> mOnlineFriendsCache;
+    rstime_t mOnlineFriendsCacheTS = 0;
+
     /** E: Transaction processing **/
 
     /** S: item handlers **/
@@ -648,6 +652,8 @@ private:
     std::map<RsGxsGroupId,std::set<RsPeerId> > mPendingPublishKeyRecipients ;
 	std::map<RsPeerId, std::set<RsGxsGroupId> > mExplicitRequest;
     std::map<RsPeerId, std::set<RsGxsGroupId> > mPartialMsgUpdates ;
+    std::map<RsGxsGroupId, rstime_t> mUnloadedCircleMsgSyncTS ; // last msg list request for a circle-restricted group whose circle is not loaded
+    std::set<RsGxsGroupId> mUnreadableCircleGroupsLogged ;       // groups already reported as unreadable, one line per start
 
     // nxs sync optimisation
     // can pull dynamically the latest timestamp for each message

@@ -47,7 +47,7 @@
 const double   FT_TM_MAX_PEER_RATE 		       = 100 * 1024 * 1024; /* 100MB/s */
 const uint32_t FT_TM_MAX_RESETS  		       = 5;
 const uint32_t FT_TM_MINIMUM_CHUNK 		       = 1024;              /* ie 1Kb / sec */
-const uint32_t FT_TM_DEFAULT_TRANSFER_RATE     = 20*1024;           /* ie 20 Kb/sec */
+const uint32_t FT_TM_DEFAULT_TRANSFER_RATE     = 128*1024;          /* rate a new source starts at: 128 KiB/s, then the ramp adapts it */
 const uint32_t FT_TM_RESTART_DOWNLOAD 	       = 20;                /* 20 seconds */
 const uint32_t FT_TM_DOWNLOAD_TIMEOUT 	       = 10;                /* 10 seconds */
 

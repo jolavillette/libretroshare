@@ -256,6 +256,7 @@
 #include "util/rsdir.h"
 #include "util/rstime.h"
 #include "util/rsmemory.h"
+#include "util/rsstring.h"
 #include "util/stacktrace.h"
 #include "util/rsdebug.h"
 #include "util/cxx17retrocompat.h"
@@ -302,6 +303,7 @@ static const uint32_t TRANSAC_TIMEOUT                         =         2000; //
 #ifdef TO_REMOVE
 static const uint32_t SECURITY_DELAY_TO_FORCE_CLIENT_REUPDATE =         3600; // force re-update if there happens to be a large delay between our server side TS and the client side TS of friends
 #endif
+static const uint32_t UNLOADED_CIRCLE_MSG_SYNC_RETRY          =          600; // seconds between msg list requests for a group whose circle we have not loaded yet
 static const uint32_t REJECTED_MESSAGE_RETRY_DELAY            =      24*3600; // re-try rejected messages every 24hrs. Most of the time this is because the peer's reputation has changed.
 static const uint32_t GROUP_STATS_UPDATE_DELAY                =          240; // update unsubscribed group statistics every 3 mins
 static const uint32_t GROUP_STATS_UPDATE_NB_PEERS             =            2; // number of peers to which the group stats are asked
@@ -434,49 +436,11 @@ RsGxsNetService::~RsGxsNetService()
 
 int RsGxsNetService::tick()
 {
-	// always check for new items arriving
-	// from peers
-	recvNxsItemQueue();
+	// Nothing is done here: this tick runs on the thread shared by every service and every peer
+	// link, and all the work of this service reads group metas from the database while holding
+	// mNxsMutex. When the database is busy (cold start, a large read on another thread) that
+	// wait lasted seconds, during which no peer and no service was served. See threadTick().
 
-    bool should_notify = false;
-
-    {
-	    RS_STACK_MUTEX(mNxsMutex) ;
-
-	    should_notify = should_notify || !mNewGroupsToNotify.empty() ;
-	    should_notify = should_notify || !mNewMessagesToNotify.empty() ;
-	    should_notify = should_notify || !mNewPublishKeysToNotify.empty() ;
-	    should_notify = should_notify || !mNewStatsToNotify.empty() ;
-        should_notify = should_notify || !mNewGrpSyncParamsToNotify.empty() ;
-    }
-
-    if(should_notify)
-        processObserverNotifications() ;
-
-    rstime_t now = time(NULL);
-    rstime_t elapsed = mSYNC_PERIOD + mSyncTs;
-
-    if((elapsed) < now)
-    {
-		checkUpdatesFromPeers();
-        syncGrpStatistics();
-		checkDistantSyncState();
-
-    	mSyncTs = now;
-    }
-
-    if(now > 10 + mLastKeyPublishTs)
-    {
-        sharePublishKeysPending() ;
-
-        mLastKeyPublishTs = now ;
-    }
-
-    if(now > 3600 + mLastCleanRejectedMessages)
-    {
-        mLastCleanRejectedMessages = now ;
-        cleanRejectedMessages() ;
-    }
     return 1;
 }
 
@@ -1865,6 +1829,7 @@ bool RsGxsNetService::handleTransaction(RsNxsItem* item)
 
             tr = transMap[transN];
             tr->mItems.push_back(item);
+            tr->mTimeOut = time(NULL) + mTransactionTimeOut;	// the time-out counts the time without activity
 
             return true;
         }
@@ -1947,6 +1912,7 @@ bool RsGxsNetService::locked_processTransac(RsNxsTransacItem *item)
         tr = new NxsTransaction();
         transMap[transN] = tr;
         tr->mTransaction = item;
+        tr->mPeerId = peer;
         tr->mTimeOut = item->timestamp + mTransactionTimeOut;
 #ifdef NXS_NET_DEBUG_1
     GXSNETDEBUG_P_(peer) << "  Setting timeout of " << mTransactionTimeOut << " secs, which is " << tr->mTimeOut - time(NULL) << " secs from now." << std::endl;
@@ -1979,6 +1945,7 @@ bool RsGxsNetService::locked_processTransac(RsNxsTransacItem *item)
 		TransactionIdMap& transMap = mTransactions[mOwnId];
 		NxsTransaction* tr = transMap[transN];
 		tr->mFlag = NxsTransaction::FLAG_STATE_SENDING;
+		tr->mTimeOut = time(NULL) + mTransactionTimeOut;	// the time-out counts the time without activity
         delete item;
         return true;
 		// end transac item for outgoing transaction
@@ -2031,6 +1998,10 @@ void RsGxsNetService::threadTick()
         if(mUpdateCounter % 20 == 0)	// dump the full shit every 20 secs
             debugDump() ;
 
+        // items from peers: sync requests, lists, transactions. Their handlers hit the database;
+        // keep them off the shared service tick thread (see tick()).
+        recvNxsItemQueue();
+
         // process active transactions
         processTransactions();
 
@@ -2041,6 +2012,49 @@ void RsGxsNetService::threadTick()
         runVetting();
 
         processExplicitGroupRequests();
+
+        // notifications to the observer and periodic sync requests: moved here from tick(), which
+        // must not wait for the database nor for mNxsMutex.
+
+        bool should_notify = false;
+
+        {
+            RS_STACK_MUTEX(mNxsMutex) ;
+
+            should_notify = should_notify || !mNewGroupsToNotify.empty() ;
+            should_notify = should_notify || !mNewMessagesToNotify.empty() ;
+            should_notify = should_notify || !mNewPublishKeysToNotify.empty() ;
+            should_notify = should_notify || !mNewStatsToNotify.empty() ;
+            should_notify = should_notify || !mNewGrpSyncParamsToNotify.empty() ;
+        }
+
+        if(should_notify)
+            processObserverNotifications() ;
+
+        rstime_t now = time(NULL);
+        rstime_t elapsed = mSYNC_PERIOD + mSyncTs;
+
+        if((elapsed) < now)
+        {
+            checkUpdatesFromPeers();
+            syncGrpStatistics();
+            checkDistantSyncState();
+
+            mSyncTs = now;
+        }
+
+        if(now > 10 + mLastKeyPublishTs)
+        {
+            sharePublishKeysPending() ;
+
+            mLastKeyPublishTs = now ;
+        }
+
+        if(now > 3600 + mLastCleanRejectedMessages)
+        {
+            mLastCleanRejectedMessages = now ;
+            cleanRejectedMessages() ;
+        }
 }
 
 void RsGxsNetService::debugDump()
@@ -2278,11 +2292,57 @@ void RsGxsNetService::updateServerSyncTS()
 
 bool RsGxsNetService::locked_checkTransacTimedOut(NxsTransaction* tr)
 {
-   return tr->mTimeOut < ((uint32_t) time(NULL));
+    rstime_t now = time(NULL);
+
+    if(tr->mTimeOut < (uint32_t) now)
+        return true;
+
+    // A transaction with a peer that went away (friend disconnected, tunnel closed) cannot finish: what was queued
+    // for that peer is lost, and if it comes back it starts again from scratch. Without this test such a
+    // transaction stays here until the time-out, with its items in memory.
+
+    if(tr->mPeerId.isNull())
+        return false;
+
+    if(mOnlineFriendsCacheTS + 5 < now)
+    {
+        mOnlineFriendsCache.clear();
+        mNetMgr->getOnlineList(mServiceInfo.mServiceType, mOnlineFriendsCache);
+        mOnlineFriendsCacheTS = now;
+    }
+
+    if(mOnlineFriendsCache.find(tr->mPeerId) != mOnlineFriendsCache.end())
+        return false;
+
+    // Not in the list: ask again before concluding, unless the list is from this very second. A friend that has
+    // just connected starts its transactions at once, and must not be taken for a peer that went away.
+
+    if(mOnlineFriendsCacheTS < now)
+    {
+        mOnlineFriendsCache.clear();
+        mNetMgr->getOnlineList(mServiceInfo.mServiceType, mOnlineFriendsCache);
+        mOnlineFriendsCacheTS = now;
+
+        if(mOnlineFriendsCache.find(tr->mPeerId) != mOnlineFriendsCache.end())
+            return false;
+    }
+
+    if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != NULL && mGxsNetTunnel->isVirtualPeerOnline(RsGxsNetTunnelVirtualPeerId(tr->mPeerId)))
+        return false;
+
+    return true;
 }
 
 void RsGxsNetService::processTransactions()
 {
+    // Completed incoming transactions collected below are decrypted after
+    // mNxsMutex is released: per-item circle decryption of a large sync
+    // transaction costs seconds of RSA, and holding the mutex for that long
+    // blocks every other user of the service (tick, item reception, API).
+    std::list<NxsTransaction*> completed_incoming;
+
+    { // scope for mNxsMutex
+
     RS_STACK_MUTEX(mNxsMutex) ;
 
     for(TransactionsPeerMap::iterator mit = mTransactions.begin();mit != mTransactions.end(); ++mit)
@@ -2464,31 +2524,16 @@ void RsGxsNetService::processTransactions()
 
                     // move to completed transactions
 
-                    // Try to decrypt the items that need to be decrypted. This function returns true if the transaction is not encrypted.
+                    // The transaction leaves the active map now; its items are
+                    // decrypted once mNxsMutex is released, and it is queued
+                    // into mComplTransactions afterwards.
 
-                    if(processTransactionForDecryption(tr))
-		    {
-#ifdef NXS_NET_DEBUG_7
-			    GXSNETDEBUG_P_(tr->mTransaction->PeerId()) << "   successfully decrypted/processed transaction " << transN << ". Adding to completed list." << std::endl;
-#endif
-			    mComplTransactions.push_back(tr);
-
-			    // transaction processing done
-			    // for this id, add to removal list
-			    toRemove.push_back(mmit->first);
+                    completed_incoming.push_back(tr);
+                    toRemove.push_back(mmit->first);
 #ifdef NXS_NET_DEBUG_1
-			    int total_transaction_time = (int)time(NULL) - (tr->mTimeOut - mTransactionTimeOut) ;
-			    GXSNETDEBUG_P_(mit->first) << "    incoming completed " << tr->mTransaction->nItems << " items transaction in " << total_transaction_time << " seconds." << std::endl;
+                    int total_transaction_time = (int)time(NULL) - (tr->mTimeOut - mTransactionTimeOut) ;
+                    GXSNETDEBUG_P_(mit->first) << "    incoming completed " << tr->mTransaction->nItems << " items transaction in " << total_transaction_time << " seconds." << std::endl;
 #endif
-		    }
-		    else
-		    {
-#ifdef NXS_NET_DEBUG_7
-			    GXSNETDEBUG_P_(tr->mTransaction->PeerId()) << "   no decryption occurred because of unloaded keys. Will retry later. TransN=" << transN << std::endl;
-#endif
-		    }
-
-
                 }
                 else if(flag & NxsTransaction::FLAG_STATE_STARTING)
                 {
@@ -2529,6 +2574,25 @@ void RsGxsNetService::processTransactions()
         }
 
     }
+
+    } // end of scope for mNxsMutex
+
+    if(completed_incoming.empty())
+        return;
+
+    // Decrypt the completed incoming transactions outside the mutex. They were
+    // removed from mTransactions above, so this thread is their only owner.
+    // processTransactionForDecryption() replaces the encrypted items in place;
+    // items whose keys are not available simply stay encrypted and are dropped
+    // at validation, as before.
+
+    for(auto tr : completed_incoming)
+        processTransactionForDecryption(tr);
+
+    RS_STACK_MUTEX(mNxsMutex) ;
+
+    for(auto tr : completed_incoming)
+        mComplTransactions.push_back(tr);
 }
 
 bool RsGxsNetService::getGroupNetworkStats(const RsGxsGroupId& gid,RsGroupNetworkStats& stats)
@@ -2878,6 +2942,7 @@ void RsGxsNetService::locked_pushMsgTransactionFromList(std::list<RsNxsItem*>& r
     // its an outgoing transaction
     newTrans->mTransaction = new RsNxsTransacItem(*transac);
     newTrans->mTransaction->PeerId(mOwnId);
+    newTrans->mPeerId = peerId;
 
     if (locked_addTransaction(newTrans))
     	generic_sendItem(transac);
@@ -3172,6 +3237,7 @@ void RsGxsNetService::locked_pushGrpTransactionFromList( std::list<RsNxsItem*>& 
     newTrans->mTimeOut = time(NULL) + mTransactionTimeOut;
 	newTrans->mTransaction = new RsNxsTransacItem(*transac);
 	newTrans->mTransaction->PeerId(mOwnId);
+	newTrans->mPeerId = peerId;
 
     if (locked_addTransaction(newTrans))
 	    generic_sendItem(transac);
@@ -3404,6 +3470,7 @@ void RsGxsNetService::locked_genSendGrpsTransaction(NxsTransaction* tr)
 
 	newTr->mTransaction = new RsNxsTransacItem(*ntr);
 	newTr->mTransaction->PeerId(mOwnId);
+	newTr->mPeerId = tr->mTransaction->PeerId();
 	newTr->mTimeOut = time(NULL) + mTransactionTimeOut;
 
 	ntr->PeerId(tr->mTransaction->PeerId());
@@ -3699,6 +3766,7 @@ void RsGxsNetService::locked_genSendMsgsTransaction(NxsTransaction* tr)
 
     newTr->mTransaction = new RsNxsTransacItem(*ntr);
     newTr->mTransaction->PeerId(mOwnId);
+    newTr->mPeerId = peerId;
     newTr->mTimeOut = time(NULL) + mTransactionTimeOut;
 
 #ifdef NXS_NET_DEBUG_5
@@ -4020,6 +4088,7 @@ void RsGxsNetService::locked_pushGrpRespFromList(std::list<RsNxsItem*>& respList
 	// also make a copy for the resident transaction
 	tr->mTransaction = new RsNxsTransacItem(*trItem);
 	tr->mTransaction->PeerId(mOwnId);
+	tr->mPeerId = peer;
     tr->mTimeOut = time(NULL) + mTransactionTimeOut;
 	// signal peer to prepare for transaction
 #ifdef NXS_NET_DEBUG_5
@@ -4278,6 +4347,47 @@ bool RsGxsNetService::checkCanRecvMsgFromPeer(const RsPeerId& sslId, const RsGxs
 #ifdef NXS_NET_DEBUG_4
         GXSNETDEBUG_PG(sslId,grpMeta.mGroupId) << "   Circle type: EXTERNAL => returning true. Msgs will be encrypted." << std::endl;
 #endif
+        // The peer encrypts every item of its message list for the circle. Asking for it when none
+        // of our own identities is in the circle only buys, at every sync round, a transaction that
+        // is brute-forced with every own key and never read; and since the list is never read, the
+        // "up to date" stamp is never set and the round repeats forever.
+        if(mCircles->isLoaded(grpMeta.mCircleId))
+        {
+            std::list<RsGxsId> own_ids;
+            mGixs->getOwnIds(own_ids);
+
+            bool can_read = false;
+            for(const auto& id : own_ids)
+                if(mCircles->isRecipient(grpMeta.mCircleId, grpMeta.mGroupId, id))
+                {
+                    can_read = true;
+                    break;
+                }
+
+            if(!can_read)
+            {
+                if(mUnreadableCircleGroupsLogged.insert(grpMeta.mGroupId).second)
+                    RsInfo() << "Service 0x" << std::hex << mServType << std::dec << ": not asking peers for the posts of group "
+                             << grpMeta.mGroupId << " (\"" << grpMeta.mGroupName << "\"): restricted to circle " << grpMeta.mCircleId
+                             << " and none of our identities is a member. Unsubscribe it, or join the circle.";
+                return false;
+            }
+        }
+        else
+        {
+            // Membership unknown. A member whose circle has not synced yet must still get the posts,
+            // so keep asking, but at the pace circles sync rather than at every round.
+            mCircles->loadCircle(grpMeta.mCircleId);
+
+            rstime_t now = time(nullptr);
+            rstime_t& last = mUnloadedCircleMsgSyncTS[grpMeta.mGroupId];
+
+            if(now < last + (rstime_t)UNLOADED_CIRCLE_MSG_SYNC_RETRY)
+                return false;
+
+            last = now;
+        }
+
         should_encrypt_id = grpMeta.mCircleId ;
         return true ;
     }
@@ -4418,6 +4528,21 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 	    return;
     }
 
+    // A peer asks again at every sync period as long as it has not received our list in full. When the link is
+    // slow, the previous list for this group is still on its way: sending the whole list again only stacks
+    // copies of it in the same queue, and delays everything else. It will ask again, and be answered once the
+    // list on its way is finished (or dropped).
+
+    {
+        auto own_it = mTransactions.find(mOwnId);
+
+        if(own_it != mTransactions.end())
+            for(const auto& t:own_it->second)
+                if(t.second->mPeerId == peer && t.second->mGrpId == item->grpId
+                        && (t.second->mTransaction->transactFlag & RsNxsTransacItem::FLAG_TYPE_MSG_LIST_RESP))
+                    return;
+    }
+
     RsGxsGrpMetaTemporaryMap grpMetas;
     grpMetas[item->grpId] = NULL;
 
@@ -4487,33 +4612,13 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 
     if(canSendMsgIds(msgMetas, *grpMeta, peer, should_encrypt_to_this_circle_id))
     {
+	    std::map<RsGxsId,bool> author_can_be_forwarded;
+
 	    for(auto vit = msgMetas.begin();vit != msgMetas.end(); ++vit)
 		{
             const auto& m = *vit;
 
-            // Check reputation
-
-            if(!m->mAuthorId.isNull())
-			{
-				RsIdentityDetails details ;
-
-				if(!rsIdentity->getIdDetails(m->mAuthorId,details))
-				{
-#ifdef NXS_NET_DEBUG_0
-					GXSNETDEBUG_PG(item->PeerId(),item->grpId) << " not sending grp message ID " << (*vit)->mMsgId << ", because the identity of the author (" << m->mAuthorId << ") is not accessible (unknown/not cached)" << std::endl;
-#endif
-					continue ;
-				}
-
-				if(details.mReputation.mOverallReputationLevel < minReputationForForwardingMessages(grpMeta->mSignFlags, details.mFlags))
-				{
-#ifdef NXS_NET_DEBUG_0
-					GXSNETDEBUG_PG(item->PeerId(),item->grpId) << " not sending item ID " << (*vit)->mMsgId << ", because the author is flags " << std::hex << details.mFlags << std::dec << " and reputation level " << (int) details.mReputation.mOverallReputationLevel << std::endl;
-#endif
-					continue ;
-				}
-			}
-			// Check publish TS
+			// Check publish TS. This comes first: it costs nothing, and it spares the look-up of the author of every message that is too old to be sent.
 #ifndef RS_GXS_SEND_ALL
 			if(item->createdSinceTS > (*vit)->mPublishTs || ((max_send_delay > 0) && (*vit)->mPublishTs + max_send_delay < now))
 #else
@@ -4526,6 +4631,30 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 				continue ;
 			}
 
+            // Check reputation. The author is looked up once per request, not once per message: a forum has far fewer authors than messages,
+            // and this runs under mNxsMutex for every friend that asks for the list of a group that has something new.
+
+            if(!m->mAuthorId.isNull())
+			{
+				auto ait = author_can_be_forwarded.find(m->mAuthorId);
+
+				if(ait == author_can_be_forwarded.end())
+				{
+					RsIdentityDetails details ;
+					bool can_forward = rsIdentity->getIdDetails(m->mAuthorId,details)
+					                && !(details.mReputation.mOverallReputationLevel < minReputationForForwardingMessages(grpMeta->mSignFlags, details.mFlags));
+
+					ait = author_can_be_forwarded.insert(std::make_pair(m->mAuthorId,can_forward)).first;
+				}
+
+				if(!ait->second)
+				{
+#ifdef NXS_NET_DEBUG_0
+					GXSNETDEBUG_PG(item->PeerId(),item->grpId) << " not sending grp message ID " << (*vit)->mMsgId << ", because the identity of the author (" << (*vit)->mAuthorId << ") is not accessible, or its reputation is too low." << std::endl;
+#endif
+					continue ;
+				}
+			}
 			RsNxsSyncMsgItem* mItem = new RsNxsSyncMsgItem(mServType);
 			mItem->flag = RsNxsSyncGrpItem::FLAG_RESPONSE;
 			mItem->grpId = m->mGroupId;
@@ -4615,6 +4744,8 @@ void RsGxsNetService::locked_pushMsgRespFromList(std::list<RsNxsItem*>& itemL, c
 	// also make a copy for the resident transaction
 	tr->mTransaction = new RsNxsTransacItem(*trItem);
 	tr->mTransaction->PeerId(mOwnId);
+	tr->mPeerId = sslId;
+	tr->mGrpId = grp_id;
     tr->mTimeOut = time(NULL) + mTransactionTimeOut;
 
 	// This time stamp is not supposed to be used on the other side. We just set it to avoid sending an uninitialiszed value.
@@ -5322,9 +5453,7 @@ TurtleRequestId RsGxsNetService::turtleSearchRequest(const std::string& match_st
 static bool termSearch(const std::string& src, const std::string& substring)
 {
 	/* always ignore case */
-	return src.end() != std::search(
-	            src.begin(), src.end(), substring.begin(), substring.end(),
-	            RsRegularExpression::CompareCharIC() );
+	return utf8ContainsIgnoreCase(src, substring);
 }
 
 

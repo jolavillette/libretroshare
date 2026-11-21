@@ -1350,7 +1350,7 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 
 		RsInfo() << __PRETTY_FUNCTION__ << " " << errMsg << std::endl;
 
-		if(rsEvents)
+		if(rsEvents && !isNotifyDenied(pgpId))
 		{
 			ev->mSslCn = sslCn;
 			ev->mSslId = sslId;
@@ -1430,7 +1430,7 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 
 		RsInfo() << __PRETTY_FUNCTION__ << " " << errMsg << std::endl;
 
-		if(rsEvents)
+		if(rsEvents && !isNotifyDenied(pgpId))
 		{
 			ev->mSslId = sslId;
 			ev->mSslCn = sslCn;
@@ -1471,7 +1471,7 @@ int AuthSSLimpl::VerifyX509Callback(int /*preverify_ok*/, X509_STORE_CTX* ctx)
 
 		Dbg1() << __PRETTY_FUNCTION__ << " " << errMsg << std::endl;
 
-		if(rsEvents)
+		if(rsEvents && !isNotifyDenied(pgpId))
 		{
 			ev->mSslId = sslId;
 			ev->mSslCn = sslCn;
@@ -1831,8 +1831,7 @@ bool AuthSSLimpl::LocalStoreCert(X509* x509)
 #endif
 	mCerts[peerId] = X509_dup(x509);
 
-	/* flag for saving config */
-	IndicateConfigChanged();
+	// No config change to flag: authssl.cfg only holds the deny list.
 	return true ;
 }
 
@@ -1861,22 +1860,20 @@ bool AuthSSLimpl::saveList(bool& cleanup, std::list<RsItem*>& lst)
 
         cleanup = true ;
 
-        // Now save config for network digging strategies
-        RsConfigKeyValueSet *vitem = new RsConfigKeyValueSet ;
-		std::map<RsPeerId, X509*>::iterator mapIt;
-        for (mapIt = mCerts.begin(); mapIt != mCerts.end(); ++mapIt) {
-            if (mapIt->first == mOwnId) {
-                continue;
-            }
+        // This config (authssl.cfg) only holds the deny list. The certificates
+        // in mCerts are not saved: this config was not registered before the
+        // deny list, and mCerts is refilled at each successful handshake.
+
+        // The item is written even when the list is empty: an empty config
+        // cannot be saved, and the removal of the last entry would be lost.
+        RsConfigKeyValueSet* denyItem = new RsConfigKeyValueSet;
+        for (const auto& pair : mDenyList) {
             RsTlvKeyValue kv;
-            kv.key = mapIt->first.toStdString();
-            #ifdef AUTHSSL_DEBUG
-            std::cerr << "AuthSSLimpl::saveList() called (mapIt->first) : " << (mapIt->first) << std::endl ;
-            #endif
-			kv.value = saveX509ToPEM(mapIt->second);
-            vitem->tlvkvs.pairs.push_back(kv) ;
+            kv.key = pair.first.toStdString();
+            kv.value = "DENY:" + pair.second;
+            denyItem->tlvkvs.pairs.push_back(kv);
         }
-        lst.push_back(vitem);
+        lst.push_back(denyItem);
 
         return true ;
 }
@@ -1903,17 +1900,19 @@ bool AuthSSLimpl::loadList(std::list<RsItem*>& load)
                         std::list<RsTlvKeyValue>::iterator kit;
                         for(kit = vitem->tlvkvs.pairs.begin(); kit != vitem->tlvkvs.pairs.end(); ++kit)
                         {
-                                if (RsPeerId(kit->key) == mOwnId) {
-                                        continue;
-                                }
+                                // Only deny entries are read, keyed by a PGP id (16 hex chars).
+                                // Anything else is skipped: this config never held anything
+                                // else in a release.
+                                if (kit->value.compare(0, 5, "DENY:") != 0
+                                        || kit->key.length() != 2*RsPgpId::SIZE_IN_BYTES)
+                                    continue;
 
-                                X509 *peer = loadX509FromPEM(kit->value);
-                                /* authenticate it */
-                                uint32_t diagnos ;
-                                if (peer && AuthX509WithGPG(peer,false,diagnos))
-                                        LocalStoreCert(peer);
+                                const RsPgpId pgpId(kit->key);
+                                if (pgpId.isNull())
+                                    continue;
 
-                                X509_free(peer);
+                                RS_STACK_MUTEX(sslMtx);
+                                mDenyList[pgpId] = kit->value.substr(5);
                         }
                 }
                 delete (*it);
@@ -1929,4 +1928,36 @@ const EVP_PKEY*RsX509Cert::getPubKey(const X509& x509)
 #else
 	return X509_get0_pubkey(&x509);
 #endif
+}
+
+void AuthSSLimpl::addNotifyDeny(const RsPgpId& pgpId, const std::string& name)
+{
+	// A null id would silence every notification that carries no PGP id.
+	if(pgpId.isNull())
+		return;
+
+	RsStackMutex stack(sslMtx);
+	mDenyList[pgpId] = name;
+
+	// Saved at once, like the friend list: the entry must survive a crash.
+	IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_NOW);
+}
+
+void AuthSSLimpl::removeNotifyDeny(const RsPgpId& pgpId)
+{
+	RsStackMutex stack(sslMtx);
+	if(mDenyList.erase(pgpId) > 0)
+		IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_NOW);
+}
+
+bool AuthSSLimpl::isNotifyDenied(const RsPgpId& pgpId)
+{
+	RsStackMutex stack(sslMtx);
+	return mDenyList.find(pgpId) != mDenyList.end();
+}
+
+void AuthSSLimpl::getNotifyDenyList(std::map<RsPgpId, std::string>& ids)
+{
+	RsStackMutex stack(sslMtx);
+	ids = mDenyList;
 }

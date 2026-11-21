@@ -86,6 +86,7 @@ if(RS_BITDHT)
 		dht/connectstatebox.cc
 		dht/p3bitdht.cc
 		dht/p3bitdht_interface.cc
+		dht/p3bitdht_size.cc
 		dht/p3bitdht_peernet.cc
 		dht/p3bitdht_peers.cc
 		dht/p3bitdht_relay.cc )
@@ -93,6 +94,7 @@ if(RS_BITDHT)
 	list(
 		APPEND RS_IMPLEMENTATION_HEADERS
 		dht/connectstatebox.h
+		dht/p3bitdht_size.h
 		dht/p3bitdht.h
 		dht/stunaddrassist.h )
 endif(RS_BITDHT)
@@ -293,6 +295,7 @@ list(
 	pqi/p3linkmgr.cc
 	pqi/pqihandler.cc
 	pqi/pqistreamer.cc
+	pqi/pqiechoprobe.cc
 	pqi/p3netmgr.cc
 	pqi/p3peermgr.cc
 	pqi/pqinetwork.cc
@@ -338,6 +341,7 @@ list(
 	pqi/pqissl.h
 	pqi/pqistore.h
 	pqi/pqistreamer.h
+	pqi/pqiechoprobe.h
 	pqi/pqithreadstreamer.h
 	pqi/sslfns.h )
 if(RS_USE_I2P_SAM3)
@@ -631,12 +635,14 @@ endif(RS_BITDHT_STUNNER)
 list(
 	APPEND RS_SOURCES
 	turtle/rsturtleitem.cc
+	turtle/turtlejournal.cc
 	turtle/p3turtle.cc )
 
 list(
 	APPEND RS_IMPLEMENTATION_HEADERS
 	turtle/p3turtle.h
 	turtle/rsturtleitem.h
+	turtle/turtlejournal.h
 	turtle/turtleclientservice.h
 	turtle/turtlestatistics.h
 	turtle/turtletypes.h )
@@ -723,26 +729,18 @@ list(
 	util/smallobject.h
 	util/stacktrace.h )
 
-if(RS_FORUM_DEEP_INDEX)
+if(RS_FORUM_CONTENT_SEARCH)
 	list(
 		APPEND RS_SOURCES
-		deep_search/commonutils.cpp
-		deep_search/forumsindex.cpp )
+		content_search/forumcontentindex.cpp
+		content_search/htmltext.cpp )
 
 	list(
 		APPEND RS_IMPLEMENTATION_HEADERS
-		deep_search/commonutils.hpp
-		deep_search/forumsindex.hpp )
-endif(RS_FORUM_DEEP_INDEX)
+		content_search/forumcontentindex.hpp
+		content_search/htmltext.hpp )
+endif(RS_FORUM_CONTENT_SEARCH)
 
-
-#./deep_search/filesflacindexer.hpp
-#./deep_search/filesoggindexer.hpp
-#./deep_search/filestaglibindexer.hpp
-#./deep_search/filesindex.cpp
-#./deep_search/filesindex.hpp
-#./deep_search/channelsindex.cpp
-#./deep_search/channelsindex.hpp
 
 list(
 	APPEND RS_SOURCES

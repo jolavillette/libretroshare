@@ -52,6 +52,21 @@ int rs_sprintf_append(std::string &str, const char *fmt, ...);
 void stringToUpperCase(const std::string& s, std::string &upper);
 void stringToLowerCase(const std::string& s, std::string &lower);
 
+/**
+ * Case-fold an UTF-8 string so that two strings differing only by letter case
+ * compare equal byte by byte. Unlike stringToLowerCase() this is not limited
+ * to ASCII: it handles Latin-1, Latin Extended-A, Latin Extended Additional,
+ * Greek, Cyrillic, Armenian and fullwidth Latin letters. It does not depend on
+ * the C/C++ locale. Invalid UTF-8 bytes are copied unchanged.
+ */
+std::string utf8FoldCase(const std::string& s);
+
+/** Case-insensitive (see utf8FoldCase) substring search on UTF-8 strings. */
+bool utf8ContainsIgnoreCase(const std::string& haystack, const std::string& needle);
+
+/** Case-insensitive (see utf8FoldCase) equality of UTF-8 strings. */
+bool utf8EqualsIgnoreCase(const std::string& a, const std::string& b);
+
 bool isHexaString(const std::string& s);
 
 #endif // RSSTRING_H_

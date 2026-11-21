@@ -38,13 +38,13 @@
 
 LocalDirectoryUpdater::LocalDirectoryUpdater(HashStorage *hc,LocalDirectoryStorage *lds)
     : mHashCache(hc), mSharedDirectories(lds)
-    , mLastSweepTime(0), mLastTSUpdateTime(0)
+    , mLastSweepTime(0), mLastTSUpdateTime(0), mSweptFiles(0), mLastSweepEventTime(0)
     , mDelayBetweenDirectoryUpdates(DELAY_BETWEEN_DIRECTORY_UPDATES)
     , mIsEnabled(true), mFollowSymLinks(FOLLOW_SYMLINKS_DEFAULT)
     , mIgnoreDuplicates(true)
     /* Can be left to false, but setting it to true will force to re-hash any file that has been left unhashed in the last session.*/
     , mNeedsFullRecheck(true)
-    , mIsChecking(false), mForceUpdate(false), mIgnoreFlags (0),  mMaxShareDepth(0)
+    , mIsChecking(false), mForceUpdate(false), mSweepsStarted(0), mLastCompleteSweep(0), mIgnoreFlags (0),  mMaxShareDepth(0)
 {
 }
 
@@ -102,14 +102,14 @@ void LocalDirectoryUpdater::threadTick()
         mLastTSUpdateTime = now ;
     }
 
-	for(uint32_t i=0;i<10;++i)
+	/* 1 s slices so that a stop request (shutdown) or a forced update is
+	 * honoured within a second, not after the full 10 s. */
+	for(uint32_t i=0;i<10 && !shouldStop();++i)
 	{
 		rstime::rs_usleep(1*1000*1000);
 
-		{
 		if(mForceUpdate)
 			break ;
-		}
 	}
 }
 
@@ -135,7 +135,13 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 		return false;
 	}
 
+	mSweptFiles = 0;
+	mLastSweepEventTime = rstime::RsScopeTimer::currentTime();	// a sweep of less than a second sends nothing
+
 	mIsChecking = true;
+
+	const uint32_t sweep_number = ++mSweepsStarted;
+	bool some_directory_missing = false;
 
     if(rsEvents)
     {
@@ -150,8 +156,8 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 	 *   A single sweep is performed over the whole directory structure.
 	 * - the information that is costly to compute (the hash) is stored
 	 *   externally into a separate structure.
-	 * - doing so, changing directory names or moving files between directories
-	 * does not cause a re-hash of the content. */
+	 * - the hashes are stored by file path: a file or directory that is renamed
+	 *   or moved is hashed again. */
 	std::list<SharedDirInfo> shared_directory_list;
 	mSharedDirectories->getSharedDirectoryList(shared_directory_list);
 	std::set<std::string> sub_dir_list;
@@ -185,8 +191,12 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 				         "probably being written to. Keep it for later");
 			}
 		}
-		else RS_WARN( "Got non existent file \"", fPath,
-		              "\" in shared directories list. Ignored." );
+		else
+		{
+			some_directory_missing = true;
+			RS_WARN( "Got non existent file \"", fPath,
+			         "\" in shared directories list. Ignored." );
+		}
 	}
 
 	{
@@ -201,6 +211,9 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 		{
 			const auto& it = storedSingleFilesIt;
 			RsFileHash hash;
+
+			sweepingFile(it.name());
+
 			if( mHashCache->requestHash(
 			            it.name(), it.size(), it.modtime(), hash,
 			            this, *it ) )
@@ -233,6 +246,8 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
 			            stored_dir_it.name(), *stored_dir_it,
 			            existing_dirs, current_branch_real_paths, 1, some_files_not_ready );
 		}
+		else
+			some_directory_missing = true;
 		/* here we need to use the list that was stored, instead of the shared
 		 * dir list, because the two are not necessarily in the same order. */
 	}
@@ -244,6 +259,9 @@ bool LocalDirectoryUpdater::sweepSharedDirectories(bool& some_files_not_ready)
         rsEvents->postEvent(ev);
     }
     mIsChecking = false;
+
+	if(!some_files_not_ready && !some_directory_missing)
+		mLastCompleteSweep = sweep_number;
 
 	return true;
 }
@@ -380,8 +398,12 @@ void LocalDirectoryUpdater::recursUpdateSharedDir(
 			 * compute H(H(F)), which is used in FT.
 			 * The later is always needed. */
 
+			const std::string file_path = RsDirUtil::makePath(cumulated_path, dit.name());
+
+			sweepingFile(file_path);
+
 			if( mHashCache->requestHash(
-			            RsDirUtil::makePath(cumulated_path, dit.name()),
+			            file_path,
 			            dit.size(), dit.modtime(), hash, this, *dit ) )
 				mSharedDirectories->updateHash(*dit, hash, hash != dit.hash());
 		}
@@ -454,6 +476,32 @@ bool LocalDirectoryUpdater::hash_confirm(uint32_t client_param)
 {
 	return mSharedDirectories->getEntryType(
 	            DirectoryStorage::EntryIndex(client_param) ) == DIR_TYPE_FILE;
+}
+
+void LocalDirectoryUpdater::sweepingFile(const std::string& path)
+{
+	++mSweptFiles;
+
+	const double now = rstime::RsScopeTimer::currentTime();
+
+	if(now < mLastSweepEventTime + 1.0)
+		return;
+
+	mLastSweepEventTime = now;
+
+	if(rsEvents)
+	{
+		auto ev = std::make_shared<RsSharedDirectoriesEvent>();
+		ev->mEventCode = RsSharedDirectoriesEventCode::SCANNING_FILE;
+		ev->mFilePath = path;
+		ev->mScannedFilesCount = mSweptFiles;
+		rsEvents->postEvent(ev);
+	}
+}
+
+bool LocalDirectoryUpdater::hash_requests_pending() const
+{
+	return mIsChecking;	// a sweep of the shared directories is going on
 }
 
 void LocalDirectoryUpdater::setFileWatchPeriod(int seconds)

@@ -50,6 +50,9 @@ class ftFileCreator: public ftFileProvider
 
 		/* overloaded from FileProvider */
         virtual bool 	getFileData(const RsPeerId& peer_id,uint64_t offset, uint32_t &chunk_size, void *data, bool allow_unverified = false);
+
+		/* The file is written through fd while it is read: reads stay under ftcMutex. */
+		bool fileIsWrittenTo() const override { return true; }
 		bool	finished() ;
 		uint64_t getRecvd();
 
@@ -144,8 +147,16 @@ class ftFileCreator: public ftFileProvider
 
 		ChunkMap chunkMap ;
 
+
 		rstime_t _last_recv_time_t ;	/// last time stamp when data was received. Used for queue control.
 		rstime_t _creation_time ;		/// time at which the file creator was created. Used to spot long-inactive transfers.
+
+        // MP4 Smart Preview
+        bool _mp4_index_found;		/// the walk reached mdat or moov: nothing more to look for
+        bool _mp4_scan_abandoned;	/// the file is not a walkable MP4: stop looking
+        uint64_t _mp4_scan_pos;		/// offset of the next top-level box header to read
+        uint32_t _mp4_atoms_walked;	/// number of top-level boxes walked so far
+        void checkForMp4Index();
 };
 
 #endif // FT_FILE_CREATOR_HEADER
