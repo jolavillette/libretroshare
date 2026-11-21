@@ -52,6 +52,9 @@
 // the per-statement preparation cost negligible.
 static const uint32_t MAX_MSG_IDS_PER_QUERY = 500;
 
+// Same for the group ids of retrieveNxsGrps().
+static const uint32_t MAX_GRP_IDS_PER_QUERY = 500;
+
 // generic
 #define KEY_NXS_DATA        std::string("nxsData")
 #define KEY_NXS_DATA_LEN    std::string("nxsDataLen")
@@ -1134,42 +1137,71 @@ int RsDataService::retrieveNxsGrps(std::map<RsGxsGroupId, RsNxsGrp *> &grp, bool
     }
     else
     {
-        RsStackMutex stack(mDbMutex);
-        std::map<RsGxsGroupId, RsNxsGrp *>::iterator mit = grp.begin();
+        // Read the requested groups in batches, one "grpId IN (...)" query per
+        // batch, like retrieveNxsMsgs() does for messages. One query per group
+        // was measured at 4 ms per group: 10.3 s for a list of 2534 identities,
+        // mDbMutex held all along, with the other readers of the database
+        // queued behind it. The mutex is now taken per batch, so that they get
+        // in between two batches.
 
+        std::vector<RsGxsGroupId> ids;
+        ids.reserve(grp.size());
+
+        for(auto it = grp.begin(); it != grp.end(); ++it)
+            ids.push_back(it->first);
+
+        std::set<RsGxsGroupId> found;
         std::list<RsGxsGroupId> toRemove;
 
-        for(; mit != grp.end(); ++mit)
+        for(size_t start = 0; start < ids.size(); start += MAX_GRP_IDS_PER_QUERY)
         {
-            const RsGxsGroupId& grpId = mit->first;
-            RetroCursor* c = mDb->sqlQuery(GRP_TABLE_NAME, withMeta ? mGrpColumnsWithMeta : mGrpColumns, "grpId='" + grpId.toStdString() + "'", "");
+            const size_t end = std::min(ids.size(), start + (size_t)MAX_GRP_IDS_PER_QUERY);
+
+            std::string selection = KEY_GRP_ID + " IN (";
+
+            for(size_t i = start; i < end; ++i)
+            {
+                if(i > start) selection += ",";
+                selection += "'" + ids[i].toStdString() + "'";
+            }
+
+            selection += ")";
+
+            RsStackMutex stack(mDbMutex);
+            RetroCursor* c = mDb->sqlQuery(GRP_TABLE_NAME, withMeta ? mGrpColumnsWithMeta : mGrpColumns, selection, "");
 
             if(c)
             {
                 std::vector<RsNxsGrp*> grps;
                 locked_retrieveGroups(c, grps, withMeta ? mColGrp_WithMetaOffset : 0);
 
-                if(!grps.empty())
+                for(RsNxsGrp* ng : grps)
                 {
-                        RsNxsGrp* ng = grps.front();
-                        grp[ng->grpId] = ng;
+                    auto it = grp.find(ng->grpId);
 
+                    if(it == grp.end() || !found.insert(ng->grpId).second)
+                    {
+                        delete ng;	// not asked for, or already there: cannot happen, grpId is the primary key
+                        continue;
+                    }
+
+                    it->second = ng;
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
-                        ++resultCount;
+                    ++resultCount;
 #endif
-                }else{
-                        toRemove.push_back(grpId);
                 }
+
+                // The groups of this batch that the database does not have.
+                for(size_t i = start; i < end; ++i)
+                    if(found.find(ids[i]) == found.end())
+                        toRemove.push_back(ids[i]);
 
                 delete c;
             }
         }
 
-        std::list<RsGxsGroupId>::iterator grpIdIt;
-        for (grpIdIt = toRemove.begin(); grpIdIt != toRemove.end(); ++grpIdIt)
-        {
+        for(auto grpIdIt = toRemove.begin(); grpIdIt != toRemove.end(); ++grpIdIt)
             grp.erase(*grpIdIt);
-        }
     }
 
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
