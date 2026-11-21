@@ -60,6 +60,55 @@ void pqiQoS::clear()
 	_nb_items = 0 ;
 }
 
+uint32_t pqiQoS::removeOldItems(rstime_t now,rstime_t max_age,ItemFilter filter,uint32_t& removed_bytes,rstime_t& max_age_seen)
+{
+	uint32_t removed = 0 ;
+	removed_bytes = 0 ;
+	max_age_seen = 0 ;
+
+	for(uint32_t i=0;i<_item_queues.size();++i)
+		for(std::list<ItemRecord>::iterator it(_item_queues[i]._items.begin());it!=_item_queues[i]._items.end();)
+			if(it->current_offset == 0 && now > it->queued_at + max_age && filter(it->data,it->size))
+			{
+				if(now - it->queued_at > max_age_seen)
+					max_age_seen = now - it->queued_at ;
+
+				removed_bytes += it->size ;
+				++removed ;
+				--_nb_items ;
+				free(it->data) ;
+				it = _item_queues[i]._items.erase(it) ;
+			}
+			else
+				++it ;
+
+	return removed ;
+}
+
+uint32_t pqiQoS::removeLowPriorityItems(uint32_t min_priority,ItemFilter keep,std::vector<uint32_t>& removed_per_priority,uint32_t& removed_bytes)
+{
+	uint32_t removed = 0 ;
+	removed_bytes = 0 ;
+
+	for(uint32_t i=0;i<_item_queues.size() && i<min_priority;++i)
+		for(std::list<ItemRecord>::iterator it(_item_queues[i]._items.begin());it!=_item_queues[i]._items.end();)
+			if(it->current_offset == 0 && !(keep && keep(it->data,it->size)))
+			{
+				if(i < removed_per_priority.size())
+					++removed_per_priority[i] ;
+
+				removed_bytes += it->size ;
+				++removed ;
+				--_nb_items ;
+				free(it->data) ;
+				it = _item_queues[i]._items.erase(it) ;
+			}
+			else
+				++it ;
+
+	return removed ;
+}
+
 void pqiQoS::print() const
 {
 	std::cerr << "pqiQoS: " << _item_queues.size() << " levels, alpha=" << _alpha ;

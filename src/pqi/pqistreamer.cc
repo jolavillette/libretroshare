@@ -289,6 +289,7 @@ void pqistreamer::updateRates()
 		{
 			RsStackMutex stack(mStreamerMtx); /**** LOCKED MUTEX ****/
 			mAvgSentCount = 0;
+			locked_tickOutQueue(avgSentpSec);
 		}
 	}
 }
