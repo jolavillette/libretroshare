@@ -1795,9 +1795,12 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 		// again with a wrong origin. Drop it.
 		uint64_t request_key = tunnelRequestKey(item) ;
 
-		if(locked_tunnelRequestAlreadySeen(request_key))
+		rstime_t first_seen = 0 ;
+
+		if(locked_tunnelRequestAlreadySeen(request_key,&first_seen))
 		{
 			++_nb_long_memory_drops ;
+			TurtleJournal::instance().trLongMemoryDrop(item->request_id,item->PeerId(),time(NULL) - first_seen) ;	// debugging journal
 			return ;
 		}
 		_current_tunnel_request_keys.insert(request_key) ;
