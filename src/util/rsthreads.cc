@@ -89,7 +89,20 @@ static double getCurrentTS()
  * thread that ends puts itself in a list, and the next call that creates a
  * thread joins the threads of that list first. Joining a thread that is
  * returning takes no time, and the list never holds more than the threads that
- * ended since the last creation. */
+ * ended since the last creation.
+ *
+ * WORKAROUND, TO BE REMOVED: this is a defect of winpthreads, not of our code:
+ * one Event handle (the spin_keys of the thread) is lost for every detached
+ * thread that exits. Reported as mingw-w64 issue 190,
+ * https://github.com/mingw-w64/mingw-w64/issues/190, seen with winpthreads
+ * 14.0.0.r598.ge3d18511f. Once the MSYS2 package used for the builds carries
+ * the fix, remove RS_THREAD_JOIN_FINISHED and everything under it: the threads
+ * are detached again as on the other platforms.
+ * How to check after an MSYS2 update: a program that starts 500 threads which
+ * call pthread_detach(pthread_self()) and return, with GetProcessHandleCount()
+ * before and two seconds after: +500 handles = still needed, about +0 = this
+ * can go. The same leak, one handle per thread, remains in the few places that
+ * still detach on Windows: util/dnsresolver.cc and the two rs_upnp handlers. */
 #ifdef WINDOWS_SYS
 #	define RS_THREAD_JOIN_FINISHED 1
 #endif
