@@ -53,7 +53,15 @@ set(CMAKE_FIND_PACKAGE_PREFER_CONFIG FALSE)
 # rnp's test suite is not needed here, and configuring it downloads googletest.
 set(fetch_rnp_build_testing ${BUILD_TESTING})
 set(BUILD_TESTING OFF)
+# rnp's man pages are not needed here either. Left on "Auto", rnp builds them
+# when asciidoctor is installed, and its rule for them refuses sources that are
+# outside the top-level source directory, which is where a build directory of
+# its own puts the fetched rnp. ENABLE_DOC is a cache entry of rnp: created
+# here first, and shadowed by a variable in case an older value is in the cache.
+set(ENABLE_DOC Off CACHE STRING "rnp: build its documentation")
+set(ENABLE_DOC Off)
 FetchContent_MakeAvailable(rnp)
+unset(ENABLE_DOC)
 set(BUILD_TESTING ${fetch_rnp_build_testing})
 unset(fetch_rnp_build_testing)
 set(CMAKE_FIND_PACKAGE_PREFER_CONFIG ${fetch_rnp_prefer_config})
