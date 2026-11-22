@@ -118,6 +118,22 @@ typedef t_ScopeGuard<rnp_ffi_st             ,&rnp_ffi_destroy>              rnp_
 
 #define RNP_OP_VERIFY_SIGNATURE_STRUCT(name) rnp_op_verify_signature_t name=nullptr;
 
+// Looks a key up by its id. RNP reads the all-zero key id as the wildcard id of a hidden recipient
+// and returns the first key of the keyring for it, so a null RsPgpId would silently stand for
+// another key (exported, encrypted to, signed, removed). Every lookup by RsPgpId goes through here,
+// and a null id finds nothing. Also returns false when RNP succeeds without finding the key.
+
+static bool locateKeyById(rnp_ffi_t ffi, const RsPgpId& id, rnp_key_handle_t *key_handle)
+{
+    *key_handle = nullptr;
+
+    if(id.isNull())
+        return false;
+
+    return rnp_locate_key(ffi, RNP_IDENTIFIER_KEYID, id.toStdString().c_str(), key_handle) == RNP_SUCCESS
+            && *key_handle != nullptr;
+}
+
 // This overrides SHA1 security rules, so that certs signed with sha1 alg are still accepted as friends and profiles signed with sha1 still load.
 
 #ifdef V07_NON_BACKWARD_COMPATIBLE_CHANGE_005
@@ -268,8 +284,16 @@ ops_keyring_t *OpenPGPSDKHandler::allocateOPSKeyring()
 
 void RNPPGPHandler::locked_timeStampKey(const RsPgpId& key_id)
 {
+    // Stamp only a key of the keyring. Callers pass ids that are not in it: the null id when a
+    // signature is checked with no known key, a subkey id from the passphrase callback. Adding an
+    // entry for them put a nameless key in the keyring list (and in the trust database).
+    auto it = _public_keyring_map.find(key_id);
+
+    if(it == _public_keyring_map.end())
+        return;
+
     rstime_t now = time(nullptr);
-    _public_keyring_map[key_id]._time_stamp = now;
+    it->second._time_stamp = now;
 
     // Only flag the trust database for rewrite once per hour. This function is
     // called on every PGP key usage (e.g. VerifySignBin(), which runs on every
@@ -800,7 +824,7 @@ bool RNPPGPHandler::exportPublicKey( const RsPgpId& id, unsigned char*& mem_bloc
         if(rnp_output_to_memory(&output,0) != RNP_SUCCESS)
             throw std::runtime_error("Cannot create output structure");
 
-        if(rnp_locate_key(mRnpFfi,"keyid",id.toStdString().c_str(),&key_handle))
+        if(!locateKeyById(mRnpFfi,id,&key_handle))
             throw std::runtime_error("Cannot find PGP key " + id.toStdString() + " to export.");
 
         uint32_t flags = armoured? RNP_KEY_EXPORT_ARMORED : 0;
@@ -839,7 +863,7 @@ bool RNPPGPHandler::exportGPGKeyPair(const std::string& filename,const RsPgpId& 
         if(rnp_output_to_path(&output,filename.c_str()) != RNP_SUCCESS)
             throw std::runtime_error("Cannot create output structure");
 
-        if(rnp_locate_key(mRnpFfi,"keyid",id.toStdString().c_str(),&key_handle))
+        if(!locateKeyById(mRnpFfi,id,&key_handle))
             throw std::runtime_error("Cannot find PGP key " + id.toStdString() + " to export.");
 
         uint32_t flags = RNP_KEY_EXPORT_ARMORED ;
@@ -928,7 +952,7 @@ bool RNPPGPHandler::getGPGDetailsFromBinaryBlock(const unsigned char *mem_block,
         RsDbg() << "Binary block contains key ID " << key_id.toStdString() ;
 
         RNP_KEY_HANDLE_STRUCT(key_handle);
-        if(rnp_locate_key(tmp_ffi,RNP_IDENTIFIER_KEYID,key_id.toStdString().c_str(),&key_handle) != RNP_SUCCESS)
+        if(!locateKeyById(tmp_ffi,key_id,&key_handle))
             throw std::runtime_error("Error while reaching first key data");
 
         RNP_BUFFER_STRUCT(uid);
@@ -1004,7 +1028,7 @@ static bool checkGPGKeyPair(rnp_ffi_t tmp_ffi,
     RNP_BUFFER_STRUCT(key_alg);
     uint32_t key_bits;
 
-    rnp_locate_key(tmp_ffi,RNP_IDENTIFIER_KEYID,imported_key_id.toStdString().c_str(),&key_handle);
+    locateKeyById(tmp_ffi,imported_key_id,&key_handle);
 
     rnp_key_get_fprint(key_handle, &key_fprint);
     rnp_key_get_primary_uid(key_handle, &key_uid);
@@ -1111,7 +1135,7 @@ bool RNPPGPHandler::importGPGKeyPair(const std::string& filename,RsPgpId& import
 
         RNP_KEY_HANDLE_STRUCT(key_handle);
 
-        if(RNP_SUCCESS != rnp_locate_key(mRnpFfi,"keyid",imported_key_id.toStdString().c_str(),&key_handle))
+        if(!locateKeyById(mRnpFfi,imported_key_id,&key_handle))
             throw std::runtime_error("Key import check failed: imported key is missing from keyring.");
 
         initCertificateInfo(key_handle) ;
@@ -1155,7 +1179,7 @@ bool RNPPGPHandler::importGPGKeyPairFromString(const std::string &data, RsPgpId 
 
         RNP_KEY_HANDLE_STRUCT(key_handle);
 
-        if(RNP_SUCCESS != rnp_locate_key(mRnpFfi,"keyid",imported_key_id.toStdString().c_str(),&key_handle))
+        if(!locateKeyById(mRnpFfi,imported_key_id,&key_handle))
             throw std::runtime_error("Key import check failed: imported key is missing from keyring.");
 
         initCertificateInfo(key_handle) ;
@@ -1230,7 +1254,7 @@ bool RNPPGPHandler::LoadCertificate(const unsigned char *data,uint32_t data_len,
 
     RNP_KEY_HANDLE_STRUCT(key_handle);
 
-    if(RNP_SUCCESS != rnp_locate_key(mRnpFfi,"keyid",id.toStdString().c_str(),&key_handle))
+    if(!locateKeyById(mRnpFfi,id,&key_handle))
     {
         RsErr() << "Something went wrong: cannot locate key ID " << id << " in public keyring." ;
         return false;
@@ -1322,7 +1346,7 @@ bool RNPPGPHandler::encryptData(const RsPgpId& key_id,bool armored,rnp_input_t i
 
     locked_timeStampKey(key_id);
 
-    if(rnp_locate_key(mRnpFfi, "keyid", key_id.toStdString().c_str(), &key) != RNP_SUCCESS)
+    if(!locateKeyById(mRnpFfi, key_id, &key))
         throw std::runtime_error("Cannot locate destination key " + key_id.toStdString() + " for encryption");
 
     if(rnp_op_encrypt_add_recipient(encrypt, key) != RNP_SUCCESS)
@@ -1520,7 +1544,7 @@ bool RNPPGPHandler::SignDataBin(const RsPgpId& id,const void *data, const uint32
 
         RNP_KEY_HANDLE_STRUCT(key);
 
-        if (rnp_locate_key(mRnpFfi, "keyid", id.toStdString().c_str(), &key) != RNP_SUCCESS)
+        if (!locateKeyById(mRnpFfi, id, &key))
             throw std::runtime_error("failed to locate signing key " + id.toStdString());
 
         // we do not need pointer to the signature so passing NULL as the last parameter
@@ -1577,10 +1601,10 @@ bool RNPPGPHandler::privateSignCertificate(const RsPgpId& ownId,const RsPgpId& i
 
         rnp_ffi_set_pass_provider(mRnpFfi, rnp_get_passphrase_cb, this);
 
-        if(rnp_locate_key(mRnpFfi,"keyid",id_of_key_to_sign.toStdString().c_str(),&signed_key) != RNP_SUCCESS)
+        if(!locateKeyById(mRnpFfi,id_of_key_to_sign,&signed_key))
             throw std::runtime_error("Key not found: "+id_of_key_to_sign.toStdString());
 
-        if(rnp_locate_key(mRnpFfi,"keyid",ownId.toStdString().c_str(),&signer_key) != RNP_SUCCESS)
+        if(!locateKeyById(mRnpFfi,ownId,&signer_key))
             throw std::runtime_error("Key not found: "+id_of_key_to_sign.toStdString());
 
         if(rnp_key_direct_signature_create(signer_key,signed_key, &signature_handle) != RNP_SUCCESS)
@@ -1607,7 +1631,7 @@ bool RNPPGPHandler::getKeyFingerprint(const RsPgpId& id, RsPgpFingerprint& fp) c
 
     RNP_KEY_HANDLE_STRUCT(key);
 
-    if(rnp_locate_key(mRnpFfi,"keyid",id.toStdString().c_str(),&key)!=RNP_SUCCESS)
+    if(!locateKeyById(mRnpFfi,id,&key))
     {
         RS_ERR("Cannot find key "+id.toStdString());
         return false;
@@ -1863,9 +1887,7 @@ bool RNPPGPHandler::removeKeysFromPGPKeyring(const std::set<RsPgpId>& keys_to_re
     for(std::set<RsPgpId>::const_iterator it(keys_to_remove.begin());it!=keys_to_remove.end();++it)
 	{
         RNP_KEY_HANDLE_STRUCT(key_handle);
-        rnp_locate_key(mRnpFfi,"keyid",(*it).toStdString().c_str(),&key_handle);
-
-        if(!key_handle)
+        if(!locateKeyById(mRnpFfi,*it,&key_handle))
         {
             RsErr() << "Cannot find key " << it->toStdString() << " into keyring." ;
             continue;
