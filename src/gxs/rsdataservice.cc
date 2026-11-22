@@ -54,8 +54,16 @@
 // the per-statement preparation cost negligible.
 static const uint32_t MAX_MSG_IDS_PER_QUERY = 500;
 
-// Same for the group ids of retrieveNxsGrps().
-static const uint32_t MAX_GRP_IDS_PER_QUERY = 500;
+// Group ids of retrieveNxsGrps(). Much smaller: mDbMutex is held for a whole
+// batch, and a group row with its meta was measured at 4 to 8 ms (identities),
+// so 50 groups keep each hold to a few tenths of a second.
+static const uint32_t MAX_GRP_IDS_PER_QUERY = 50;
+
+// Pause between two batches of retrieveNxsGrps(), mDbMutex released. Without
+// it the loop takes the mutex again at once and, the mutex not being fair,
+// a waiting reader can lose the race several batches in a row (measured: a
+// one-group read waited 9.7 s behind a 2413-group read).
+static const uint32_t GRP_BATCH_PAUSE_MICROSEC = 2000;
 
 // generic
 #define KEY_NXS_DATA        std::string("nxsData")
@@ -1153,8 +1161,8 @@ int RsDataService::retrieveNxsGrps(std::map<RsGxsGroupId, RsNxsGrp *> &grp, bool
         // batch, like retrieveNxsMsgs() does for messages. One query per group
         // was measured at 4 ms per group: 10.3 s for a list of 2534 identities,
         // mDbMutex held all along, with the other readers of the database
-        // queued behind it. The mutex is now taken per batch, so that they get
-        // in between two batches.
+        // queued behind it. The mutex is now taken per batch, with a short
+        // pause between two batches, so that they get in.
 
         std::vector<RsGxsGroupId> ids;
         ids.reserve(grp.size());
@@ -1168,6 +1176,10 @@ int RsDataService::retrieveNxsGrps(std::map<RsGxsGroupId, RsNxsGrp *> &grp, bool
         for(size_t start = 0; start < ids.size(); start += MAX_GRP_IDS_PER_QUERY)
         {
             const size_t end = std::min(ids.size(), start + (size_t)MAX_GRP_IDS_PER_QUERY);
+
+            // Let the readers waiting for mDbMutex in before the next batch.
+            if(start > 0)
+                rstime::rs_usleep(GRP_BATCH_PAUSE_MICROSEC);
 
             std::string selection = KEY_GRP_ID + " IN (";
 
