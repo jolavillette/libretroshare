@@ -80,7 +80,7 @@ public:
 
         rstime_t dir_modtime;
         rstime_t dir_most_recent_time;// recursive most recent modification time, including files and subdirs in the entire hierarchy below.
-        rstime_t dir_update_time;		// last time the information was updated for that directory. Includes subdirs indexes and subfile info.
+        rstime_t dir_update_time;		// remote: last time the information was updated for that directory. Local: last change made by RS itself (e.g. virtual name).
     };
 
     // class stuff

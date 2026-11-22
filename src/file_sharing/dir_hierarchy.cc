@@ -716,7 +716,7 @@ rstime_t InternalFileHierarchyStorage::recursUpdateLastModfTime(const DirectoryS
 {
     DirEntry& d(*static_cast<DirEntry*>(mNodes[dir_index])) ;
 
-    rstime_t largest_modf_time = d.dir_modtime ;
+    rstime_t largest_modf_time = std::max(d.dir_modtime, d.dir_update_time) ;
     unfinished_files_present = false ;
 
     for(uint32_t i=0;i<d.subfiles.size();++i)

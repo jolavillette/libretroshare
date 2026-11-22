@@ -435,7 +435,9 @@ void LocalDirectoryStorage::setSharedDirectoryList(
 		if(dirs_with_new_virtualname.find(dirit.name()) != dirs_with_new_virtualname.end())
 		{
 			std::cerr << "Updating TS of local dir \"" << dirit.name() << "\" with changed virtual name" << std::endl;
-			setDirectoryLocalModTime(*dirit,time(NULL));
+			/* Not dir_modtime: the forced sweep that follows writes the disk
+			 * mtime back over it, so the new name would not reach friends. */
+			setDirectoryUpdateTime(*dirit,time(NULL));
 		}
 
     if(dirs_with_changed_flags)
