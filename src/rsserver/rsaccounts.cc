@@ -794,6 +794,52 @@ static bool checkAccount(const std::string &accountdir, AccountDetails &account,
 	//#include <CFBundle.h>
 #endif
 
+#ifdef WINDOWS_SYS
+/* Data directory on Windows, derived from the running executable and not from
+ * the current directory (only the GUI changes into its executable's directory
+ * at start): <exedir>/../share/retroshare when it exists, which is where a
+ * package laid out as bin, lib, share has it; else the executable's directory,
+ * where the data of the other installs is. Empty when the executable cannot
+ * be located. */
+static std::string windowsDataDirectory()
+{
+	std::wstring wExePath(MAX_PATH, L'\0');
+	for(;;)
+	{
+		const DWORD len = GetModuleFileNameW(
+		            nullptr, &wExePath[0], static_cast<DWORD>(wExePath.size()) );
+		if(len == 0) return std::string();
+		if(len < wExePath.size()) { wExePath.resize(len); break; }
+		// truncated: the path is longer than the buffer
+		if(wExePath.size() > 32768) return std::string();
+		wExePath.resize(wExePath.size() * 2);
+	}
+
+	std::string exeDir;
+	if(!librs::util::ConvertUtf16ToUtf8(wExePath, exeDir)) return std::string();
+	const size_t lastSeparator = exeDir.find_last_of("\\/");
+	if(lastSeparator == std::string::npos) return std::string();
+	exeDir.erase(lastSeparator);
+
+	const std::string packaged = exeDir + "\\..\\share\\retroshare";
+	if(!RsDirUtil::checkDirectory(packaged)) return exeDir;
+
+	// drop the "bin\.." from the path
+	std::wstring wPackaged;
+	librs::util::ConvertUtf8ToUtf16(packaged, wPackaged);
+	std::string resolved;
+	wchar_t* wResolved = _wfullpath(nullptr, wPackaged.c_str(), 0);
+	if(wResolved)
+	{
+		const bool converted =
+		        librs::util::ConvertUtf16ToUtf8(std::wstring(wResolved), resolved);
+		free(wResolved);
+		if(converted) return resolved;
+	}
+	return packaged;
+}
+#endif // def WINDOWS_SYS
+
 #if defined(__linux__) && !defined(__ANDROID__)
 #include <limits.h>
 #include <stdlib.h>
@@ -874,8 +920,9 @@ static std::string relocatableDataDirectory()
 //		std::cerr << std::endl;
 //	}
 
-	/* Use RetroShare's exe dir */
-	dataDirectory = ".";
+	/* Use RetroShare's exe dir, or share/retroshare beside it */
+	dataDirectory = windowsDataDirectory();
+	if(dataDirectory.empty()) dataDirectory = ".";
 #elif defined(__ANDROID__)
 	// TODO: This is probably not really used on Android
 	dataDirectory = PathBaseDirectory()+"/usr/share/retroshare";
