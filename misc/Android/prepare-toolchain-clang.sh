@@ -52,8 +52,9 @@ define_default_value ANDROID_NDK_PATH "${ANDROID_SDK_PATH}/ndk/${ANDROID_NDK_VER
 define_default_value BZIP2_SOURCE_VERSION "1.0.8"
 define_default_value BZIP2_SOURCE_SHA256 ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
 
-define_default_value OPENSSL_SOURCE_VERSION "1.1.1n"
-define_default_value OPENSSL_SOURCE_SHA256 40dceb51a4f6a5275bde0e6bf20ef4b91bfc32ed57c0552e2e8e15463372b17a
+# 3.5 is the long-term support series (supported until 2030-04-08).
+define_default_value OPENSSL_SOURCE_VERSION "3.5.9"
+define_default_value OPENSSL_SOURCE_SHA256 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
 
 define_default_value SQLITE_SOURCE_YEAR "2026"
 define_default_value SQLITE_SOURCE_VERSION "3530200"
@@ -432,22 +433,35 @@ build_openssl()
 ## that made RS crash), the crash in some android version is only one of the
 ## possible problems the fact that android insert his own binary libssl.so pose
 ## non neglegible security concerns.
-	oBits="32"
-	[[ ${ANDROID_NDK_ARCH} =~ .*64.* ]] && oBits=64
+	local oTarget
+	case "${ANDROID_NDK_ARCH}" in
+	arm64)  oTarget="android-arm64" ;;
+	arm)    oTarget="android-arm" ;;
+	x86)    oTarget="android-x86" ;;
+	x86_64) oTarget="android-x86_64" ;;
+	*) echo "build_openssl: unsupported ANDROID_NDK_ARCH=${ANDROID_NDK_ARCH}" ; return 1 ;;
+	esac
 
-	ANDROID_NDK="${ANDROID_NDK_PATH}" PATH="${NATIVE_LIBS_TOOLCHAIN_PATH}/bin/:${PATH}" \
-	./Configure linux-generic${oBits} -fPIC \
-		--prefix="${PREFIX}" --openssldir="${SYSROOT}/etc/ssl" || return $?
-#	sed -i 's/LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \\/LIBNAME=$$i \\/g' Makefile
-#	sed -i '/LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \\/d' Makefile
-
-	# Avoid documentation build which is unneded and time consuming
-	echo "exit 0; " > util/process_docs.pl
-	
-	make -j${HOST_NUM_CPU} || return $?
-	make install || return $?
-	rm -f ${PREFIX}/lib/libssl.so*
-	rm -f ${PREFIX}/lib/libcrypto.so*
+	# OpenSSL's android-* targets enable its assembly (ARMv8 crypto
+	# extensions on arm64); a linux-generic target is plain C. They locate the
+	# NDK through ANDROID_NDK_ROOT and want the NDK's own clang first in PATH:
+	# they pick <triple><api>-clang from there, so the CC exported above is
+	# not used. make needs the same PATH.
+	# no-shared: static only, see above.
+	# no-module: the legacy provider (CAST5, IDEA, RIPEMD160) is built into
+	# libcrypto.a instead of a legacy.so nobody would ship in the APK; rnp
+	# needs it to read secret keys protected with CAST5, as old RetroShare
+	# profiles are.
+	(
+		export ANDROID_NDK_ROOT="${ANDROID_NDK_PATH}"
+		export PATH="${ANDROID_NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
+		./Configure ${oTarget} -D__ANDROID_API__=${ANDROID_PLATFORM_VER} \
+			no-shared no-module no-tests no-docs -fPIC \
+			--prefix="${PREFIX}" --libdir=lib \
+			--openssldir="${SYSROOT}/etc/ssl" || exit $?
+		make -j${HOST_NUM_CPU} || exit $?
+		make install_sw || exit $?
+	) || return $?
 	popd
 }
 
@@ -903,7 +917,7 @@ endif(CMAKE_CROSSCOMPILING_EMULATOR)' \
 		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
 	}
 
-	# The feature probe is linked statically, and OpenSSL 1.1.1 libcrypto.a
+	# The feature probe is linked statically, and OpenSSL's libcrypto.a
 	# pulls in dso_dlfcn.o which references dlopen/dlsym/dlclose/dlerror.
 	# CMake's FindOpenSSL does not put ${CMAKE_DL_LIBS} in the OpenSSL::Crypto
 	# interface here, so nothing provides them and the link dies with
