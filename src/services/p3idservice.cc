@@ -285,16 +285,20 @@ bool p3IdService::setAsRegularContact(const RsGxsId& id,bool b)
     RsStackMutex stack(mIdMtx);
     std::set<RsGxsId>::iterator it = mContacts.find(id) ;
 
+    // Contacts are the user's choice: they are saved at once.
+    // slowIndicateConfigChanged() skips a change made within five minutes of
+    // the previous one, and the default priority only saves on a clean
+    // shutdown.
     if(b && (it == mContacts.end()))
     {
         mContacts.insert(id) ;
-        slowIndicateConfigChanged() ;
+        IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_NOW) ;
     }
 
     if( (!b) &&(it != mContacts.end()))
     {
         mContacts.erase(it) ;
-        slowIndicateConfigChanged() ;
+        IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_NOW) ;
     }
 
     return true ;
