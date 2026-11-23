@@ -1211,7 +1211,18 @@ public:
         virtual bool watchEnabled() =0;
         virtual bool followSymLinks() const=0;
         virtual void setFollowSymLinks(bool b)=0 ;
-		virtual void togglePauseHashingProcess() =0;		// pauses/resumes the hashing process.
+		/**
+		 * @brief Pause the hashing of shared files if it runs, resume it if it
+		 *        is paused
+		 * @jsonapi{development}
+		 */
+		virtual void togglePauseHashingProcess() =0;
+
+		/**
+		 * @brief Tell whether the hashing of shared files is paused
+		 * @jsonapi{development}
+		 * @return true if the hashing is paused
+		 */
 		virtual bool hashingProcessPaused() =0;
 
 		virtual bool	getShareDownloadDirectory() = 0;
