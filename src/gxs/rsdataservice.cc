@@ -206,6 +206,9 @@ RsDataService::RsDataService(const std::string &serviceDir, const std::string &d
     mColMsgId_MsgId = addColumn(mMsgIdColumn, KEY_MSG_ID);
 }
 
+#include "util/rsdebug.h"
+#include "util/rsshutdownprobe.h" // shutdown diagnostics, see the end of the destructor
+
 RsDataService::~RsDataService(){
 
 #ifdef RS_DATA_SERVICE_DEBUG
@@ -215,6 +218,12 @@ RsDataService::~RsDataService(){
 
     mDb->closeDb();
     delete mDb;
+
+    /* Shutdown diagnostics (debug/shutdown-step-timings): the database is
+     * closed here; what the caller's "close database" step measures after
+     * this line is the destruction of the members, the meta caches above all. */
+    RsInfo() << "shutdown: " << mDbName << " closed after " << RsShutdownStepStart::current().elapsed()
+             << ", now freeing its caches";
 }
 
 static bool moveDataFromFileToDatabase(RetroDb *db, const std::string serviceDir, const std::string &tableName, const std::string &keyId, std::list<std::string> &files)

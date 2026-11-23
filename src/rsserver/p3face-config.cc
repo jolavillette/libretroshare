@@ -81,6 +81,7 @@ void RsServer::startServiceThread(RsTickingThread *t, const std::string &threadN
 
 #include <chrono>
 #include "util/rsdebug.h"
+#include "util/rsshutdownprobe.h"
 
 namespace {
 /* One timestamped line per shutdown step, with its duration. The GUI's own
@@ -90,12 +91,18 @@ struct ShutdownStep
 {
 	std::string name;
 	std::chrono::steady_clock::time_point t0;
-	explicit ShutdownStep(const std::string& n) : name(n), t0(std::chrono::steady_clock::now())
-	{ RsInfo() << "shutdown: " << name << "..."; }
+	RsShutdownMem mem0; // Windows: page faults and working set of the step
+	explicit ShutdownStep(const std::string& n) : name(n), t0(std::chrono::steady_clock::now()),
+	    mem0(RsShutdownMem::now())
+	{
+		RsShutdownStepStart::current().t0 = t0;
+		RsShutdownStepStart::current().mem = mem0;
+		RsInfo() << "shutdown: " << name << "...";
+	}
 	~ShutdownStep()
 	{
 		auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
-		RsInfo() << "shutdown: " << name << " done in " << ms << " ms";
+		RsInfo() << "shutdown: " << name << " done in " << ms << " ms" << RsShutdownMem::now().since(mem0);
 	}
 };
 }
