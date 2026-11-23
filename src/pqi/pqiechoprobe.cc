@@ -404,11 +404,11 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 
 			if(!fresh && s.sent_ms != 0)
 			{
-				kind = ECHO ; ref_ms = s.sent_ms ; ref_peer = s.sent_to ;
+				kind = KIND_ECHO ; ref_ms = s.sent_ms ; ref_peer = s.sent_to ;
 			}
 			else if(!fresh && s.recv_ms != 0)
 			{
-				kind = (s.recv_from == idx)?REPEAT:DUP ; ref_ms = s.recv_ms ; ref_peer = s.recv_from ;
+				kind = (s.recv_from == idx)?KIND_REPEAT:KIND_DUP ; ref_ms = s.recv_ms ; ref_peer = s.recv_from ;
 			}
 
 			if(s.recv_ms == 0)
@@ -417,7 +417,7 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 				s.recv_from = idx ;
 			}
 
-			if(kind == ECHO && isTunnelItem(service,subtype))
+			if(kind == KIND_ECHO && isTunnelItem(service,subtype))
 			{
 				openWatch(ref_peer,idx,ref_ms,now,fp,service,subtype) ;
 
@@ -464,9 +464,9 @@ void PqiEchoProbe::record(bool outgoing,const RsPeerId& peer,const void *data,ui
 					o << kindName(kind) << " " << timeStr(now) << " from=" << peer
 					  << " svc=" << serviceName(service) << "/0x" << std::hex << std::setw(2) << std::setfill('0') << int(subtype) << std::dec
 					  << " size=" << size << " fp=" << std::hex << std::setw(16) << std::setfill('0') << fp << std::dec
-					  << " : we " << ((kind == ECHO)?"SENT it to ":"RECEIVED it from ") << mPeers[ref_peer]
+					  << " : we " << ((kind == KIND_ECHO)?"SENT it to ":"RECEIVED it from ") << mPeers[ref_peer]
 					  << " " << (now - ref_ms) << " ms earlier" ;
-					if(kind == ECHO && s.sent_to2 != 0)
+					if(kind == KIND_ECHO && s.sent_to2 != 0)
 						o << " (also sent to " << mPeers[s.sent_to2] << ((s.sent_to2 == idx)?", the friend sending it back":"") << ")" ;
 					o << std::endl ;
 					mPending.push_back(o.str()) ;
