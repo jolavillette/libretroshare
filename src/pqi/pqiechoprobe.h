@@ -112,7 +112,7 @@ class PqiEchoProbe
 	private:
 		PqiEchoProbe() ;
 
-		enum Kind : uint8_t { ECHO = 0, DUP = 1, REPEAT = 2 } ;
+		enum Kind : uint8_t { KIND_ECHO = 0, KIND_DUP = 1, KIND_REPEAT = 2 } ;
 
 		class Seen
 		{
