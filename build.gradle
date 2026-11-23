@@ -242,10 +242,6 @@ ext.buildLibretroshareNativeLib =
 		"${currToolchainPath}/sysroot/usr/lib/${libcxxsharedTriple}/libc++_shared.so",
 		currAbiLibDir )
 
-	copyChecked(
-		"${currToolchainPath}/sysroot/usr/lib/${libcxxsharedTriple}/${pApiLevel}/liblog.so",
-		currAbiLibDir )
-
 	/* Work around Android gradle stripping bug read more information near
 	 * android.buildTypes.debug packagingOptions.jniLibs.keepDebugSymbols
 	 * section of this file.
@@ -260,7 +256,6 @@ ext.buildLibretroshareNativeLib =
 
 		stripLib(currToolchainPath, currAbiLibDir, "libretroshare.so", "--strip-unneeded")
 		stripLib(currToolchainPath, currAbiLibDir, "libc++_shared.so", "--strip-debug")
-		stripLib(currToolchainPath, currAbiLibDir, "liblog.so", "--strip-debug")
 	}
 
 	def bdbootAssetDir = "${getAssetsDir()}/values"
