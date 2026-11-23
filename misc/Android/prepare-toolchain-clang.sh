@@ -76,7 +76,10 @@ define_default_value XAPIAN_SOURCE_VERSION "1.4.29"
 define_default_value XAPIAN_SOURCE_SHA256 c55c9bc8613ad3ec2c218eafca088c218ab7cddcba7ef08f3af0e542f4e521bc
 
 define_default_value RAPIDJSON_SOURCE_REPO https://github.com/Tencent/rapidjson.git
-define_default_value RAPIDJSON_SOURCE_VERSION origin/master
+# Not the commit of RetroShare's supportlibs/rapidjson submodule: that one is
+# 1.1.0 (2016), whose GenericStringRef::operator= assigns a const member,
+# which the NDK's clang rejects. A commit of its master instead.
+define_default_value RAPIDJSON_SOURCE_VERSION 297637bc0a0f00dc504dbc1a47ebdaa577f8ae19
 
 define_default_value MINIUPNPC_SOURCE_VERSION "2.1.20190625"
 define_default_value MINIUPNPC_SOURCE_SHA256 8723f5d7fd7970de23635547700878cd29a5c2bb708b5e5475b2d1d2510317fb
@@ -99,7 +102,8 @@ define_default_value CIMG_SOURCE_SHA256 ff1711da822b2b5f3bb68eed7c9b6b6c9391a786
 
 #define_default_value PHASH_SOURCE_REPO "https://github.com/RetroShare/pHash.git"
 define_default_value PHASH_SOURCE_REPO "https://github.com/aetilius/pHash.git"
-define_default_value PHASH_SOURCE_VERSION origin/master
+# No release and no RetroShare submodule to follow: a commit of its master.
+define_default_value PHASH_SOURCE_VERSION e5bdad184f88c6d0e43f188c634b5e2e10ab7779
 
 define_default_value MVPTREE_SOURCE_REPO "https://github.com/starkdg/mvptree.git"
 define_default_value MVPTREE_SOURCE_VERSION origin/master
@@ -111,7 +115,9 @@ define_default_value JSONC_SOURCE_REPO "https://github.com/json-c/json-c.git"
 define_default_value JSONC_SOURCE_VERSION "json-c-0.18-20240915"
 
 define_default_value LIBRNP_SOURCE_REPO "https://github.com/rnpgp/rnp.git"
-define_default_value LIBRNP_SOURCE_VERSION "origin/main"
+# Same commit as RetroShare's supportlibs/librnp submodule, so Android runs the
+# rnp every desktop build runs. Move both together.
+define_default_value LIBRNP_SOURCE_VERSION ec78117269461b2cdce15a085033a8c6bff6d7e3
 
 define_default_value REPORT_DIR "$(pwd)/$(basename ${NATIVE_LIBS_TOOLCHAIN_PATH})_build_report/"
 
@@ -875,8 +881,8 @@ build_librnp()
 	# 4. Remove quotes around FOF so CMake expands the list correctly
 	#
 	# Skip the patch when the checkout already handles the emulator on its own:
-	# rnp got this upstream (rnpgp/rnp 0a0672af, merged 2026-07-31) and
-	# LIBRNP_SOURCE_VERSION tracks origin/main, so patching on top of it
+	# rnp got this upstream (rnpgp/rnp 0a0672af, merged 2026-07-31), after the
+	# pinned LIBRNP_SOURCE_VERSION; on an rnp that has it, patching on top of it
 	# prepends the emulator twice and the probe becomes
 	# "qemu-aarch64 /usr/bin/qemu-aarch64 build/findopensslfeatures", which
 	# fails with "Invalid ELF image for this architecture".
