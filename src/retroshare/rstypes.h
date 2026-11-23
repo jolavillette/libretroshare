@@ -518,13 +518,21 @@ public:
 };
 
 /* class for the information about a used library */
-class RsLibraryInfo
+class RsLibraryInfo : public RsSerializable
 {
 public:
 	RsLibraryInfo() {}
 	RsLibraryInfo(const std::string &name, const std::string &version) :
 	    mName(name), mVersion(version)
 	{}
+
+	/// @see RsSerializable
+	void serial_process(RsGenericSerializer::SerializeJob j,
+	                    RsGenericSerializer::SerializeContext& ctx) override
+	{
+		RS_SERIAL_PROCESS(mName);
+		RS_SERIAL_PROCESS(mVersion);
+	}
 
 public:
 	std::string mName;
