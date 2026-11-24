@@ -181,7 +181,8 @@ public:
 	virtual bool getServePhones() = 0;
 
 	/**
-	 * @brief The phones among the connected friends
+	 * @brief The phones among the friends, including those that lost their
+	 *  connection less than a day ago
 	 * @jsonapi{development}
 	 * @param[out] phones one entry per phone
 	 */

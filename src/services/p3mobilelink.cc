@@ -46,6 +46,9 @@ static const rstime_t IDENTITY_CHECK_PERIOD = 60;
 /// connection after a few minutes; the app adjusts it to the network.
 static const uint32_t DEFAULT_KEEP_ALIVE_INTERVAL = 240;
 
+/// A home forgets a phone it has not heard from for this long.
+static const rstime_t FORGET_PHONE_AFTER = 86400;
+
 /// The silence a phone in background and its home accept from each other:
 /// three keep-alive intervals, and never less than this.
 static const rstime_t MIN_SILENCE_TOLERANCE = 900;
@@ -354,6 +357,7 @@ bool p3MobileLink::wantsHeartbeat(const RsPeerId& peer)
 int p3MobileLink::tick()
 {
 	checkOwnIdentities();
+	forgetSilentPhones();
 
 	// A phone in background sends its keep-alive itself while it runs. When
 	// the phone may sleep, the app's alarm calls keepAliveNow() instead.
@@ -385,6 +389,19 @@ int p3MobileLink::tick()
 	}
 
 	return 0;
+}
+
+void p3MobileLink::forgetSilentPhones()
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	rstime_t now = time(nullptr);
+	for(auto it = mPhones.begin(); it != mPhones.end();)
+	{
+		rstime_t lastHeard = std::max(it->second.mLastHello, it->second.mLastPing);
+		if(lastHeard + FORGET_PHONE_AFTER < now) it = mPhones.erase(it);
+		else ++it;
+	}
 }
 
 void p3MobileLink::checkOwnIdentities()
@@ -591,10 +608,16 @@ void p3MobileLink::statusChange(const std::list<pqiServicePeer>& plist)
 			mHomes[peer.id] = HomeState();
 
 		if(peer.actions & (RS_SERVICE_PEER_DISCONNECTED | RS_SERVICE_PEER_REMOVED))
-		{
 			mHomes.erase(peer.id);
+
+		// A phone loses its connection whenever it changes network, or when
+		// a network address translator forgets it. Its home keeps what it
+		// knows of it meanwhile, so that a phone in background stays quiet
+		// across the reconnection: until its STATE says otherwise, the home
+		// sends it no heartbeat, no sync and none of the lobby traffic it
+		// keeps for it.
+		if(peer.actions & RS_SERVICE_PEER_REMOVED)
 			mPhones.erase(peer.id);
-		}
 	}
 }
 

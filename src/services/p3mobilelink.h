@@ -160,6 +160,9 @@ private:
 	/// marks the HELLO to be sent again when they changed.
 	void checkOwnIdentities();
 
+	/// Home side: forgets the phones not heard from for a day.
+	void forgetSilentPhones();
+
 	p3ServiceControl* mServiceControl;
 
 	/// Guards everything below. A std::mutex for mPongReceived.
@@ -181,6 +184,7 @@ private:
 	uint32_t mPingSeq = 0;
 	rstime_t mLastPingSent = 0;
 
-	/// Home side, per phone among the connected friends.
+	/// Home side, per phone among the friends, connected or not: a phone
+	/// keeps its state across a reconnection.
 	std::map<RsPeerId, PhoneState> mPhones;
 };
