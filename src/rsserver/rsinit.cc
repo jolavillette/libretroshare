@@ -1747,6 +1747,7 @@ int RsServer::StartupRetroShare()
 	p3MobileLink *mMobileLink = new p3MobileLink(serviceCtrl);
 	pqih -> addService(mMobileLink, true);
 	rsMobileLink = mMobileLink;
+	tr->setMobileLink(mMobileLink);
 
 #ifdef SERVICES_DSDV
 	p3Dsdv *mDsdv = new p3Dsdv(serviceCtrl);

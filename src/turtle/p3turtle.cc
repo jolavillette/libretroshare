@@ -38,6 +38,7 @@
 #include "pqi/authssl.h"
 #include "pqi/p3linkmgr.h"
 #include "retroshare/rspeers.h"
+#include "services/p3mobilelink.h"
 
 #include "ft/ftserver.h"
 #include "ft/ftdatamultiplex.h"
@@ -989,6 +990,10 @@ void p3turtle::handleSearchRequest(RsTurtleSearchRequestItem *item)
 			if ((linkType & RS_NET_CONN_SPEED_TRICKLE) || (linkType & RS_NET_CONN_SPEED_LOW)) 	// don't forward searches to slow link types (e.g relay peers)!
 				continue ;
 
+			// A phone that asked to be spared gets no search (MobileLink).
+			if(mMobileLink && !mMobileLink->wantsSearchRequest(*it))
+				continue ;
+
 			if(*it != item->PeerId())
 			{
 #ifdef P3TURTLE_DEBUG
@@ -1802,6 +1807,11 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 			uint32_t linkType = mLinkMgr->getLinkType(*it);
 
 			if ((linkType & RS_NET_CONN_SPEED_TRICKLE) || (linkType & RS_NET_CONN_SPEED_LOW)) 	// don't forward tunnel requests to slow link types (e.g relay peers)!
+				continue ;
+
+			// A phone that asked to be spared gets only the requests for its
+			// own identities (MobileLink).
+			if(mMobileLink && !mMobileLink->wantsTunnelRequest(*it, item->file_hash))
 				continue ;
 
 			if(*it != item->PeerId() && RSRandom::random_f32() <= forward_probability)

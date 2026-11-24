@@ -151,6 +151,7 @@
 
 class ftServer ;
 class p3LinkMgr;
+class p3MobileLink;
 class ftDataMultiplex;
 class RsSerialiser;
 
@@ -225,6 +226,10 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 	public:
 		p3turtle(p3ServiceControl *sc,p3LinkMgr *lm) ;
 		virtual RsServiceInfo getServiceInfo();
+
+		/// The service that tells which requests a phone among the friends
+		/// wants. Set once at start-up, before the router runs.
+		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink ; }
 
 		// Enables/disable the service. Still ticks, but does nothing. Default is true.
 		//
@@ -404,6 +409,8 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		
 		/* data */
 		p3ServiceControl   *mServiceControl;
+
+		p3MobileLink       *mMobileLink = nullptr;
 		p3LinkMgr          *mLinkMgr;
 		RsTurtleSerialiser *_serialiser ;
 		RsPeerId            _own_id ;
