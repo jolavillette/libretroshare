@@ -1035,6 +1035,32 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 	return true ;
 }
 
+bool DistributedChatService::makePresignedKeepAlives(const ChatLobbyId& lobby_id, rstime_t from, uint32_t count, std::list<RsChatLobbyEventItem*>& items)
+{
+	RsStackMutex stack(mDistributedChatMtx); /********** STACK LOCKED MTX ******/
+
+	for(uint32_t i = 0; i < count; ++i)
+	{
+		RsChatLobbyEventItem *item = new RsChatLobbyEventItem() ;
+		item->event_type = RS_CHAT_LOBBY_EVENT_KEEP_ALIVE ;
+		item->sendTime = from + i * MAX_DELAY_BETWEEN_LOBBY_KEEP_ALIVE ;
+
+		if(!locked_initLobbyBouncableObject(lobby_id, *item))
+		{
+			delete item ;
+			return false ;
+		}
+		items.push_back(item) ;
+	}
+	return true ;
+}
+
+void DistributedChatService::releasePresignedKeepAlive(RsChatLobbyEventItem *item)
+{
+	handleRecvChatLobbyEventItem(item) ;
+	delete item ;
+}
+
 DistributedChatService::~DistributedChatService()
 {
 	for(auto& held: mHeldForPhones)

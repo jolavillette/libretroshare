@@ -30,6 +30,7 @@
 #include "rsitems/rsitem.h"
 #include "rsitems/rsserviceids.h"
 #include "serialiser/rsserializer.h"
+#include "serialiser/rstlvkeys.h"
 #include "serialiser/rstypeserializer.h"
 
 // Items of the MobileLink service, between a phone and its home: the friend
@@ -40,6 +41,7 @@ const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_HOME  = 0x02;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_STATE = 0x03;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_PING  = 0x04;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_PONG  = 0x05;
+const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_KEEP_ALIVE_STOCK = 0x06;
 
 class RsMobileLinkItem: public RsItem
 {
@@ -134,6 +136,45 @@ public:
 	{ RS_SERIAL_PROCESS(mSeq); }
 
 	uint32_t mSeq = 0;
+};
+
+/// A chat lobby keep-alive a phone signed in advance: the fields of its
+/// RsChatLobbyEventItem, for its home to send at mSendTime.
+struct RsMobileLinkKeepAlive: RsSerializable
+{
+	uint64_t mLobbyId = 0;
+	uint64_t mMsgId = 0;
+	std::string mNick;
+	uint32_t mSendTime = 0;
+	RsTlvKeySignature mSignature;
+
+	void serial_process( RsGenericSerializer::SerializeJob j,
+	                     RsGenericSerializer::SerializeContext& ctx ) override
+	{
+		RS_SERIAL_PROCESS(mLobbyId);
+		RS_SERIAL_PROCESS(mMsgId);
+		RS_SERIAL_PROCESS(mNick);
+		RS_SERIAL_PROCESS(mSendTime);
+		RS_SERIAL_PROCESS(mSignature);
+	}
+};
+
+/// Phone to home: lobby keep-alives signed in advance. While the phone is in
+/// background, its home sends each one at its time, so that the phone stays
+/// in the lobbies' participant lists.
+class RsMobileLinkKeepAliveStockItem: public RsMobileLinkItem
+{
+public:
+	RsMobileLinkKeepAliveStockItem():
+	    RsMobileLinkItem(RS_PKT_SUBTYPE_MOBILE_LINK_KEEP_ALIVE_STOCK) {}
+
+	void serial_process( RsGenericSerializer::SerializeJob j,
+	                     RsGenericSerializer::SerializeContext& ctx ) override
+	{ RS_SERIAL_PROCESS(mKeepAlives); }
+
+	void clear() override { mKeepAlives.clear(); }
+
+	std::vector<RsMobileLinkKeepAlive> mKeepAlives;
 };
 
 class RsMobileLinkSerialiser: public RsServiceSerializer

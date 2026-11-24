@@ -63,6 +63,17 @@ class DistributedChatService
 		/// and whether this node is one (MobileLink). Set once at start-up.
 		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink ; }
 
+		/// Phone side (MobileLink): count keep-alives for lobby lobby_id,
+		/// signed now for later, the first one dated from and the next ones
+		/// one keep-alive interval apart. The caller owns the items.
+		bool makePresignedKeepAlives(const ChatLobbyId& lobby_id, rstime_t from, uint32_t count, std::list<RsChatLobbyEventItem*>& items) ;
+
+		/// Home side (MobileLink): handles a keep-alive a phone signed in
+		/// advance as if the phone had just sent it, so that it reaches the
+		/// lobby's other participants. Takes ownership of item, whose peer
+		/// id is the phone.
+		void releasePresignedKeepAlive(RsChatLobbyEventItem *item) ;
+
 		// Interface part to communicate with
 		//
 		bool getVirtualPeerId(const ChatLobbyId& lobby_id, RsPeerId& virtual_peer_id) ;

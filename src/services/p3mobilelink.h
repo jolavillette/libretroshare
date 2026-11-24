@@ -38,6 +38,7 @@
 #include "util/rstime.h"
 
 class p3ServiceControl;
+class DistributedChatService;
 
 /**
  * The MobileLink service, in both its roles.
@@ -104,6 +105,10 @@ public:
 	/// Phone side: whether peer is a home that serves this phone.
 	bool isHome(const RsPeerId& peer);
 
+	/// The chat service, which signs a phone's lobby keep-alives in advance
+	/// and sends them for it on its home. Set once at start-up.
+	void setChatService(DistributedChatService* chat) { mChat = chat; }
+
 	// p3FastService
 	int tick() override;
 	bool recvItem(RsItem* item) override;
@@ -141,6 +146,9 @@ private:
 		uint32_t mKeepAliveInterval = 0;
 		rstime_t mLastHello = 0;
 		rstime_t mLastPing = 0;
+
+		/// The phone's lobby keep-alives signed in advance, by send time.
+		std::multimap<rstime_t, RsMobileLinkKeepAlive> mKeepAliveStock;
 	};
 
 	void handleHello(const RsMobileLinkHelloItem& item);
@@ -148,6 +156,14 @@ private:
 	void handleState(const RsMobileLinkStateItem& item);
 	void handlePing(const RsMobileLinkPingItem& item);
 	void handlePong(const RsMobileLinkPongItem& item);
+	void handleKeepAliveStock(const RsMobileLinkKeepAliveStockItem& item);
+
+	/// Phone side, in background: sends the homes the lobby keep-alives of
+	/// the coming hour when their stock runs short.
+	void refillKeepAliveStock();
+
+	/// Home side: sends the phones' keep-alives that are due.
+	void releaseDueKeepAlives();
 
 	void sendHello(const RsPeerId& home);
 	void sendState(const RsPeerId& home);
@@ -183,6 +199,11 @@ private:
 	rstime_t mLastIdentityCheck = 0;
 	uint32_t mPingSeq = 0;
 	rstime_t mLastPingSent = 0;
+
+	/// Phone side: the send time of the last keep-alive given to the homes.
+	rstime_t mStockUntil = 0;
+
+	DistributedChatService* mChat = nullptr;
 
 	/// Home side, per phone among the friends, connected or not: a phone
 	/// keeps its state across a reconnection.

@@ -1751,6 +1751,7 @@ int RsServer::StartupRetroShare()
 	pqih->setMobileLink(mMobileLink);
 	mHeart->setMobileLink(mMobileLink);
 	chatSrv->setMobileLink(mMobileLink);
+	mMobileLink->setChatService(chatSrv);
 #ifdef RS_ENABLE_GXS
 	RsGxsNetService::setMobileLink(mMobileLink);
 #endif

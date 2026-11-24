@@ -24,8 +24,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cstdlib>
+#include <iterator>
 #include <string>
 
+#include "chat/distributedchat.h"
+#include "chat/rschatitems.h"
 #include "grouter/groutertypes.h"
 #include "grouter/p3grouter.h"
 #include "gxstunnel/p3gxstunnel.h"
@@ -48,6 +51,18 @@ static const uint32_t DEFAULT_KEEP_ALIVE_INTERVAL = 240;
 
 /// A home forgets a phone it has not heard from for this long.
 static const rstime_t FORGET_PHONE_AFTER = 86400;
+
+/// The chat lobby keep-alive interval (MAX_DELAY_BETWEEN_LOBBY_KEEP_ALIVE in
+/// chat/distributedchat.cc).
+static const rstime_t LOBBY_KEEP_ALIVE_INTERVAL = 120;
+
+/// A phone in background gives its homes its lobby keep-alives for this long
+/// ahead, and gives the next ones when less than half of it is left. Its
+/// presence in the lobbies outlives it by at most that long.
+static const rstime_t KEEP_ALIVE_STOCK_AHEAD = 3600;
+
+/// The most keep-alives a home keeps for a phone.
+static const size_t MAX_STOCKED_KEEP_ALIVES = 2000;
 
 /// The silence a phone in background and its home accept from each other:
 /// three keep-alive intervals, and never less than this.
@@ -127,6 +142,7 @@ void p3MobileLink::setQuiet(bool quiet)
 		if(!mPhoneMode || mQuiet == quiet) return;
 
 		mQuiet = quiet;
+		if(!quiet) mStockUntil = 0;
 		for(const auto& home: mHomes) homes.push_back(home.first);
 	}
 	RsInfo() << "MobileLink: " << (quiet ? "quiet" : "active");
@@ -369,6 +385,9 @@ int p3MobileLink::tick()
 	}
 	if(keepAliveDue) sendPings();
 
+	refillKeepAliveStock();
+	releaseDueKeepAlives();
+
 	std::vector<RsPeerId> helloTo;
 	{
 		std::lock_guard<std::mutex> lock(mMtx);
@@ -499,6 +518,10 @@ bool p3MobileLink::recvItem(RsItem* item)
 		if(auto pong = dynamic_cast<RsMobileLinkPongItem*>(item))
 			handlePong(*pong);
 		break;
+	case RS_PKT_SUBTYPE_MOBILE_LINK_KEEP_ALIVE_STOCK:
+		if(auto stock = dynamic_cast<RsMobileLinkKeepAliveStockItem*>(item))
+			handleKeepAliveStock(*stock);
+		break;
 	default:
 		break;
 	}
@@ -567,6 +590,9 @@ void p3MobileLink::handleState(const RsMobileLinkStateItem& item)
 
 	it->second.mQuiet = item.mQuiet;
 	it->second.mKeepAliveInterval = item.mKeepAliveInterval;
+
+	// Back to active, the phone sends its keep-alives itself again.
+	if(!item.mQuiet) it->second.mKeepAliveStock.clear();
 }
 
 void p3MobileLink::handlePing(const RsMobileLinkPingItem& item)
@@ -596,6 +622,118 @@ void p3MobileLink::handlePong(const RsMobileLinkPongItem& item)
 		it->second.mLastPongSeq = item.mSeq;
 	}
 	mPongReceived.notify_all();
+}
+
+void p3MobileLink::handleKeepAliveStock(const RsMobileLinkKeepAliveStockItem& item)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto it = mPhones.find(item.PeerId());
+	if(!mServePhones || it == mPhones.end()) return;
+
+	// Nothing already past, nothing too far ahead.
+	rstime_t now = time(nullptr);
+	auto& stock = it->second.mKeepAliveStock;
+	for(const RsMobileLinkKeepAlive& keepAlive: item.mKeepAlives)
+		if( static_cast<rstime_t>(keepAlive.mSendTime) + LOBBY_KEEP_ALIVE_INTERVAL >= now &&
+		    static_cast<rstime_t>(keepAlive.mSendTime) <= now + 2 * KEEP_ALIVE_STOCK_AHEAD )
+			stock.emplace(keepAlive.mSendTime, keepAlive);
+
+	while(stock.size() > MAX_STOCKED_KEEP_ALIVES) stock.erase(std::prev(stock.end()));
+}
+
+void p3MobileLink::refillKeepAliveStock()
+{
+	std::vector<RsPeerId> homes;
+	rstime_t from, until;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		if(!mPhoneMode || !mQuiet || !mChat) return;
+
+		for(const auto& home: mHomes)
+			if(home.second.mServing) homes.push_back(home.first);
+		if(homes.empty()) return;
+
+		rstime_t now = time(nullptr);
+		if(mStockUntil > now + KEEP_ALIVE_STOCK_AHEAD / 2) return;
+
+		// The phone sent its last keep-alive itself less than an interval
+		// ago: the stock starts half an interval from now.
+		from = mStockUntil ? mStockUntil + LOBBY_KEEP_ALIVE_INTERVAL
+		                   : now + LOBBY_KEEP_ALIVE_INTERVAL / 2;
+		until = now + KEEP_ALIVE_STOCK_AHEAD;
+		if(from > until) return;
+	}
+
+	uint32_t count = static_cast<uint32_t>((until - from) / LOBBY_KEEP_ALIVE_INTERVAL) + 1;
+
+	std::vector<RsMobileLinkKeepAlive> keepAlives;
+	std::list<ChatLobbyId> lobbies;
+	mChat->getChatLobbyList(lobbies);
+	for(ChatLobbyId lobby: lobbies)
+	{
+		std::list<RsChatLobbyEventItem*> items;
+		mChat->makePresignedKeepAlives(lobby, from, count, items);
+		for(RsChatLobbyEventItem* event: items)
+		{
+			RsMobileLinkKeepAlive keepAlive;
+			keepAlive.mLobbyId = event->lobby_id;
+			keepAlive.mMsgId = event->msg_id;
+			keepAlive.mNick = event->nick;
+			keepAlive.mSendTime = event->sendTime;
+			keepAlive.mSignature = event->signature;
+			keepAlives.push_back(keepAlive);
+			delete event;
+		}
+	}
+
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		mStockUntil = from + static_cast<rstime_t>(count - 1) * LOBBY_KEEP_ALIVE_INTERVAL;
+	}
+	if(keepAlives.empty()) return;
+
+	for(const RsPeerId& home: homes)
+	{
+		auto stock = new RsMobileLinkKeepAliveStockItem();
+		stock->PeerId(home);
+		stock->mKeepAlives = keepAlives;
+		sendItem(stock);
+	}
+}
+
+void p3MobileLink::releaseDueKeepAlives()
+{
+	if(!mChat) return;
+
+	std::vector<std::pair<RsPeerId, RsMobileLinkKeepAlive>> due;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		rstime_t now = time(nullptr);
+		for(auto& phone: mPhones)
+		{
+			auto& stock = phone.second.mKeepAliveStock;
+			auto end = stock.upper_bound(now);
+			for(auto it = stock.begin(); it != end; ++it)
+				due.emplace_back(phone.first, it->second);
+			stock.erase(stock.begin(), end);
+		}
+	}
+
+	// Outside the lock: the chat service calls this service back.
+	for(const auto& keepAlive: due)
+	{
+		auto event = new RsChatLobbyEventItem();
+		event->event_type = RS_CHAT_LOBBY_EVENT_KEEP_ALIVE;
+		event->sendTime = keepAlive.second.mSendTime;
+		event->lobby_id = keepAlive.second.mLobbyId;
+		event->msg_id = keepAlive.second.mMsgId;
+		event->nick = keepAlive.second.mNick;
+		event->signature = keepAlive.second.mSignature;
+		event->PeerId(keepAlive.first);
+		mChat->releasePresignedKeepAlive(event);
+	}
 }
 
 void p3MobileLink::statusChange(const std::list<pqiServicePeer>& plist)
