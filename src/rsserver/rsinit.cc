@@ -1666,6 +1666,7 @@ int RsServer::StartupRetroShare()
 	interfaces.mFiles  = rsFiles;
 	interfaces.mPeers  = rsPeers;
     interfaces.mMail   = rsMail;
+    interfaces.mChats  = rsChats;
 	interfaces.mTurtle = rsTurtle;
 	interfaces.mDisc   = rsDisc;
 #ifdef RS_USE_BITDHT
