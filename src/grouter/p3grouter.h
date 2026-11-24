@@ -93,6 +93,10 @@ class p3GRouter: public RsGRouter, public RsTurtleClientService, public p3Servic
 public:
     p3GRouter(p3ServiceControl *sc,RsGixs *is) ;
 
+    /// The turtle hash of the tunnels to destination for client service
+    /// client. A friend that spares a phone uses it too (p3MobileLink).
+    static Sha1CheckSum makeTunnelHash(const RsGxsId& destination,const GRouterServiceId& client);
+
     //===================================================//
     //         Router clients business                   //
     //===================================================//
@@ -255,8 +259,6 @@ private:
     bool verifySignedDataItem(const RsGRouterAbstractMsgItem *item, const RsIdentityUsage::UsageCode &info, uint32_t &error_status) ;
     bool encryptDataItem(RsGRouterGenericDataItem *item,const RsGxsId& destination_key) ;
     bool decryptDataItem(RsGRouterGenericDataItem *item) ;
-
-    static Sha1CheckSum makeTunnelHash(const RsGxsId& destination,const GRouterServiceId& client);
 
     //bool locked_getGxsIdAndClientId(const TurtleFileHash &sum,RsGxsId& gxs_id,GRouterServiceId& client_id);
     bool locked_sendTransactionData(const RsPeerId& pid,const RsGRouterTransactionItem& item);

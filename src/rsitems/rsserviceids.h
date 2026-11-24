@@ -52,6 +52,9 @@ enum class RsServiceType : uint16_t
 	/// For GXS identity authenticated tunnels, do not confuse with @GXS_DISTANT
 	GXS_TUNNEL                 = 0x0028,
 
+	/// Between a phone and its home, the friend that spares it (MobileLink)
+	MOBILE_LINK                = 0x0029,
+
 	BANLIST                    = 0x0101,
 	STATUS                     = 0x0102,
     FRIEND_SERVER              = 0x0103,

@@ -121,6 +121,11 @@ class p3GxsTunnelService: public RsGxsTunnelService, public RsTurtleClientServic
 {
 public:
     explicit p3GxsTunnelService(RsGixs *pids) ;
+
+    /// The destination identity of a tunnel hash: its last 16 bytes are the
+    /// identity in clear. A friend that spares a phone uses it too
+    /// (p3MobileLink).
+    static RsGxsId destinationGxsIdFromHash(const TurtleFileHash& sum) ;
     virtual void connectToTurtleRouter(p3turtle *) override;
 
     uint16_t serviceId() const override { return RS_SERVICE_TYPE_GXS_TUNNEL ; }
@@ -228,7 +233,6 @@ private:
     // utility functions
 
     static TurtleFileHash randomHashFromDestinationGxsId(const RsGxsId& destination) ;
-    static RsGxsId destinationGxsIdFromHash(const TurtleFileHash& sum) ;
 
     // Cryptography management
     

@@ -908,6 +908,7 @@ RsGRouter *rsGRouter = NULL ;
 
 #ifdef RS_RTT
 #include "services/p3rtt.h"
+#include "services/p3mobilelink.h"
 #endif
 
 
@@ -1743,6 +1744,10 @@ int RsServer::StartupRetroShare()
 	p3BandwidthControl *mBwCtrl = new p3BandwidthControl(pqih);
 	pqih -> addService(mBwCtrl, true); 
 
+	p3MobileLink *mMobileLink = new p3MobileLink(serviceCtrl);
+	pqih -> addService(mMobileLink, true);
+	rsMobileLink = mMobileLink;
+
 #ifdef SERVICES_DSDV
 	p3Dsdv *mDsdv = new p3Dsdv(serviceCtrl);
 	pqih -> addService(mDsdv, true);
@@ -1781,6 +1786,7 @@ int RsServer::StartupRetroShare()
 	serviceCtrl->registerServiceMonitor(mStatusSrv, mStatusSrv->getServiceInfo().mServiceType);
 	serviceCtrl->registerServiceMonitor(chatSrv, chatSrv->getServiceInfo().mServiceType);
 	serviceCtrl->registerServiceMonitor(mBwCtrl, mBwCtrl->getServiceInfo().mServiceType);
+	serviceCtrl->registerServiceMonitor(mMobileLink, mMobileLink->getServiceInfo().mServiceType);
 
 	/**************************************************************************/
     // Turtle search for GXS services
@@ -1807,6 +1813,7 @@ int RsServer::StartupRetroShare()
 	mConfigMgr->addConfiguration("p3History.cfg"   , mHistoryMgr);
 	mConfigMgr->addConfiguration("p3Status.cfg"    , mStatusSrv);
 	mConfigMgr->addConfiguration("turtle.cfg"      , tr);
+	mConfigMgr->addConfiguration("mobilelink.cfg"  , mMobileLink);
 
     if(mBanList != NULL)
 		mConfigMgr->addConfiguration("banlist.cfg"     , mBanList);
