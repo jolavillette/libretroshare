@@ -304,6 +304,29 @@ rstime_t p3MobileLink::silenceTolerance(const RsPeerId& peer)
 	return 0;
 }
 
+bool p3MobileLink::phoneLobbyIdentity( const RsPeerId& phone, uint64_t lobby,
+                                       RsGxsId& id )
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto it = mPhones.find(phone);
+	if(it == mPhones.end()) return false;
+
+	auto lit = it->second.mLobbyIds.find(lobby);
+	if(lit == it->second.mLobbyIds.end()) return false;
+
+	id = lit->second;
+	return true;
+}
+
+bool p3MobileLink::isHome(const RsPeerId& peer)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto it = mHomes.find(peer);
+	return mPhoneMode && it != mHomes.end() && it->second.mServing;
+}
+
 bool p3MobileLink::wantsHeartbeat(const RsPeerId& peer)
 {
 	std::lock_guard<std::mutex> lock(mMtx);

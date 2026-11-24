@@ -96,6 +96,14 @@ public:
 	/// background and its home: the phone's keep-alive replaces it.
 	bool wantsHeartbeat(const RsPeerId& peer);
 
+	/// Home side: the identity phone uses in chat lobby lobby, as its HELLO
+	/// said. False when unknown.
+	bool phoneLobbyIdentity( const RsPeerId& phone, uint64_t lobby,
+	                         RsGxsId& id );
+
+	/// Phone side: whether peer is a home that serves this phone.
+	bool isHome(const RsPeerId& peer);
+
 	// p3FastService
 	int tick() override;
 	bool recvItem(RsItem* item) override;

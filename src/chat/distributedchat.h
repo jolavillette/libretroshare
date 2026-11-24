@@ -44,16 +44,24 @@ class RsChatLobbyUnsubscribeItem ;
 
 class RsChatItem ;
 class RsChatMsgItem ;
+class RsChatLobbyMsgItem ;
+class RsChatLobbyEventItem ;
+class RsChatLobbyBouncingObject ;
 class RsGixs ;
+class p3MobileLink ;
 
 class DistributedChatService
 {
 	public:
 		DistributedChatService(uint32_t service_type,p3ServiceControl *sc,p3HistoryMgr *hm,RsGixs *is) ;
 
-		virtual ~DistributedChatService() {}
+		virtual ~DistributedChatService() ;
 
 		void flush() ;
+
+		/// The service that tells which friends are phones in background,
+		/// and whether this node is one (MobileLink). Set once at start-up.
+		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink ; }
 
 		// Interface part to communicate with
 		//
@@ -165,4 +173,30 @@ class DistributedChatService
 		p3ServiceControl *mServControl; 
 		p3HistoryMgr *mHistMgr;
 		RsGixs *mGixs ;
+
+		// What a home keeps for a phone in background (MobileLink), and sends
+		// it when it comes back.
+
+		struct HeldForPhone
+		{
+			/// Lobby lines, in arrival order.
+			std::list<RsChatLobbyMsgItem*> lines ;
+
+			/// The last keep-alive, join or leave of each participant, per
+			/// lobby: enough for the phone's participant lists.
+			std::map<std::pair<ChatLobbyId,RsGxsId>,RsChatLobbyEventItem*> presence ;
+		};
+
+		/// Keeps item for phone, unless it is a line that mentions the phone,
+		/// which goes at once. True when kept.
+		bool locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item) ;
+
+		/// Whether line mentions phone's nickname in its lobby.
+		bool locked_mentionsPhone(const RsPeerId& phone, const RsChatLobbyMsgItem& line) ;
+
+		/// Sends their kept items to the phones that came back.
+		void sendHeldItemsToReturnedPhones() ;
+
+		p3MobileLink *mMobileLink = nullptr ;
+		std::map<RsPeerId,HeldForPhone> mHeldForPhones ;	// locked by mDistributedChatMtx
 };
