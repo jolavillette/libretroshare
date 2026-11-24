@@ -72,6 +72,24 @@ struct RetroShareServiceAndroid
 	/// Return RetroShare Service Android Context
 	static jni::Local<jni::Object<Context>> getAndroidContext(JNIEnv& env);
 
+	/**
+	 * MobileLink, called from Java: sends a keep-alive to the homes and waits
+	 * up to timeoutSeconds for one of them to answer. Blocks.
+	 * @return true when a home answered in time
+	 */
+	static jni::jboolean mobileLinkKeepAlive(
+	        JNIEnv& env, jni::Class<RetroShareServiceAndroid>&,
+	        jni::jint timeoutSeconds );
+
+	/// MobileLink, called from Java: the keep-alive interval, in seconds.
+	static jni::jint mobileLinkKeepAliveInterval(
+	        JNIEnv& env, jni::Class<RetroShareServiceAndroid>& );
+
+	/// MobileLink: makes libretroshare tell the Java service when the phone
+	/// may sleep, and when something arrives while it may. Called once, at
+	/// load time.
+	static void registerMobileLinkHooks();
+
 private:
 	/** Doesn't involve complex liftime handling stuff better let the runtime
 	 * handle costruction (ASAP)/destruction for us */

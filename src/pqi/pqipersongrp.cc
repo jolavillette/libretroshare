@@ -528,6 +528,11 @@ rstime_t pqipersongrp::silenceTolerance(const RsPeerId& id)
 	return mMobileLink ? mMobileLink->silenceTolerance(id) : 0;
 }
 
+void pqipersongrp::noteIncoming(const RsPeerId& id)
+{
+	if(mMobileLink) mMobileLink->noteIncoming(id);
+}
+
 int pqipersongrp::tagHeartbeatRecvd(const RsPeerId& id)
 {
         std::map<RsPeerId, SearchModule *>::iterator it;

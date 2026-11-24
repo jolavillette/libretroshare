@@ -94,6 +94,10 @@ void	setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
 	/// usual timeouts.
 rstime_t silenceTolerance(const RsPeerId& id);
 
+	/// Called for every item received from id (MobileLink: a phone that may
+	/// sleep stays awake long enough to handle it).
+void	noteIncoming(const RsPeerId& id);
+
 	/*** callback from children ****/
 bool    notifyConnect(const RsPeerId& id, uint32_t type, bool success, bool isIncomingConnection, const struct sockaddr_storage &remote_peer_address);
 //bool    notifyConnect(std::string id, uint32_t type, bool success);

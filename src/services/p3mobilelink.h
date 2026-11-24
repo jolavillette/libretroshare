@@ -21,8 +21,10 @@
  *******************************************************************************/
 #pragma once
 
+#include <atomic>
 #include <condition_variable>
 #include <cstdint>
+#include <functional>
 #include <list>
 #include <map>
 #include <mutex>
@@ -114,6 +116,19 @@ public:
 	/// and sends them for it on its home. Set once at start-up.
 	void setChatService(DistributedChatService* chat) { mChat = chat; }
 
+	/// Platform hooks, set by the Android service before the first login:
+	/// sleepAllowedChanged(true) when this phone may sleep (in background,
+	/// with a connected home that serves it), false when it must stay
+	/// awake; wakeUp() when something arrives while it may sleep, so that
+	/// the platform keeps it awake long enough to handle it. Called on
+	/// libretroshare's threads.
+	static void setPlatformHooks( std::function<void(bool)> sleepAllowedChanged,
+	                              std::function<void()> wakeUp );
+
+	/// Called for every item received from peer (pqiperson). Cheap unless
+	/// this phone may sleep.
+	void noteIncoming(const RsPeerId& peer);
+
 	// p3FastService
 	int tick() override;
 	bool recvItem(RsItem* item) override;
@@ -184,6 +199,12 @@ private:
 	/// Home side: forgets the phones not heard from for a day.
 	void forgetSilentPhones();
 
+	/// Phone side: works out whether the phone may sleep and tells the
+	/// platform when that changes.
+	void updateSleepAllowed();
+
+	void statusChangeLocked(const std::list<pqiServicePeer>& plist);
+
 	p3ServiceControl* mServiceControl;
 
 	/// Guards everything below. A std::mutex for mPongReceived.
@@ -209,6 +230,11 @@ private:
 	rstime_t mStockUntil = 0;
 
 	DistributedChatService* mChat = nullptr;
+
+	std::atomic<bool> mSleepAllowed{false};
+	std::atomic<rstime_t> mLastWakeUp{0};
+	static std::function<void(bool)> sSleepAllowedChanged;
+	static std::function<void()> sWakeUp;
 
 	/// Home side, per phone among the friends, connected or not: a phone
 	/// keeps its state across a reconnection.

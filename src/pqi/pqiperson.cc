@@ -104,6 +104,8 @@ bool pqiperson::RecvItem(RsItem *item)
 	std::cerr << "pqiperson::RecvItem()" << std::endl;
 #endif
 
+	pqipg->noteIncoming(PeerId());
+
 	return pqipg->recvItem((RsRawItem *) item);
 }
 

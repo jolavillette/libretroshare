@@ -108,6 +108,7 @@ public class RetroShareServiceAndroid extends Service
     {
         super.onCreate();
         sServiceContext = this;
+        sInstance = this;
     }
 
     @Override
@@ -116,8 +117,52 @@ public class RetroShareServiceAndroid extends Service
         ErrorConditionWrap ec = nativeStop();
         if(ec.toBool()) Log.e(TAG, "onDestroy() " + ec.toString());
         sServiceContext = null;
+        sInstance = null;
         super.onDestroy();
     }
+
+    /** The running service, for libretroshare's calls on its own threads. */
+    private static RetroShareServiceAndroid sInstance;
+
+    /**
+     * Called by libretroshare, on one of its threads (MobileLink): true when
+     * this phone may sleep, in background with a connected home that spares
+     * it; false when it must stay awake. The application's service overrides
+     * onMobileLinkSleepAllowed() to act on it.
+     */
+    protected static void mobileLinkSleepAllowedChanged(boolean allowed)
+    {
+        RetroShareServiceAndroid service = sInstance;
+        if(service != null) service.onMobileLinkSleepAllowed(allowed);
+    }
+
+    /**
+     * Called by libretroshare, on one of its threads (MobileLink), when
+     * something arrives while this phone may sleep: the application's service
+     * overrides onMobileLinkWakeUp() to keep it awake long enough to handle
+     * it.
+     */
+    protected static void mobileLinkWakeUp()
+    {
+        RetroShareServiceAndroid service = sInstance;
+        if(service != null) service.onMobileLinkWakeUp();
+    }
+
+    /** See mobileLinkSleepAllowedChanged(). Does nothing here. */
+    protected void onMobileLinkSleepAllowed(boolean allowed) {}
+
+    /** See mobileLinkWakeUp(). Does nothing here. */
+    protected void onMobileLinkWakeUp() {}
+
+    /**
+     * MobileLink: sends a keep-alive to the homes and waits up to
+     * timeoutSeconds for one of them to answer. Blocks: call it off the main
+     * thread.
+     */
+    protected static native boolean nativeMobileLinkKeepAlive(int timeoutSeconds);
+
+    /** MobileLink: the keep-alive interval, in seconds; 0 before login. */
+    protected static native int nativeMobileLinkKeepAliveInterval();
 
     @Override
 	public IBinder onBind(Intent arg0) { return null; }

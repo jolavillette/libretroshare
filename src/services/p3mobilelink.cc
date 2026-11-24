@@ -40,6 +40,9 @@
 
 RsMobileLink* rsMobileLink = nullptr;
 
+std::function<void(bool)> p3MobileLink::sSleepAllowedChanged;
+std::function<void()> p3MobileLink::sWakeUp;
+
 RsMobileLink::~RsMobileLink() = default;
 
 /// How often a phone looks whether its identities or lobbies changed.
@@ -63,6 +66,10 @@ static const rstime_t KEEP_ALIVE_STOCK_AHEAD = 3600;
 
 /// The most keep-alives a home keeps for a phone.
 static const size_t MAX_STOCKED_KEEP_ALIVES = 2000;
+
+/// A phone that may sleep asks the platform to keep it awake at most this
+/// often when items arrive.
+static const rstime_t MIN_WAKE_UP_INTERVAL = 2;
 
 /// The silence a phone in background and its home accept from each other:
 /// three keep-alive intervals, and never less than this.
@@ -125,6 +132,7 @@ void p3MobileLink::setPhoneMode(bool phone)
 	if(!phone)
 		for(const RsPeerId& home: homes) sendState(home);
 
+	updateSleepAllowed();
 	IndicateConfigChanged();
 }
 
@@ -148,6 +156,7 @@ void p3MobileLink::setQuiet(bool quiet)
 	RsInfo() << "MobileLink: " << (quiet ? "quiet" : "active");
 
 	for(const RsPeerId& home: homes) sendState(home);
+	updateSleepAllowed();
 }
 
 bool p3MobileLink::getQuiet()
@@ -415,6 +424,41 @@ int p3MobileLink::tick()
 	return 0;
 }
 
+void p3MobileLink::setPlatformHooks( std::function<void(bool)> sleepAllowedChanged,
+                                     std::function<void()> wakeUp )
+{
+	sSleepAllowedChanged = std::move(sleepAllowedChanged);
+	sWakeUp = std::move(wakeUp);
+}
+
+void p3MobileLink::noteIncoming(const RsPeerId& /*peer*/)
+{
+	if(!mSleepAllowed) return;
+
+	rstime_t now = time(nullptr);
+	rstime_t last = mLastWakeUp;
+	if(now < last + MIN_WAKE_UP_INTERVAL) return;
+	if(!mLastWakeUp.compare_exchange_strong(last, now)) return;
+
+	if(sWakeUp) sWakeUp();
+}
+
+void p3MobileLink::updateSleepAllowed()
+{
+	bool allowed = false;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		if(mPhoneMode && mQuiet)
+			for(const auto& home: mHomes)
+				if(home.second.mServing) { allowed = true; break; }
+	}
+
+	if(mSleepAllowed.exchange(allowed) == allowed) return;
+
+	RsInfo() << "MobileLink: the phone " << (allowed ? "may sleep" : "stays awake");
+	if(sSleepAllowedChanged) sSleepAllowedChanged(allowed);
+}
+
 void p3MobileLink::forgetSilentPhones()
 {
 	std::lock_guard<std::mutex> lock(mMtx);
@@ -574,10 +618,13 @@ void p3MobileLink::handleHello(const RsMobileLinkHelloItem& item)
 
 void p3MobileLink::handleHome(const RsMobileLinkHomeItem& item)
 {
-	std::lock_guard<std::mutex> lock(mMtx);
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
 
-	auto it = mHomes.find(item.PeerId());
-	if(it != mHomes.end()) it->second.mServing = item.mServing;
+		auto it = mHomes.find(item.PeerId());
+		if(it != mHomes.end()) it->second.mServing = item.mServing;
+	}
+	updateSleepAllowed();
 }
 
 void p3MobileLink::handleState(const RsMobileLinkStateItem& item)
@@ -742,6 +789,12 @@ void p3MobileLink::releaseDueKeepAlives()
 }
 
 void p3MobileLink::statusChange(const std::list<pqiServicePeer>& plist)
+{
+	statusChangeLocked(plist);
+	updateSleepAllowed();
+}
+
+void p3MobileLink::statusChangeLocked(const std::list<pqiServicePeer>& plist)
 {
 	std::lock_guard<std::mutex> lock(mMtx);
 
