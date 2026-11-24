@@ -125,8 +125,6 @@ private:
 	RsOpMode mOpMode;
 
 	// Cumulative traffic statistics storage
-	std::map<RsPeerId, RsCumulativeTrafficStats> mCumulativeTrafficByPeer;
-	std::map<uint16_t, RsCumulativeTrafficStats> mCumulativeTrafficByService;
 };
 
 #endif

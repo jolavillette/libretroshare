@@ -40,6 +40,53 @@
 
 #include <iomanip>
 
+namespace
+{
+// The totals behind pqistreamer::getCumulativeTraffic(): every item counted
+// once, where it goes through, whichever streamer carries it.
+RsMutex& cumulativeTrafficMtx()
+{
+	static RsMutex mtx("pqistreamer cumulative traffic");
+	return mtx;
+}
+std::map<uint16_t, RsCumulativeTrafficStats> sCumulativeTrafficByService;
+std::map<RsPeerId, RsCumulativeTrafficStats> sCumulativeTrafficByPeer;
+
+void addToCumulativeTraffic(
+        RsCumulativeTrafficStats& stats, bool incoming, uint32_t size,
+        rstime_t now )
+{
+	if(incoming)
+	{
+		stats.bytesIn += size;
+		++stats.countIn;
+	}
+	else
+	{
+		stats.bytesOut += size;
+		++stats.countOut;
+	}
+	if(stats.firstSeen == 0) stats.firstSeen = now;
+	stats.lastSeen = now;
+}
+}
+
+void pqistreamer::getCumulativeTraffic(
+        std::map<uint16_t, RsCumulativeTrafficStats>* byService,
+        std::map<RsPeerId, RsCumulativeTrafficStats>* byPeer )
+{
+	RsStackMutex stack(cumulativeTrafficMtx());
+	if(byService) *byService = sCumulativeTrafficByService;
+	if(byPeer) *byPeer = sCumulativeTrafficByPeer;
+}
+
+void pqistreamer::clearCumulativeTraffic(bool byPeer, bool byService)
+{
+	RsStackMutex stack(cumulativeTrafficMtx());
+	if(byPeer) sCumulativeTrafficByPeer.clear();
+	if(byService) sCumulativeTrafficByService.clear();
+}
+
 //#define DEBUG_PQISTREAMER 1
 
 static struct RsLog::logInfo pqistreamerzoneInfo = {RsLog::Default, "pqistreamer"};
@@ -412,7 +459,7 @@ int	pqistreamer::queue_outpqi_locked(RsItem *pqi,uint32_t& pktsize)
     	// keep info for stats for a while. Only keep the items for the last two seconds. sec n is ongoing and second n-1
     	// is a full statistics chunk that can be used in the GUI
 
-    	locked_addTrafficClue(pqi,pktsize,mCurrentStatsChunk_Out) ;
+    	locked_addTrafficClue(pqi,pktsize,mCurrentStatsChunk_Out,false) ;
 
         /*******************************************************************************************/
 
@@ -465,14 +512,14 @@ int 	pqistreamer::handleincomingitem(RsItem *pqi,int len)
 	// is a full statistics chunk that can be used in the GUI
 	{
 		RsStackMutex stack(mStreamerMtx); /**** LOCKED MUTEX ****/
-		locked_addTrafficClue(pqi,len,mCurrentStatsChunk_In) ;
+		locked_addTrafficClue(pqi,len,mCurrentStatsChunk_In,true) ;
 	}
 	/*******************************************************************************************/
 
 	return 1;
 }
 
-void pqistreamer::locked_addTrafficClue(const RsItem *pqi,uint32_t pktsize,std::list<RSTrafficClue>& lst)
+void pqistreamer::locked_addTrafficClue(const RsItem *pqi,uint32_t pktsize,std::list<RSTrafficClue>& lst,bool incoming)
 {
     rstime_t now = time(NULL) ;
 
@@ -496,6 +543,12 @@ void pqistreamer::locked_addTrafficClue(const RsItem *pqi,uint32_t pktsize,std::
     tc.service_sub_id = pqi->PacketSubType() ;
 
     lst.push_back(tc) ;
+
+    {
+	    RsStackMutex stack(cumulativeTrafficMtx());
+	    addToCumulativeTraffic(sCumulativeTrafficByService[tc.service_id], incoming, pktsize, now);
+	    addToCumulativeTraffic(sCumulativeTrafficByPeer[tc.peer_id], incoming, pktsize, now);
+    }
 }
 
 rstime_t	pqistreamer::getLastIncomingTS()
