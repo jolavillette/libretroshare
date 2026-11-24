@@ -354,16 +354,21 @@ void RNPPGPHandler::initCertificateInfo(const rnp_key_handle_t& key_handle)
     RsInfo() << (have_secret?"  [SECRET]":"          ") << " type: " << key_alg << "-" << key_bits << "  Key id: " << key_id<< " fingerprint: " << key_fprint << " Username: \"" << key_uid << "\"" ;
 #endif
 
+    // Trust level, flags (accepted connections, signatures) and time stamp are local state: they are set the
+    // first time the entry is filled from a key, and kept when the key is imported again or gets new signatures.
     auto fill_cert = [key_alg,key_fprint](PGPCertificateInfo& cert,char *key_uid,const std::set<RsPgpId>& signers)
     {
+        if(cert._fpr.isNull())
+        {
+            cert._trustLvl = 1 ;	// to be setup accordingly
+            cert._validLvl = 1 ;	// to be setup accordingly
+            cert._flags = 0 ;
+            cert._time_stamp = 0 ;// "never" by default. Will be updated by trust database, and effective key usage.
+        }
+
         extract_name_and_comment(key_uid,cert._name,cert._comment,cert._email);
 
         cert.signers = signers;
-        cert._trustLvl = 1 ;	// to be setup accordingly
-        cert._validLvl = 1 ;	// to be setup accordingly
-        //cert._key_index = index ;
-        cert._flags = 0 ;
-        cert._time_stamp = 0 ;// "never" by default. Will be updated by trust database, and effective key usage.
 
         if(!strcmp(key_alg,"RSA"))
             cert._type = PGPCertificateInfo::PGP_CERTIFICATE_TYPE_RSA ;
