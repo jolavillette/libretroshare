@@ -357,6 +357,7 @@ void p3GxsTunnelService::handleRecvTunnelDataItem(const RsGxsTunnelId& tunnel_id
     RsGxsTunnelClientService *service = NULL ;
     RsGxsId peer_from ;
     bool is_client_side = false ;
+    bool joined = false ;
     
     {
 	    RS_STACK_MUTEX(mGxsTunnelMtx); /********** STACK LOCKED MTX ******/
@@ -373,7 +374,13 @@ void p3GxsTunnelService::handleRecvTunnelDataItem(const RsGxsTunnelId& tunnel_id
             
             if(it2 != _gxs_tunnel_contacts.end())
 			{
-				it2->second.client_services.insert(item->service_id) ;
+				// A service joins a tunnel with its first packet on the side the
+				// tunnel was opened to. The status changes of the handshake only
+				// went to the services listed then, none on a new tunnel: tell it
+				// that the tunnel can talk, or a chat window left open after the
+				// peer closed the conversation stays blocked once it comes back.
+				joined = it2->second.client_services.insert(item->service_id).second
+				         && it2->second.status == RS_GXS_TUNNEL_STATUS_CAN_TALK ;
 				peer_from = it2->second.to_gxs_id ;
 				is_client_side = (it2->second.direction == RsTurtleGenericDataItem::DIRECTION_SERVER);
 			}
@@ -389,6 +396,9 @@ void p3GxsTunnelService::handleRecvTunnelDataItem(const RsGxsTunnelId& tunnel_id
             it2->second.received_data_prints[item->unique_item_counter] = time(NULL) ;
     }
     
+    if(joined)	// off the mutex, like the other client notifications
+	    service->notifyTunnelStatus(tunnel_id,RS_GXS_TUNNEL_STATUS_CAN_TALK) ;
+
     if(service->acceptDataFromPeer(peer_from,tunnel_id,is_client_side))
 	    service->receiveData(tunnel_id,item->data,item->data_size) ;
     
