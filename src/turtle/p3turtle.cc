@@ -129,6 +129,7 @@ p3turtle::p3turtle(p3ServiceControl *sc,p3LinkMgr *lm)
 	_traffic_info.reset() ;
 	_max_tr_up_rate = MAX_TR_FORWARD_PER_SEC ;
 	_forward_search_requests = true ;
+	_forward_tunnel_requests = true ;
 	_service_type = getServiceInfo().mServiceType ;
 }
 
@@ -717,6 +718,11 @@ bool p3turtle::saveList(bool& cleanup, std::list<RsItem*>& lst)
 
 	vitem->tlvkvs.pairs.push_back(kv) ;
 
+	kv.key = "TURTLE_FORWARD_TUNNEL_REQUESTS" ;
+	kv.value = _forward_tunnel_requests?"TRUE":"FALSE" ;
+
+	vitem->tlvkvs.pairs.push_back(kv) ;
+
 	lst.push_back(vitem) ;
 
 	return true ;
@@ -752,6 +758,8 @@ bool p3turtle::loadList(std::list<RsItem*>& load)
 				}
 				if(kit->key == "TURTLE_FORWARD_SEARCH_REQUESTS")
 					_forward_search_requests = (kit->value != "FALSE") ;
+				if(kit->key == "TURTLE_FORWARD_TUNNEL_REQUESTS")
+					_forward_tunnel_requests = (kit->value != "FALSE") ;
 			}
 
 		delete *it ;
@@ -776,6 +784,25 @@ bool p3turtle::searchRequestForwarding() const
 {
 	RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
 	return _forward_search_requests ;
+}
+
+void p3turtle::setTunnelRequestForwarding(bool forward)
+{
+	{
+		RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
+
+		if(_forward_tunnel_requests == forward)
+			return ;
+
+		_forward_tunnel_requests = forward ;
+	}
+	IndicateConfigChanged() ;
+}
+
+bool p3turtle::tunnelRequestForwarding() const
+{
+	RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
+	return _forward_tunnel_requests ;
 }
 
 int p3turtle::getMaxTRForwardRate() const
@@ -1796,7 +1823,11 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 	if(item->depth < TURTLE_MAX_SEARCH_DEPTH || random_bypass)
 	{
 		std::set<RsPeerId> onlineIds ;
-		mServiceControl->getPeersConnected(_service_type, onlineIds);
+
+		// A node that relays no tunnel (setTunnelRequestForwarding()) passes
+		// on its own requests only.
+		if(item->PeerId() == _own_id || tunnelRequestForwarding())
+			mServiceControl->getPeersConnected(_service_type, onlineIds);
 
 //		for(std::set<RsPeerId>::iterator it(onlineIds.begin());it!=onlineIds.end();)
 //			if(!mServiceControl->isPeerConnected(RS_SERVICE_PERM_TURTLE,*it))
