@@ -25,6 +25,7 @@
 #include "retroshare/rspeers.h"
 
 #include "services/p3gxsreputation.h"
+#include "services/p3mobilelink.h"
 
 #include "rsitems/rsgxsreputationitems.h"
 #include "rsitems/rsconfigitems.h"
@@ -1456,7 +1457,13 @@ void p3GxsReputation::sendReputationRequests()
 	/* prepare packets */
 	std::list<RsPeerId>::iterator it;
 	for(it = idList.begin(); it != idList.end(); ++it)
+	{
+		// None between a phone in background and its home (MobileLink).
+		if(mMobileLink && mMobileLink->isQuietLink(*it))
+			continue;
+
 		sendReputationRequest(*it);
+	}
 }
 
 int p3GxsReputation::sendReputationRequest(RsPeerId peerid)

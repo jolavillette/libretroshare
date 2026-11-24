@@ -26,6 +26,7 @@
 #include "util/rsnet.h"
 
 #include "services/p3banlist.h"
+#include "services/p3mobilelink.h"
 #include "retroshare/rsdht.h"
 #include "retroshare/rsbanlist.h"
 
@@ -1194,6 +1195,10 @@ void p3BanList::sendBanLists()
 		std::cerr << "p3BanList::sendBanList() To: " << *it;
 		std::cerr << std::endl;
 #endif
+		// None between a phone in background and its home (MobileLink).
+		if(mMobileLink && mMobileLink->isQuietLink(*it))
+			continue;
+
 		sendBanSet(*it);
 	}
 }

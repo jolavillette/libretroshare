@@ -1752,6 +1752,12 @@ int RsServer::StartupRetroShare()
 	mHeart->setMobileLink(mMobileLink);
 	chatSrv->setMobileLink(mMobileLink);
 	mMobileLink->setChatService(chatSrv);
+	mBwCtrl->setMobileLink(mMobileLink);
+	mReputations->setMobileLink(mMobileLink);
+	if(mBanList) mBanList->setMobileLink(mMobileLink);
+#ifdef RS_RTT
+	mRtt->setMobileLink(mMobileLink);
+#endif
 #ifdef RS_ENABLE_GXS
 	RsGxsNetService::setMobileLink(mMobileLink);
 #endif

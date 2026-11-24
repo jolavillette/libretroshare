@@ -95,10 +95,16 @@ public:
 
 
 //!The p3GxsReputation service.
+class p3MobileLink;
+
 class p3GxsReputation: public p3Service, public p3Config, public RsGixsReputation, public RsReputations /* , public pqiMonitor */
 {
 public:
     p3GxsReputation(p3LinkMgr *lm);
+
+    /// The service that tells which links stay silent (MobileLink). Set
+    /// once at start-up.
+    void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
     virtual RsServiceInfo getServiceInfo();
 
     /***** Interface for RsReputations *****/
@@ -198,6 +204,7 @@ private:
 
     bool mChanged ; // slow version of IndicateConfigChanged();
     rstime_t mLastReputationConfigSaved ;
+	p3MobileLink *mMobileLink = nullptr;
 };
 
 #endif //SERVICE_RSGXSREPUTATION_HEADER

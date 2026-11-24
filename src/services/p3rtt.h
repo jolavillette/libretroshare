@@ -58,6 +58,8 @@ class RttPeerInfo
   * Used to test Latency.
   */
 
+class p3MobileLink;
+
 class p3rtt: public RsRtt, public p3FastService
 {
 	public:
@@ -111,6 +113,12 @@ virtual bool recvItem(RsItem *item); // Overloaded from p3FastService.
 		uint32_t mCounter;
 
 		p3ServiceControl *mServiceCtrl;
+		p3MobileLink *mMobileLink = nullptr;
+
+	public:
+		/// The service that tells which links stay silent (MobileLink).
+		/// Set once at start-up.
+		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
 
 };
 

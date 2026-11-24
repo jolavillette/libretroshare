@@ -97,6 +97,11 @@ public:
 	/// background and its home: the phone's keep-alive replaces it.
 	bool wantsHeartbeat(const RsPeerId& peer);
 
+	/// Whether the link to peer is between a phone in background and its
+	/// home: the periodic services (heartbeat, RTT, bandwidth control,
+	/// ban list, reputation) send nothing on it.
+	bool isQuietLink(const RsPeerId& peer);
+
 	/// Home side: the identity phone uses in chat lobby lobby, as its HELLO
 	/// said. False when unknown.
 	bool phoneLobbyIdentity( const RsPeerId& phone, uint64_t lobby,

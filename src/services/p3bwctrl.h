@@ -66,6 +66,8 @@ class BwCtrlData
   * Sadly this has to be strongly integrated into pqi, with ref to pqipersongrp.
   */
 
+class p3MobileLink;
+
 class p3BandwidthControl: public p3Service, public pqiServiceMonitor
 {
 	public:
@@ -111,6 +113,13 @@ private:
 		bool 	processIncoming();
 
 		pqipersongrp *mPg;
+		p3MobileLink *mMobileLink = nullptr;
+
+	public:
+		/// The service that tells which links stay silent (MobileLink).
+		/// Set once at start-up.
+		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
+	private:
 
 		RsMutex mBwMtx;
 

@@ -48,6 +48,8 @@ class BanList
  *
  * @warning IPv4 only, IPv6 not supported yet!
  */
+class p3MobileLink;
+
 class p3BanList: public RsBanList, public p3Service, public pqiNetAssistPeerShare, public p3Config /*, public pqiMonitor */
 {
 public:
@@ -145,6 +147,13 @@ private:
     bool isWhiteListed_locked(const sockaddr_storage &addr);
 
     p3ServiceControl *mServiceCtrl;
+    p3MobileLink *mMobileLink = nullptr;
+
+public:
+    /// The service that tells which links stay silent (MobileLink). Set
+    /// once at start-up.
+    void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
+private:
     //p3NetMgr *mNetMgr;
     rstime_t mSentListTime;
     std::map<RsPeerId, BanList> mBanSources;

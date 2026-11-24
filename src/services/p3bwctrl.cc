@@ -26,6 +26,7 @@
 #include "util/rsnet.h"
 
 #include "services/p3bwctrl.h"
+#include "services/p3mobilelink.h"
 #include "rsitems/rsbwctrlitems.h"
 
 #include <sys/time.h>
@@ -177,6 +178,11 @@ bool p3BandwidthControl::checkAvailableBandwidth()
 			// save value sent,
 			bit->second.mAllocated = ALLOC_FACTOR * 1000.0 * it->second.mMaxRateIn;
 			bit->second.mLastSend = now;
+
+			// None between a phone in background and its home (MobileLink):
+			// the last allowance stands.
+			if(mMobileLink && mMobileLink->isQuietLink(bit->first))
+				continue;
 
 			RsBwCtrlAllowedItem *item = new RsBwCtrlAllowedItem();
 			item->PeerId(bit->first);

@@ -358,12 +358,17 @@ bool p3MobileLink::isHome(const RsPeerId& peer)
 
 bool p3MobileLink::wantsHeartbeat(const RsPeerId& peer)
 {
+	return !isQuietLink(peer);
+}
+
+bool p3MobileLink::isQuietLink(const RsPeerId& peer)
+{
 	std::lock_guard<std::mutex> lock(mMtx);
 
 	auto phone = mPhones.find(peer);
-	if(phone != mPhones.end() && phone->second.mQuiet) return false;
+	if(phone != mPhones.end() && phone->second.mQuiet) return true;
 
-	return !(mPhoneMode && mQuiet && mHomes.count(peer));
+	return mPhoneMode && mQuiet && mHomes.count(peer);
 }
 
 /******************************************************************************/
