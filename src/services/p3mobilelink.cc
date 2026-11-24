@@ -21,6 +21,7 @@
  *******************************************************************************/
 #include "services/p3mobilelink.h"
 
+#include <algorithm>
 #include <chrono>
 #include <cstdlib>
 #include <string>
@@ -44,6 +45,16 @@ static const rstime_t IDENTITY_CHECK_PERIOD = 60;
 /// A phone's keep-alive interval by default. Mobile networks forget an idle
 /// connection after a few minutes; the app adjusts it to the network.
 static const uint32_t DEFAULT_KEEP_ALIVE_INTERVAL = 240;
+
+/// The silence a phone in background and its home accept from each other:
+/// three keep-alive intervals, and never less than this.
+static const rstime_t MIN_SILENCE_TOLERANCE = 900;
+
+static rstime_t silenceToleranceFor(uint32_t keepAliveInterval)
+{
+	return std::max<rstime_t>( MIN_SILENCE_TOLERANCE,
+	                           3 * static_cast<rstime_t>(keepAliveInterval) );
+}
 
 static const std::string MOBILE_LINK_APP_NAME = "mobilelink";
 static const uint16_t MOBILE_LINK_APP_MAJOR_VERSION = 1;
@@ -275,6 +286,32 @@ bool p3MobileLink::localQuiet()
 {
 	std::lock_guard<std::mutex> lock(mMtx);
 	return mPhoneMode && mQuiet;
+}
+
+rstime_t p3MobileLink::silenceTolerance(const RsPeerId& peer)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	// Home side: a phone in background.
+	auto phone = mPhones.find(peer);
+	if(phone != mPhones.end() && phone->second.mQuiet)
+		return silenceToleranceFor(phone->second.mKeepAliveInterval);
+
+	// Phone side: its homes while it is in background.
+	if(mPhoneMode && mQuiet && mHomes.count(peer))
+		return silenceToleranceFor(mKeepAliveInterval);
+
+	return 0;
+}
+
+bool p3MobileLink::wantsHeartbeat(const RsPeerId& peer)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto phone = mPhones.find(peer);
+	if(phone != mPhones.end() && phone->second.mQuiet) return false;
+
+	return !(mPhoneMode && mQuiet && mHomes.count(peer));
 }
 
 /******************************************************************************/

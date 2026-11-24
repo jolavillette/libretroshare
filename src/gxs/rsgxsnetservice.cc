@@ -251,6 +251,7 @@
 #include "retroshare/rsgxsflags.h"
 #include "retroshare/rsgxscircles.h"
 #include "retroshare/rspeers.h"
+#include "services/p3mobilelink.h"
 #include "pgp/pgpauxutils.h"
 #include "crypto/rscrypto.h"
 #include "util/rsdir.h"
@@ -362,6 +363,17 @@ static std::ostream& gxsnetdebug(const RsPeerId& peer_id,const RsGxsGroupId& grp
 #endif
 
 const uint32_t RsGxsNetService::FRAGMENT_SIZE = 150000;
+
+p3MobileLink *RsGxsNetService::sMobileLink = nullptr;
+
+void RsGxsNetService::removeQuietPhones(std::set<RsPeerId>& peers)
+{
+	if(!sMobileLink) return;
+
+	for(auto it = peers.begin(); it != peers.end();)
+		if(sMobileLink->isQuietPhone(*it)) it = peers.erase(it);
+		else ++it;
+}
 
 RsGxsNetService::RsGxsNetService(uint16_t servType, RsGeneralDataService *gds,
                                  RsNxsNetMgr *netMgr, RsNxsObserver *nxsObs,
@@ -582,6 +594,12 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 	if(peers.empty())
 	{
 		mNetMgr->getOnlineList(mServiceInfo.mServiceType, peers);
+
+		// A phone in background asks for no update, and is asked for none
+		// (MobileLink). It asks again at the first sync once it is back.
+		if(sMobileLink && sMobileLink->localQuiet())
+			return std::error_condition();
+		removeQuietPhones(peers);
 
         if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != nullptr)
 		{
@@ -849,6 +867,12 @@ void RsGxsNetService::syncGrpStatistics()
 
     std::set<RsPeerId> online_peers;
     mNetMgr->getOnlineList(mServiceInfo.mServiceType, online_peers);
+
+    // A phone in background asks for no statistics, and is asked for none
+    // (MobileLink).
+    if(sMobileLink && sMobileLink->localQuiet())
+        return;
+    removeQuietPhones(online_peers);
 
     if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != NULL)
 	{

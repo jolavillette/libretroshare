@@ -1748,6 +1748,11 @@ int RsServer::StartupRetroShare()
 	pqih -> addService(mMobileLink, true);
 	rsMobileLink = mMobileLink;
 	tr->setMobileLink(mMobileLink);
+	pqih->setMobileLink(mMobileLink);
+	mHeart->setMobileLink(mMobileLink);
+#ifdef RS_ENABLE_GXS
+	RsGxsNetService::setMobileLink(mMobileLink);
+#endif
 
 #ifdef SERVICES_DSDV
 	p3Dsdv *mDsdv = new p3Dsdv(serviceCtrl);

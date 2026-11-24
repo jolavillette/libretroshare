@@ -86,6 +86,16 @@ public:
 	/// Phone side: whether this node is a phone in background.
 	bool localQuiet();
 
+	/// How long the connection to peer may stay silent before it is taken
+	/// for dead, in seconds; 0 for the usual timeouts. A phone in background
+	/// and its home send each other only the phone's keep-alive and its
+	/// answer, so they need much longer than the heartbeat's timeouts.
+	rstime_t silenceTolerance(const RsPeerId& peer);
+
+	/// Whether to send peer the periodic heartbeat. Not between a phone in
+	/// background and its home: the phone's keep-alive replaces it.
+	bool wantsHeartbeat(const RsPeerId& peer);
+
 	// p3FastService
 	int tick() override;
 	bool recvItem(RsItem* item) override;

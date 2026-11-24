@@ -89,6 +89,8 @@ struct GroupRequestRecord
  * Incoming transaction are in 3 different states
  *   1. START 2. RECEIVING 3. END
  */
+class p3MobileLink;
+
 class RsGxsNetService :
         public RsNetworkExchangeService, public p3ThreadedService, public p3Config
 {
@@ -114,6 +116,11 @@ public:
 	                uint32_t default_sync_period = RS_GXS_DEFAULT_MSG_REQ_PERIOD);
 
     virtual ~RsGxsNetService();
+
+    /// The service that tells which peers are phones in background, and
+    /// whether this node is one (MobileLink): no periodic sync with them.
+    /// Set once at start-up, for every GXS service.
+    static void setMobileLink(p3MobileLink *mobileLink) { sMobileLink = mobileLink; }
 
     virtual RsServiceInfo getServiceInfo() override { return mServiceInfo; }
 
@@ -626,6 +633,11 @@ private:
 
     /// for other members save transactions
     RsMutex mNxsMutex;
+
+    static p3MobileLink *sMobileLink;
+
+    /// Removes the phones in background from peers.
+    static void removeQuietPhones(std::set<RsPeerId>& peers);
 
     uint32_t mSyncTs;
     uint32_t mLastKeyPublishTs;

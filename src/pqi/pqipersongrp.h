@@ -42,6 +42,8 @@ const unsigned long PQIPERSON_NO_LISTENER = 	0x0001;
 const unsigned long PQIPERSON_ALL_BW_LIMITED =  0x0010;
 struct RsPeerCryptoParams;
 
+class p3MobileLink;
+
 class pqipersongrp: public pqihandler, public pqiMonitor, public p3ServiceServer, public pqiNetListener
 {
 	public:
@@ -84,6 +86,14 @@ virtual bool RecvRsRawItem(RsRawItem *item);
 	/* Work-around to dodgy pointer stuff */
 int	tagHeartbeatRecvd(const RsPeerId& id);
 
+	/// The service that tells how long a phone in background or its home may
+	/// stay silent (MobileLink). Set once at start-up.
+void	setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
+
+	/// How long the connection to id may stay silent, in seconds; 0 for the
+	/// usual timeouts.
+rstime_t silenceTolerance(const RsPeerId& id);
+
 	/*** callback from children ****/
 bool    notifyConnect(const RsPeerId& id, uint32_t type, bool success, bool isIncomingConnection, const struct sockaddr_storage &remote_peer_address);
 //bool    notifyConnect(std::string id, uint32_t type, bool success);
@@ -122,6 +132,8 @@ virtual int checkOutgoingRsItem(RsItem *item, int global)
 	pqilistener *pqil;
 	RsMutex pqilMtx; /* MUTEX */
 	unsigned long initFlags;
+
+	p3MobileLink *mMobileLink = nullptr;
 };
 
 class pqipersongrpDummy: public pqipersongrp

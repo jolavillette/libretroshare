@@ -134,6 +134,12 @@ int	pqiperson::tick()
 {
 	int activeTick = 0;
 
+	// A phone in background and its home stay silent much longer than the
+	// heartbeat allows (MobileLink).
+	rstime_t tolerance = pqipg ? pqipg->silenceTolerance(PeerId()) : 0;
+	rstime_t heartbeatTimeout = tolerance ? tolerance : HEARTBEAT_REPEAT_TIME * 20;
+	rstime_t incomingTimeout = tolerance ? tolerance : 60;
+
 	{
 		RS_STACK_MUTEX(mPersonMtx);
 
@@ -149,7 +155,7 @@ int	pqiperson::tick()
 #endif
         
 		//if lastHeartbeatReceived is 0, it might be not activated so don't do a net reset.
-		if ( active  && time(NULL)  > lastHeartbeatReceived + HEARTBEAT_REPEAT_TIME * 20)
+		if ( active  && time(NULL)  > lastHeartbeatReceived + heartbeatTimeout)
 		{
 			int ageLastIncoming = time(NULL) - activepqi->getLastIncomingTS();
 
@@ -161,9 +167,9 @@ int	pqiperson::tick()
 					  << "secs ago" << std::endl;
 #endif
 	
-			if (ageLastIncoming > 60) // Check timeout
+			if (ageLastIncoming > incomingTimeout) // Check timeout
 			{
-				std::cerr << "pqiperson::tick() " << PeerId().toStdString() << " No Heartbeat & No Packets for 60 secs -> assume dead." << std::endl;
+				std::cerr << "pqiperson::tick() " << PeerId().toStdString() << " No Heartbeat & No Packets for " << incomingTimeout << " secs -> assume dead." << std::endl;
 				this->reset_locked();
 			}
 	

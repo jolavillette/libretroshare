@@ -21,6 +21,7 @@
  *******************************************************************************/
 #include "pqi/pqipersongrp.h"
 #include "pqi/p3linkmgr.h"
+#include "services/p3mobilelink.h"
 #include "util/rsdebug.h"
 #include "util/rsprint.h"
 #include "serialiser/rsserializer.h"
@@ -520,6 +521,11 @@ int     pqipersongrp::fullstopAllThreads()
 		(*it) -> fullstopthreads(); // WAIT FOR THREADS TO STOP.
 
 	return 1;
+}
+
+rstime_t pqipersongrp::silenceTolerance(const RsPeerId& id)
+{
+	return mMobileLink ? mMobileLink->silenceTolerance(id) : 0;
 }
 
 int pqipersongrp::tagHeartbeatRecvd(const RsPeerId& id)
