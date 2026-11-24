@@ -152,6 +152,10 @@ private:
 	void sendHello(const RsPeerId& home);
 	void sendState(const RsPeerId& home);
 
+	/// Sends a PING to every home; returns its sequence number, 0 when there
+	/// is no home.
+	uint32_t sendPings();
+
 	/// Phone side: reads the phone's identities and lobby identities, and
 	/// marks the HELLO to be sent again when they changed.
 	void checkOwnIdentities();
@@ -175,6 +179,7 @@ private:
 	std::map<uint64_t, RsGxsId> mLobbyIds;
 	rstime_t mLastIdentityCheck = 0;
 	uint32_t mPingSeq = 0;
+	rstime_t mLastPingSent = 0;
 
 	/// Home side, per phone among the connected friends.
 	std::map<RsPeerId, PhoneState> mPhones;

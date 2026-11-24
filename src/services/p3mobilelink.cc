@@ -160,16 +160,19 @@ uint32_t p3MobileLink::getKeepAliveInterval()
 	return mKeepAliveInterval;
 }
 
-bool p3MobileLink::keepAliveNow(uint32_t timeoutSeconds)
+uint32_t p3MobileLink::sendPings()
 {
 	std::vector<RsPeerId> homes;
 	uint32_t seq;
 	{
 		std::lock_guard<std::mutex> lock(mMtx);
 		for(const auto& home: mHomes) homes.push_back(home.first);
+		if(homes.empty()) return 0;
+
 		seq = ++mPingSeq;
+		if(seq == 0) seq = ++mPingSeq;
+		mLastPingSent = time(nullptr);
 	}
-	if(homes.empty()) return false;
 
 	for(const RsPeerId& home: homes)
 	{
@@ -178,6 +181,13 @@ bool p3MobileLink::keepAliveNow(uint32_t timeoutSeconds)
 		ping->mSeq = seq;
 		sendItem(ping);
 	}
+	return seq;
+}
+
+bool p3MobileLink::keepAliveNow(uint32_t timeoutSeconds)
+{
+	uint32_t seq = sendPings();
+	if(seq == 0) return false;
 
 	std::unique_lock<std::mutex> lock(mMtx);
 	return mPongReceived.wait_for(
@@ -344,6 +354,16 @@ bool p3MobileLink::wantsHeartbeat(const RsPeerId& peer)
 int p3MobileLink::tick()
 {
 	checkOwnIdentities();
+
+	// A phone in background sends its keep-alive itself while it runs. When
+	// the phone may sleep, the app's alarm calls keepAliveNow() instead.
+	bool keepAliveDue;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		keepAliveDue = mPhoneMode && mQuiet &&
+		        time(nullptr) >= mLastPingSent + static_cast<rstime_t>(mKeepAliveInterval);
+	}
+	if(keepAliveDue) sendPings();
 
 	std::vector<RsPeerId> helloTo;
 	{
