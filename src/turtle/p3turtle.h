@@ -322,6 +322,10 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		virtual int getMaxTRForwardRate() const ;
         virtual void getMaxTRForwardRateLimits(int& low,int& high) const ;
 
+		/// sets/gets whether the search requests of other nodes are relayed.
+		virtual void setSearchRequestForwarding(bool forward) ;
+		virtual bool searchRequestForwarding() const ;
+
 		/// Examines the peer id, finds the turtle tunnel in it, and respond yes if the tunnel is ok and operational.
 		bool isOnline(const RsPeerId& peer_id) const ;
 
@@ -455,6 +459,7 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		TurtleTrafficStatisticsInfoOp _traffic_info_buffer ;	// used as a buffer to collect bytes
 
 		float _max_tr_up_rate ;
+		bool  _forward_search_requests ;
 		bool  _turtle_routing_enabled ;
 		bool  _turtle_routing_session_enabled ;
 

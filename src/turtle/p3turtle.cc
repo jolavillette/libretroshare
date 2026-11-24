@@ -128,6 +128,7 @@ p3turtle::p3turtle(p3ServiceControl *sc,p3LinkMgr *lm)
 
 	_traffic_info.reset() ;
 	_max_tr_up_rate = MAX_TR_FORWARD_PER_SEC ;
+	_forward_search_requests = true ;
 	_service_type = getServiceInfo().mServiceType ;
 }
 
@@ -711,6 +712,11 @@ bool p3turtle::saveList(bool& cleanup, std::list<RsItem*>& lst)
 
 	vitem->tlvkvs.pairs.push_back(kv) ;
 
+	kv.key = "TURTLE_FORWARD_SEARCH_REQUESTS" ;
+	kv.value = _forward_search_requests?"TRUE":"FALSE" ;
+
+	vitem->tlvkvs.pairs.push_back(kv) ;
+
 	lst.push_back(vitem) ;
 
 	return true ;
@@ -744,6 +750,8 @@ bool p3turtle::loadList(std::list<RsItem*>& load)
 					if(!_turtle_routing_enabled)
 						std::cerr << "WARNING: turtle routing has been disabled. You can enable it again in config->server->turtle router." << std::endl;
 				}
+				if(kit->key == "TURTLE_FORWARD_SEARCH_REQUESTS")
+					_forward_search_requests = (kit->value != "FALSE") ;
 			}
 
 		delete *it ;
@@ -751,6 +759,25 @@ bool p3turtle::loadList(std::list<RsItem*>& load)
     load.clear() ;
 	return true ;
 }
+void p3turtle::setSearchRequestForwarding(bool forward)
+{
+	{
+		RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
+
+		if(_forward_search_requests == forward)
+			return ;
+
+		_forward_search_requests = forward ;
+	}
+	IndicateConfigChanged() ;
+}
+
+bool p3turtle::searchRequestForwarding() const
+{
+	RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
+	return _forward_search_requests ;
+}
+
 int p3turtle::getMaxTRForwardRate() const
 {
 	RsStackMutex stack(mTurtleMtx); /********** STACK LOCKED MTX ******/
@@ -963,7 +990,8 @@ void p3turtle::handleSearchRequest(RsTurtleSearchRequestItem *item)
 	if(req.result_count >= max_allowed_hits)
 		return ;
 
-	// If search depth not too large, also forward this search request to all other peers.
+	// If search depth not too large, also forward this search request to all
+	// other peers, unless this node relays no search (setSearchRequestForwarding()).
 	//
 	// We use a random factor on the depth test that is biased by a mix between the session id and the partial tunnel id
 	// to scramble a possible search-by-depth attack.
@@ -971,7 +999,7 @@ void p3turtle::handleSearchRequest(RsTurtleSearchRequestItem *item)
 	bool random_bypass = (item->depth >= TURTLE_MAX_SEARCH_DEPTH && (((_random_bias ^ item->request_id)&0x7)==2)) ;
 	bool random_dshift = (item->depth == 1                       && (((_random_bias ^ item->request_id)&0x7)==6)) ;
 
-	if(item->depth < TURTLE_MAX_SEARCH_DEPTH || random_bypass)
+	if(_forward_search_requests && (item->depth < TURTLE_MAX_SEARCH_DEPTH || random_bypass))
 	{
 		std::set<RsPeerId> onlineIds ;
 		mServiceControl->getPeersConnected(_service_type, onlineIds);
