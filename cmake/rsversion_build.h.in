@@ -1,0 +1,22 @@
+/*
+ * RetroShare
+ * Copyright (C) 2026  Retroshare Team <contact@retroshare.cc>
+ *
+ * SPDX-License-Identifier: CC0-1.0
+ */
+
+/* Generated at build time by cmake/RsVersionStamp.cmake, do not edit.
+ * These strings change at every commit: include this file only from
+ * rsinit.cc, everything else goes through the functions declared in
+ * retroshare/rsversion.h and RsInit::libRetroShareVersion() */
+#pragma once
+
+#cmakedefine RS_BUILD_EXTRA_VERSION_SET
+#ifdef RS_BUILD_EXTRA_VERSION_SET
+#	define RS_BUILD_EXTRA_VERSION "@RS_BUILD_EXTRA_VERSION@"
+#endif
+
+#cmakedefine RS_BUILD_LIB_VERSION_HASH_SET
+#ifdef RS_BUILD_LIB_VERSION_HASH_SET
+#	define RS_BUILD_LIB_VERSION_HASH "@RS_BUILD_LIB_VERSION_HASH@"
+#endif
