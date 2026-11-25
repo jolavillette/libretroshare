@@ -96,6 +96,11 @@ class DistributedChatService
 		ChatLobbyId createChatLobby(const std::string& lobby_name,const RsGxsId& lobby_identity,const std::string& lobby_topic, const std::set<RsPeerId>& invited_friends,ChatLobbyFlags flags) ;
 
 		void getListOfNearbyChatLobbies(std::vector<VisibleChatLobbyRecord>& public_lobbies) ;
+
+		/// Asks the friends for their lobbies now, whatever the last request:
+		/// a phone back from the background has forgotten the lobbies it is
+		/// not in (MobileLink).
+		void requestLobbyListNow() ;
 		bool joinVisibleChatLobby(const ChatLobbyId& id, const RsGxsId &gxs_id) ;
 
 	protected:

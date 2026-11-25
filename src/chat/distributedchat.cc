@@ -919,6 +919,16 @@ void DistributedChatService::handleRecvChatLobbyEventItem(RsChatLobbyEventItem *
     rsEvents->postEvent(ev);
 }
 
+void DistributedChatService::requestLobbyListNow()
+{
+	{
+		RsStackMutex stack(mDistributedChatMtx); /********** STACK LOCKED MTX ******/
+		last_visible_lobby_info_request_time = 0 ;
+	}
+	std::vector<VisibleChatLobbyRecord> lobbies ;
+	getListOfNearbyChatLobbies(lobbies) ;
+}
+
 void DistributedChatService::getListOfNearbyChatLobbies(std::vector<VisibleChatLobbyRecord>& visible_lobbies)
 {
 	{

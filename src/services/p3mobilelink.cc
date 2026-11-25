@@ -161,6 +161,11 @@ void p3MobileLink::setQuiet(bool quiet)
 
 	for(const RsPeerId& home: homes) sendState(home);
 	updateSleepAllowed();
+
+	// In background the phone asked nobody for the lobby list, and the core
+	// keeps a lobby it is not in for a minute only: ask at once, so the list
+	// is there when the user opens it.
+	if(!quiet && mChat) mChat->requestLobbyListNow();
 }
 
 bool p3MobileLink::getQuiet()
