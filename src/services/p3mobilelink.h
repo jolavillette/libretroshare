@@ -258,6 +258,10 @@ private:
 	/// Phone side: the send time of the last keep-alive given to the homes.
 	rstime_t mStockUntil = 0;
 
+	/// The home that holds the keep-alive stock. One is enough: each home
+	/// would release the same keep-alives into the same lobbies.
+	RsPeerId mStockHome;
+
 	DistributedChatService* mChat = nullptr;
 
 	std::atomic<bool> mSleepAllowed{false};

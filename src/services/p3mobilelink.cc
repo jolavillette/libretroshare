@@ -799,15 +799,24 @@ void p3MobileLink::handleKeepAliveStock(const RsMobileLinkKeepAliveStockItem& it
 
 void p3MobileLink::refillKeepAliveStock()
 {
-	std::vector<RsPeerId> homes;
+	RsPeerId stockHome;
 	rstime_t from, until;
 	{
 		std::lock_guard<std::mutex> lock(mMtx);
 		if(!mPhoneMode || !mQuiet || !mChat) return;
 
-		for(const auto& home: mHomes)
-			if(home.second.mServing) homes.push_back(home.first);
-		if(homes.empty()) return;
+		// The home that has the stock keeps it as long as it serves us;
+		// when it goes, another one gets a new stock at once.
+		auto current = mHomes.find(mStockHome);
+		if(current == mHomes.end() || !current->second.mServing)
+		{
+			mStockHome.clear();
+			for(const auto& home: mHomes)
+				if(home.second.mServing) { mStockHome = home.first; break; }
+			if(mStockHome.isNull()) return;
+			mStockUntil = 0;
+		}
+		stockHome = mStockHome;
 
 		rstime_t now = time(nullptr);
 		if(mStockUntil > now + KEEP_ALIVE_STOCK_AHEAD / 2) return;
@@ -848,13 +857,10 @@ void p3MobileLink::refillKeepAliveStock()
 	}
 	if(keepAlives.empty()) return;
 
-	for(const RsPeerId& home: homes)
-	{
-		auto stock = new RsMobileLinkKeepAliveStockItem();
-		stock->PeerId(home);
-		stock->mKeepAlives = keepAlives;
-		sendItem(stock);
-	}
+	auto stock = new RsMobileLinkKeepAliveStockItem();
+	stock->PeerId(stockHome);
+	stock->mKeepAlives = keepAlives;
+	sendItem(stock);
 }
 
 void p3MobileLink::releaseDueKeepAlives()
