@@ -135,6 +135,13 @@ public:
 	/// this phone may sleep.
 	void noteIncoming(const RsPeerId& peer);
 
+	/// Called for every item sent to or received from peer (pqiperson). The
+	/// items of the quiet links are counted per service, and tick() logs the
+	/// counts every ten minutes: what still wakes a phone in background
+	/// shows in the logs of both ends. Cheap while no link is quiet.
+	void noteTraffic( const RsPeerId& peer, bool outgoing, uint16_t service,
+	                  uint8_t subtype, uint32_t size );
+
 	// p3FastService
 	int tick() override;
 	bool recvItem(RsItem* item) override;
@@ -211,6 +218,18 @@ private:
 
 	void statusChangeLocked(const std::list<pqiServicePeer>& plist);
 
+	/// Copies the peers on a quiet link into mQuietPeers.
+	void updateQuietPeers();
+
+	/// Logs the traffic counts of the quiet links, every ten minutes.
+	void logQuietTraffic();
+
+	struct TrafficCount
+	{
+		uint32_t mItems = 0;
+		uint64_t mBytes = 0;
+	};
+
 	p3ServiceControl* mServiceControl;
 
 	/// Guards everything below. A std::mutex for mPongReceived.
@@ -249,4 +268,15 @@ private:
 	/// Home side, per phone among the friends, connected or not: a phone
 	/// keeps its state across a reconnection.
 	std::map<RsPeerId, PhoneState> mPhones;
+
+	/// Guards the traffic counts. Nothing is called while it is held, so
+	/// that the hooks of pqiperson may take it on any thread.
+	std::mutex mTrafficMtx;
+	std::atomic<bool> mAnyQuietLink{false};
+	std::set<RsPeerId> mQuietPeers;
+
+	/// Per peer on a quiet link, per direction, service and subtype
+	/// (outgoing << 24 | service << 8 | subtype).
+	std::map<RsPeerId, std::map<uint32_t, TrafficCount>> mQuietTraffic;
+	rstime_t mLastTrafficLog = 0;
 };

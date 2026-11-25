@@ -25,6 +25,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iterator>
+#include <sstream>
 #include <string>
 
 #include "chat/distributedchat.h"
@@ -74,6 +75,9 @@ static const rstime_t MIN_WAKE_UP_INTERVAL = 2;
 /// The silence a phone in background and its home accept from each other:
 /// three keep-alive intervals, and never less than this.
 static const rstime_t MIN_SILENCE_TOLERANCE = 900;
+
+/// How often each end logs what its quiet links carried.
+static const rstime_t QUIET_TRAFFIC_LOG_PERIOD = 600;
 
 static rstime_t silenceToleranceFor(uint32_t keepAliveInterval)
 {
@@ -409,6 +413,8 @@ int p3MobileLink::tick()
 
 	refillKeepAliveStock();
 	releaseDueKeepAlives();
+	updateQuietPeers();
+	logQuietTraffic();
 
 	std::vector<RsPeerId> helloTo;
 	{
@@ -449,6 +455,89 @@ void p3MobileLink::noteIncoming(const RsPeerId& /*peer*/)
 	if(!mLastWakeUp.compare_exchange_strong(last, now)) return;
 
 	if(sWakeUp) sWakeUp();
+}
+
+void p3MobileLink::noteTraffic( const RsPeerId& peer, bool outgoing,
+                                uint16_t service, uint8_t subtype,
+                                uint32_t size )
+{
+	if(!mAnyQuietLink) return;
+
+	std::lock_guard<std::mutex> lock(mTrafficMtx);
+	if(!mQuietPeers.count(peer)) return;
+
+	uint32_t key = (outgoing ? 1u << 24 : 0u) |
+	        (static_cast<uint32_t>(service) << 8) | subtype;
+	TrafficCount& count = mQuietTraffic[peer][key];
+	++count.mItems;
+	count.mBytes += size;
+}
+
+void p3MobileLink::updateQuietPeers()
+{
+	std::set<RsPeerId> quietPeers;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		for(const auto& phone: mPhones)
+			if(phone.second.mQuiet) quietPeers.insert(phone.first);
+
+		if(mPhoneMode && mQuiet)
+			for(const auto& home: mHomes) quietPeers.insert(home.first);
+	}
+
+	std::lock_guard<std::mutex> lock(mTrafficMtx);
+	mAnyQuietLink = !quietPeers.empty();
+	mQuietPeers.swap(quietPeers);
+}
+
+void p3MobileLink::logQuietTraffic()
+{
+	rstime_t now = time(nullptr);
+	rstime_t period;
+	std::set<RsPeerId> quietPeers;
+	std::map<RsPeerId, std::map<uint32_t, TrafficCount>> traffic;
+	{
+		std::lock_guard<std::mutex> lock(mTrafficMtx);
+
+		if(!mLastTrafficLog) mLastTrafficLog = now;
+		if(now < mLastTrafficLog + QUIET_TRAFFIC_LOG_PERIOD) return;
+
+		period = now - mLastTrafficLog;
+		mLastTrafficLog = now;
+		quietPeers = mQuietPeers;
+		traffic.swap(mQuietTraffic);
+	}
+
+	// The peers still quiet, even if nothing passed, and the peers that
+	// were quiet for part of the period.
+	for(const auto& peerTraffic: traffic) quietPeers.insert(peerTraffic.first);
+
+	for(const RsPeerId& peer: quietPeers)
+	{
+		uint32_t items[2] = { 0, 0 };
+		uint64_t bytes[2] = { 0, 0 };
+		std::ostringstream detail[2];
+
+		auto it = traffic.find(peer);
+		if(it != traffic.end())
+			for(const auto& count: it->second)
+			{
+				int out = (count.first >> 24) ? 1 : 0;
+				items[out] += count.second.mItems;
+				bytes[out] += count.second.mBytes;
+				detail[out] << " " << std::hex << ((count.first >> 8) & 0xffff)
+				            << "/" << (count.first & 0xff) << std::dec << ":"
+				            << count.second.mItems << "x" << count.second.mBytes
+				            << "B";
+			}
+
+		RsInfo() << "MobileLink: quiet link with " << peer << ", last "
+		         << period << " s: sent " << items[1] << " items " << bytes[1]
+		         << " B (service/subtype:items x bytes" << detail[1].str()
+		         << "), received " << items[0] << " items " << bytes[0]
+		         << " B (" << detail[0].str() << " )";
+	}
 }
 
 void p3MobileLink::updateSleepAllowed()

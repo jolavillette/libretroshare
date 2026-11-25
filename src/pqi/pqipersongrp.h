@@ -95,8 +95,15 @@ void	setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
 rstime_t silenceTolerance(const RsPeerId& id);
 
 	/// Called for every item received from id (MobileLink: a phone that may
-	/// sleep stays awake long enough to handle it).
-void	noteIncoming(const RsPeerId& id);
+	/// sleep stays awake long enough to handle it, and the items of a quiet
+	/// link are counted).
+void	noteIncoming( const RsPeerId& id, uint16_t service, uint8_t subtype,
+	              uint32_t size );
+
+	/// Called for every item sent to id (MobileLink: the items of a quiet
+	/// link are counted).
+void	noteOutgoing( const RsPeerId& id, uint16_t service, uint8_t subtype,
+	              uint32_t size );
 
 	/*** callback from children ****/
 bool    notifyConnect(const RsPeerId& id, uint32_t type, bool success, bool isIncomingConnection, const struct sockaddr_storage &remote_peer_address);

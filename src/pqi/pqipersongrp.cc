@@ -528,9 +528,19 @@ rstime_t pqipersongrp::silenceTolerance(const RsPeerId& id)
 	return mMobileLink ? mMobileLink->silenceTolerance(id) : 0;
 }
 
-void pqipersongrp::noteIncoming(const RsPeerId& id)
+void pqipersongrp::noteIncoming( const RsPeerId& id, uint16_t service,
+                                 uint8_t subtype, uint32_t size )
 {
-	if(mMobileLink) mMobileLink->noteIncoming(id);
+	if(!mMobileLink) return;
+
+	mMobileLink->noteIncoming(id);
+	mMobileLink->noteTraffic(id, false, service, subtype, size);
+}
+
+void pqipersongrp::noteOutgoing( const RsPeerId& id, uint16_t service,
+                                 uint8_t subtype, uint32_t size )
+{
+	if(mMobileLink) mMobileLink->noteTraffic(id, true, service, subtype, size);
 }
 
 int pqipersongrp::tagHeartbeatRecvd(const RsPeerId& id)

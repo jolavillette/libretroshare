@@ -55,6 +55,20 @@ pqiperson::~pqiperson()
 
 int pqiperson::SendItem(RsItem *i,uint32_t& serialized_size)
 {
+	// Read now: the streamer owns the item once it has it.
+	const uint16_t service = i->PacketService();
+	const uint8_t subtype = i->PacketSubType();
+
+	int sent = sendToActive(i, serialized_size);
+
+	// Outside mPersonMtx: MobileLink takes its own mutex.
+	if(sent) pqipg->noteOutgoing(PeerId(), service, subtype, serialized_size);
+
+	return sent;
+}
+
+int pqiperson::sendToActive(RsItem *i,uint32_t& serialized_size)
+{
 	RS_STACK_MUTEX(mPersonMtx);
 
 	if(active)
@@ -104,7 +118,9 @@ bool pqiperson::RecvItem(RsItem *item)
 	std::cerr << "pqiperson::RecvItem()" << std::endl;
 #endif
 
-	pqipg->noteIncoming(PeerId());
+	RsRawItem* raw = dynamic_cast<RsRawItem*>(item);
+	pqipg->noteIncoming( PeerId(), item->PacketService(),
+	                     item->PacketSubType(), raw ? raw->getRawLength() : 0 );
 
 	return pqipg->recvItem((RsRawItem *) item);
 }
