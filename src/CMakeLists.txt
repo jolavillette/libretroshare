@@ -788,6 +788,11 @@ if(RS_ANDROID)
 		rs_android/ScopedFd.h )
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	list(APPEND RS_SOURCES rs_ios/rsios.cpp)
+	list(APPEND RS_PUBLIC_HEADERS rs_ios/rsios.h)
+endif()
+
 list(
 	APPEND RS_SOURCES
 	pqi/rstcpsocket.cc
