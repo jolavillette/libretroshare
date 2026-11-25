@@ -626,8 +626,12 @@ void DistributedChatService::handleRecvChatLobbyList(RsChatLobbyListItem *item)
 			if(IS_PGP_SIGNED_LOBBY(flags)
 			   && !(idd.mFlags & RS_IDENTITY_FLAGS_PGP_LINKED) )
 			{
-				std::cerr << "(EE) Attempt to auto-subscribe to signed lobby with non signed Id. Remove it." << std::endl;
-				setLobbyAutoSubscribe(*it, false);
+				// The subscription is kept. Right after the start an own signed
+				// identity is not flagged as such yet (its PGP link is checked
+				// in the background): a lobby list received meanwhile used to
+				// unsubscribe the lobby for good. It is joined at a later list.
+				RsWarn() << "Lobby auto-subscribe: identity " << gxsId << " is not known as signed yet,"
+				         << " the signed lobby " << std::hex << *it << std::dec << " is joined later";
 			} else {
 				joinVisibleChatLobby(*it,gxsId);
 			}
