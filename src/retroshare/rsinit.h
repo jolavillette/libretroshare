@@ -35,6 +35,7 @@
 #include <map>
 #include <vector>
 #include <cstdint>
+#include <functional>
 #include <system_error>
 
 #include "retroshare/rstypes.h"
@@ -237,6 +238,40 @@ public:
 	 */
 	static LoadCertificateStatus LockAndLoadCertificates(
 	        bool autoLoginNT, std::string& lockFilePath );
+
+	/*
+	 * Compaction of the GXS databases (SQLite VACUUM). It rewrites each file
+	 * in page order: the space freed by deleted messages goes back to the
+	 * disk, and the pages of each table and index end up next to each other,
+	 * which makes the cold reads at startup sequential again. VACUUM cannot
+	 * be split and needs the database to itself, so it runs at startup, after
+	 * LockAndLoadCertificates() and before RsControl::StartupRetroShare(),
+	 * when no service has opened its database yet. These functions refer to
+	 * the account selected by the login.
+	 */
+
+	/// Ask for (or cancel) the compaction of the GXS databases at next start.
+	static bool setGxsDatabaseCompactionRequested(bool requested);
+
+	/// True when a compaction was asked for (see above).
+	static bool isGxsDatabaseCompactionRequested();
+
+	/// Size on disk of the GXS databases of the account, in bytes.
+	static uint64_t gxsDatabasesSize();
+
+	/**
+	 * Compact every GXS database of the account. Blocking: minutes for large
+	 * databases on rotating disks. Clears the request first, so that a
+	 * compaction that keeps failing is not retried at every start. An
+	 * interrupted VACUUM leaves its database as it was.
+	 * @param progress called before each database with its file name, the
+	 *        bytes of the databases already compacted and the total, and once
+	 *        at the end with an empty name. Return false to stop before the
+	 *        next database.
+	 * @return true when every database was compacted.
+	 */
+	static bool compactGxsDatabases(
+	        const std::function<bool(const std::string& dbName, uint64_t doneBytes, uint64_t totalBytes)>& progress );
 
 	// Post Login Options
 	static bool getStartMinimised();

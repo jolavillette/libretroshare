@@ -385,3 +385,8 @@ RsDhtRelayProxy::RsDhtRelayProxy()
 }
 
 	
+
+void p3BitDht::getDhtSizeEstimate(RsDhtSizeEstimate &est)
+{
+	mSizeEstimator.getEstimate(est);
+}

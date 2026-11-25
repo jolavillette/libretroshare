@@ -22,6 +22,7 @@
 #ifndef MRK_PQI_HANDLER_HEADER
 #define MRK_PQI_HANDLER_HEADER
 
+#include <atomic>                // for atomic
 #include <stdint.h>              // for uint32_t
 #include "util/rstime.h"                // for rstime_t, NULL
 #include <list>                  // for list
@@ -121,8 +122,10 @@ protected:
 		float rateMax_in;
 		float rateMax_out;
 
-		float rateTotal_in;
-		float rateTotal_out;
+		// Read by getCurrentRates() without coreMtx: the GUI asks for them every
+		// second and must not wait for the end of a tick() pass.
+		std::atomic<float> rateTotal_in;
+		std::atomic<float> rateTotal_out;
 
 		uint32_t nb_ticks ;
 		rstime_t last_m ;

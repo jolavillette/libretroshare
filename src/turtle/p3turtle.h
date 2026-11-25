@@ -151,6 +151,7 @@
 
 class ftServer ;
 class p3LinkMgr;
+class p3MobileLink;
 class ftDataMultiplex;
 class RsSerialiser;
 
@@ -226,6 +227,10 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		p3turtle(p3ServiceControl *sc,p3LinkMgr *lm) ;
 		virtual RsServiceInfo getServiceInfo();
 
+		/// The service that tells which requests a phone among the friends
+		/// wants. Set once at start-up, before the router runs.
+		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink ; }
+
 		// Enables/disable the service. Still ticks, but does nothing. Default is true.
 		//
 		virtual void setEnabled(bool) ;	
@@ -288,10 +293,10 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		virtual std::string getPeerNameForVirtualPeerId(const RsPeerId& virtual_peer_id);
 		
 		/// get info about tunnels
-		virtual void getInfo(std::vector<std::vector<std::string> >&,
-									std::vector<std::vector<std::string> >&,
-									std::vector<TurtleSearchRequestDisplayInfo >&,
-									std::vector<TurtleTunnelRequestDisplayInfo >&) const ;
+		virtual void getInfo(std::vector<std::vector<std::string>>& hashes_info,
+		                     std::vector<std::vector<std::string>>& tunnels_info,
+		                     std::vector<TurtleSearchRequestDisplayInfo>& search_reqs_info,
+		                     std::vector<TurtleTunnelRequestDisplayInfo>& tunnel_reqs_info) const ;
 		
 		virtual void getTrafficStatistics(TurtleTrafficStatisticsInfo& info) const ;
 
@@ -321,6 +326,14 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		virtual void setMaxTRForwardRate(int max_tr_up_rate) ;
 		virtual int getMaxTRForwardRate() const ;
         virtual void getMaxTRForwardRateLimits(int& low,int& high) const ;
+
+		/// sets/gets whether the search requests of other nodes are relayed.
+		virtual void setSearchRequestForwarding(bool forward) ;
+		virtual bool searchRequestForwarding() const ;
+
+		/// sets/gets whether the tunnel requests of other nodes are relayed.
+		virtual void setTunnelRequestForwarding(bool forward) ;
+		virtual bool tunnelRequestForwarding() const ;
 
 		/// Examines the peer id, finds the turtle tunnel in it, and respond yes if the tunnel is ok and operational.
 		bool isOnline(const RsPeerId& peer_id) const ;
@@ -404,6 +417,8 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		
 		/* data */
 		p3ServiceControl   *mServiceControl;
+
+		p3MobileLink       *mMobileLink = nullptr;
 		p3LinkMgr          *mLinkMgr;
 		RsTurtleSerialiser *_serialiser ;
 		RsPeerId            _own_id ;
@@ -455,6 +470,8 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		TurtleTrafficStatisticsInfoOp _traffic_info_buffer ;	// used as a buffer to collect bytes
 
 		float _max_tr_up_rate ;
+		bool  _forward_search_requests ;
+		bool  _forward_tunnel_requests ;
 		bool  _turtle_routing_enabled ;
 		bool  _turtle_routing_session_enabled ;
 

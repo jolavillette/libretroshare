@@ -21,6 +21,13 @@ DESTDIR = lib
 
 QMAKE_CXXFLAGS += -fPIC
 
+# OpenMP support for parallel deserialization in GXS (rsgenexchange.cc).
+# Not with Apple clang, which has no -fopenmp: the loop then runs serially.
+!macx {
+	QMAKE_CXXFLAGS += -fopenmp
+	LIBS += -fopenmp
+}
+
 ## Uncomment to enable Unfinished Services.
 #CONFIG += wikipoos
 #CONFIG += gxsthewire
@@ -1029,9 +1036,14 @@ rs_jsonapi {
     genjsonapi.clean = $${WRAPPERS_INCL_FILE} $${WRAPPERS_REG_FILE}
     genjsonapi.CONFIG += target_predeps combine no_link
     genjsonapi.variable_out = HEADERS
+    # Doxygen never purges its output directory, and the generator emits one
+    # #include per *_8h.xml file it finds there. Without removing them first, the
+    # XML of a public header that has been removed or renamed survives forever and
+    # keeps being turned into an #include of a file that no longer exists.
     win32-g++:isEmpty(QMAKE_SH) {
         genjsonapi.commands = \
             $(CHK_DIR_EXISTS) $$shell_path($$JSONAPI_GENERATOR_OUT) $(MKDIR) $$shell_path($${JSONAPI_GENERATOR_OUT}) $$escape_expand(\\n\\t) \
+            -$(DEL_FILE) $$shell_path($${JSONAPI_GENERATOR_OUT}/xml/*_8h.xml) $$escape_expand(\\n\\t) \
             $(COPY_FILE) $$shell_path($${DOXIGEN_CONFIG_SRC}) $$shell_path($${DOXIGEN_CONFIG_OUT}) $$escape_expand(\\n\\t) \
             echo OUTPUT_DIRECTORY=$${JSONAPI_GENERATOR_OUT} >> $$shell_path($${DOXIGEN_CONFIG_OUT}) $$escape_expand(\\n\\t) \
             echo INPUT=$${DOXIGEN_INPUT_DIRECTORY} >> $$shell_path($${DOXIGEN_CONFIG_OUT}) $$escape_expand(\\n\\t) \
@@ -1039,6 +1051,7 @@ rs_jsonapi {
     } else {
         genjsonapi.commands = \
             mkdir -p $${JSONAPI_GENERATOR_OUT} && \
+            rm -f $${JSONAPI_GENERATOR_OUT}/xml/*_8h.xml && \
             cp $${DOXIGEN_CONFIG_SRC} $${DOXIGEN_CONFIG_OUT} && \
             echo OUTPUT_DIRECTORY=$${JSONAPI_GENERATOR_OUT} >> $${DOXIGEN_CONFIG_OUT} && \
             echo INPUT=$${DOXIGEN_INPUT_DIRECTORY} >> $${DOXIGEN_CONFIG_OUT} && \
@@ -1055,40 +1068,12 @@ rs_jsonapi {
     SOURCES += jsonapi/jsonapi.cpp
 }
 
-rs_deep_forums_index {
-    HEADERS *= deep_search/commonutils.hpp
-    SOURCES *= deep_search/commonutils.cpp
+rs_forum_content_search {
+    HEADERS += content_search/htmltext.hpp
+    SOURCES += content_search/htmltext.cpp
 
-    HEADERS += deep_search/forumsindex.hpp
-    SOURCES += deep_search/forumsindex.cpp
-}
-
-rs_deep_channels_index {
-    HEADERS *= deep_search/commonutils.hpp
-    SOURCES *= deep_search/commonutils.cpp
-
-    HEADERS += deep_search/channelsindex.hpp
-    SOURCES += deep_search/channelsindex.cpp
-}
-
-rs_deep_files_index {
-    HEADERS *= deep_search/commonutils.hpp
-    SOURCES *= deep_search/commonutils.cpp
-
-    HEADERS += deep_search/filesindex.hpp
-    SOURCES += deep_search/filesindex.cpp
-}
-
-rs_deep_files_index_ogg {
-    HEADERS += deep_search/filesoggindexer.hpp
-}
-
-rs_deep_files_index_flac {
-    HEADERS += deep_search/filesflacindexer.hpp
-}
-
-rs_deep_files_index_taglib {
-    HEADERS += deep_search/filestaglibindexer.hpp
+    HEADERS += content_search/forumcontentindex.hpp
+    SOURCES += content_search/forumcontentindex.cpp
 }
 
 rs_broadcast_discovery {

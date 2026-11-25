@@ -21,6 +21,8 @@
  *******************************************************************************/
 #pragma once
 
+#include <atomic>
+
 #include <retroshare/rstypes.h>
 #include <retroshare/rschats.h>
 #include <retroshare/rsservicecontrol.h>
@@ -44,16 +46,40 @@ class RsChatLobbyUnsubscribeItem ;
 
 class RsChatItem ;
 class RsChatMsgItem ;
+class RsChatLobbyMsgItem ;
+class RsChatLobbyEventItem ;
+class RsChatLobbyBouncingObject ;
 class RsGixs ;
+class p3MobileLink ;
+
+class RsChatLobbyHistoryProbeItem ;
+class RsChatLobbyHistoryProbeResponseItem ;
+class RsChatLobbyHistoryRequestItem ;
+class RsChatLobbyHistoryDataItem ;
 
 class DistributedChatService
 {
 	public:
 		DistributedChatService(uint32_t service_type,p3ServiceControl *sc,p3HistoryMgr *hm,RsGixs *is) ;
 
-		virtual ~DistributedChatService() {}
+		virtual ~DistributedChatService() ;
 
 		void flush() ;
+
+		/// The service that tells which friends are phones in background,
+		/// and whether this node is one (MobileLink). Set once at start-up.
+		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink ; }
+
+		/// Phone side (MobileLink): count keep-alives for lobby lobby_id,
+		/// signed now for later, the first one dated from and the next ones
+		/// one keep-alive interval apart. The caller owns the items.
+		bool makePresignedKeepAlives(const ChatLobbyId& lobby_id, rstime_t from, uint32_t count, std::list<RsChatLobbyEventItem*>& items) ;
+
+		/// Home side (MobileLink): handles a keep-alive a phone signed in
+		/// advance as if the phone had just sent it, so that it reaches the
+		/// lobby's other participants. Takes ownership of item, whose peer
+		/// id is the phone.
+		void releasePresignedKeepAlive(RsChatLobbyEventItem *item) ;
 
 		// Interface part to communicate with
 		//
@@ -77,7 +103,18 @@ class DistributedChatService
 		ChatLobbyId createChatLobby(const std::string& lobby_name,const RsGxsId& lobby_identity,const std::string& lobby_topic, const std::set<RsPeerId>& invited_friends,ChatLobbyFlags flags) ;
 
 		void getListOfNearbyChatLobbies(std::vector<VisibleChatLobbyRecord>& public_lobbies) ;
+
+		/// Asks the friends for their lobbies now, whatever the last request:
+		/// a phone back from the background has forgotten the lobbies it is
+		/// not in (MobileLink).
+		void requestLobbyListNow() ;
 		bool joinVisibleChatLobby(const ChatLobbyId& id, const RsGxsId &gxs_id) ;
+
+		// Lobby history retrieval protocol
+		bool requestLobbyHistory(const ChatLobbyId& lobby_id, const std::set<RsPeerId>& peer_ids) ;
+		bool requestLobbyHistoryFromPeer(const ChatLobbyId& lobby_id, const RsPeerId& peer_id, uint32_t max_count, uint32_t oldest_ts) ;
+		void allowHistorySharing(bool allow) { _allow_history_sharing = allow; triggerConfigSave(); }
+		bool isHistorySharingAllowed() const { return _allow_history_sharing; }
 
 	protected:
 		bool handleRecvItem(RsChatItem *) ;
@@ -125,6 +162,12 @@ class DistributedChatService
 		void sendLobbyStatusNewPeer(const ChatLobbyId& lobby_id) ;
 		void sendLobbyStatusKeepAlive(const ChatLobbyId&) ;
 
+		// Lobby history retrieval handlers
+		void handleRecvLobbyHistoryProbe(RsChatLobbyHistoryProbeItem *item) ;
+		void handleRecvLobbyHistoryProbeResponse(RsChatLobbyHistoryProbeResponseItem *item) ;
+		void handleRecvLobbyHistoryRequest(RsChatLobbyHistoryRequestItem *item) ;
+		void handleRecvLobbyHistoryData(RsChatLobbyHistoryDataItem *item) ;
+
 		bool locked_initLobbyBouncableObject(const ChatLobbyId& id,RsChatLobbyBouncingObject&) ;
 		void locked_printDebugInfo() const ;
 		RsGxsId locked_getDefaultIdentity();
@@ -156,6 +199,29 @@ class DistributedChatService
 		rstime_t last_lobby_challenge_time ; 					// prevents bruteforce attack
 		rstime_t last_visible_lobby_info_request_time ;	// allows to ask for updates
 		bool _should_reset_lobby_counts ;
+		std::atomic<bool> _allow_history_sharing ;	// set from the GUI thread, read by the service
+
+		// Lobby history retrieval: only DATA items answering a request we sent
+		// to that peer for that lobby are accepted, within a deadline and up to
+		// the number of messages we asked for and a total size.
+		struct PendingLobbyHistoryRequest
+		{
+			rstime_t deadline ;
+			uint32_t request_id ;	// data items of an earlier request to the same friend are refused
+			uint32_t remaining_msgs ;
+			uint32_t remaining_bytes ;
+			uint32_t oldest_ts ;	// lines older than what we asked for are refused
+		};
+		std::map<std::pair<ChatLobbyId,RsPeerId>,PendingLobbyHistoryRequest> mPendingLobbyHistoryRequests ;
+
+		bool isLobbyParticipatingFriend_locked(const ChatLobbyId& lobby_id, const RsPeerId& peer_id) const ;
+
+		// Each probe reads the whole lobby history and each request sends up
+		// to LOBBY_HISTORY_MAX_MSGS lines: a friend gets one answer of each
+		// kind per lobby within LOBBY_HISTORY_MIN_SERVE_INTERVAL.
+		std::map<std::pair<ChatLobbyId,RsPeerId>,rstime_t> mLastLobbyHistoryProbeServed ;
+		std::map<std::pair<ChatLobbyId,RsPeerId>,rstime_t> mLastLobbyHistoryRequestServed ;
+		bool locked_lobbyHistoryServeAllowed(std::map<std::pair<ChatLobbyId,RsPeerId>,rstime_t>& last_served, const ChatLobbyId& lobby_id, const RsPeerId& peer_id) ;
 		RsGxsId _default_identity;
 		std::map<ChatLobbyId,RsGxsId> _lobby_default_identity;
 
@@ -165,4 +231,37 @@ class DistributedChatService
 		p3ServiceControl *mServControl; 
 		p3HistoryMgr *mHistMgr;
 		RsGixs *mGixs ;
+
+		// What a home keeps for a phone in background (MobileLink), and sends
+		// it when it comes back.
+
+		struct HeldForPhone
+		{
+			/// Lobby lines, in arrival order.
+			std::list<RsChatLobbyMsgItem*> lines ;
+
+			/// The last keep-alive, join or leave of each participant, per
+			/// lobby: enough for the phone's participant lists.
+			std::map<std::pair<ChatLobbyId,RsGxsId>,RsChatLobbyEventItem*> presence ;
+		};
+
+		/// Keeps item for phone, unless it is a line that mentions the phone,
+		/// which goes at once. True when kept.
+		bool locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item) ;
+
+		/// Whether this node, a phone in background, leaves the lobby list
+		/// alone (MobileLink). It does not when a lobby it subscribed to is
+		/// still to be joined again, as after a start in background: then it
+		/// asks, at most every ten minutes.
+		bool skipLobbyListAsQuietPhone() ;
+		rstime_t mLastQuietLobbyListRequest = 0 ;
+
+		/// Whether line mentions phone's nickname in its lobby.
+		bool locked_mentionsPhone(const RsPeerId& phone, const RsChatLobbyMsgItem& line) ;
+
+		/// Sends their kept items to the phones that came back.
+		void sendHeldItemsToReturnedPhones() ;
+
+		p3MobileLink *mMobileLink = nullptr ;
+		std::map<RsPeerId,HeldForPhone> mHeldForPhones ;	// locked by mDistributedChatMtx
 };

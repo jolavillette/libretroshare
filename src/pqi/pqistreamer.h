@@ -70,6 +70,13 @@ class pqistreamer: public PQInterface
 		virtual int     getQueueSize(bool in); // extracting data.
 		virtual int     getQueueSize_bytes(bool in); // size of incoming queue in bytes
 		virtual int     gatherStatistics(std::list<RSTrafficClue>& outqueue_stats,std::list<RSTrafficClue>& inqueue_stats); // extracting data.
+
+		/// Every item sent and received through any streamer since the core
+		/// started, by service and by peer. Either map may be null.
+		static void getCumulativeTraffic(
+		        std::map<uint16_t, RsCumulativeTrafficStats>* byService,
+		        std::map<RsPeerId, RsCumulativeTrafficStats>* byPeer );
+		static void clearCumulativeTraffic(bool byPeer, bool byService);
         
             	// mutex protected versions of RateInterface calls.
             	virtual void setRate(bool b,float f) ;
@@ -185,7 +192,7 @@ class pqistreamer: public PQInterface
 
 		bool mAcceptsPacketSlicing ;
 		rstime_t mLastSentPacketSlicingProbe ;
-		void locked_addTrafficClue(const RsItem *pqi, uint32_t pktsize, std::list<RSTrafficClue> &lst);
+		void locked_addTrafficClue(const RsItem *pqi, uint32_t pktsize, std::list<RSTrafficClue> &lst, bool incoming);
 		RsItem *addPartialPacket(const void *block, uint32_t len, uint32_t slice_packet_id,bool packet_starting,bool packet_ending,uint32_t& total_len);
         
 		std::map<uint32_t,PartialPacketRecord> mPartialPackets ;

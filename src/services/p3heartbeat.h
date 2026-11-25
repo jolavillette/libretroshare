@@ -28,6 +28,7 @@
 
 class p3ServiceControl;
 class pqipersongrp;
+class p3MobileLink;
 
 class p3heartbeat: public p3Service
 {
@@ -40,6 +41,10 @@ virtual RsServiceInfo getServiceInfo();
 
 	int	tick();
 
+	/// The service that tells which peers do without the heartbeat
+	/// (MobileLink). Set once at start-up.
+	void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
+
 	private:
 
 	void sendHeartbeat(const RsPeerId &toId);
@@ -49,6 +54,7 @@ virtual RsServiceInfo getServiceInfo();
 
 	p3ServiceControl *mServiceCtrl;
 	pqipersongrp *mPqiPersonGrp;
+	p3MobileLink *mMobileLink = nullptr;
 
 	/* data */
 	RsMutex mHeartMtx;

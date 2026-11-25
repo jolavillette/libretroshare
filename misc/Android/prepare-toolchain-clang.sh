@@ -52,8 +52,9 @@ define_default_value ANDROID_NDK_PATH "${ANDROID_SDK_PATH}/ndk/${ANDROID_NDK_VER
 define_default_value BZIP2_SOURCE_VERSION "1.0.8"
 define_default_value BZIP2_SOURCE_SHA256 ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269
 
-define_default_value OPENSSL_SOURCE_VERSION "1.1.1n"
-define_default_value OPENSSL_SOURCE_SHA256 40dceb51a4f6a5275bde0e6bf20ef4b91bfc32ed57c0552e2e8e15463372b17a
+# 3.5 is the long-term support series (supported until 2030-04-08).
+define_default_value OPENSSL_SOURCE_VERSION "3.5.9"
+define_default_value OPENSSL_SOURCE_SHA256 603f5602e2eef00d77fbd429d34dcd5822bb301757a1bc9cdb24c670f1eb859a
 
 define_default_value SQLITE_SOURCE_YEAR "2026"
 define_default_value SQLITE_SOURCE_VERSION "3530200"
@@ -76,7 +77,10 @@ define_default_value XAPIAN_SOURCE_VERSION "1.4.29"
 define_default_value XAPIAN_SOURCE_SHA256 c55c9bc8613ad3ec2c218eafca088c218ab7cddcba7ef08f3af0e542f4e521bc
 
 define_default_value RAPIDJSON_SOURCE_REPO https://github.com/Tencent/rapidjson.git
-define_default_value RAPIDJSON_SOURCE_VERSION origin/master
+# Not the commit of RetroShare's supportlibs/rapidjson submodule: that one is
+# 1.1.0 (2016), whose GenericStringRef::operator= assigns a const member,
+# which the NDK's clang rejects. A commit of its master instead.
+define_default_value RAPIDJSON_SOURCE_VERSION 297637bc0a0f00dc504dbc1a47ebdaa577f8ae19
 
 define_default_value MINIUPNPC_SOURCE_VERSION "2.1.20190625"
 define_default_value MINIUPNPC_SOURCE_SHA256 8723f5d7fd7970de23635547700878cd29a5c2bb708b5e5475b2d1d2510317fb
@@ -99,7 +103,8 @@ define_default_value CIMG_SOURCE_SHA256 ff1711da822b2b5f3bb68eed7c9b6b6c9391a786
 
 #define_default_value PHASH_SOURCE_REPO "https://github.com/RetroShare/pHash.git"
 define_default_value PHASH_SOURCE_REPO "https://github.com/aetilius/pHash.git"
-define_default_value PHASH_SOURCE_VERSION origin/master
+# No release and no RetroShare submodule to follow: a commit of its master.
+define_default_value PHASH_SOURCE_VERSION e5bdad184f88c6d0e43f188c634b5e2e10ab7779
 
 define_default_value MVPTREE_SOURCE_REPO "https://github.com/starkdg/mvptree.git"
 define_default_value MVPTREE_SOURCE_VERSION origin/master
@@ -111,7 +116,9 @@ define_default_value JSONC_SOURCE_REPO "https://github.com/json-c/json-c.git"
 define_default_value JSONC_SOURCE_VERSION "json-c-0.18-20240915"
 
 define_default_value LIBRNP_SOURCE_REPO "https://github.com/rnpgp/rnp.git"
-define_default_value LIBRNP_SOURCE_VERSION "origin/main"
+# Same commit as RetroShare's supportlibs/librnp submodule, so Android runs the
+# rnp every desktop build runs. Move both together.
+define_default_value LIBRNP_SOURCE_VERSION ec78117269461b2cdce15a085033a8c6bff6d7e3
 
 define_default_value REPORT_DIR "$(pwd)/$(basename ${NATIVE_LIBS_TOOLCHAIN_PATH})_build_report/"
 
@@ -245,6 +252,12 @@ function andro_cmake()
 		;;
 	esac
 
+	# FindPkgConfig adds the sysroot to PKG_CONFIG_PATH (from CMAKE_PREFIX_PATH),
+	# but pkg-config still falls back on the host's default directories, and a
+	# PKG_CONFIG_PATH set on the host is searched before the sysroot: either way
+	# pkg_check_modules could hand a host library to a cross build.
+	PKG_CONFIG_PATH="" \
+	PKG_CONFIG_LIBDIR="${PREFIX}/lib/pkgconfig" \
 	cmake \
 		$cmakeBuildType $cmakeCompileOptions $cmakeDebugOptions \
 		-DCMAKE_C_COMPILER_AR=$AR \
@@ -432,22 +445,35 @@ build_openssl()
 ## that made RS crash), the crash in some android version is only one of the
 ## possible problems the fact that android insert his own binary libssl.so pose
 ## non neglegible security concerns.
-	oBits="32"
-	[[ ${ANDROID_NDK_ARCH} =~ .*64.* ]] && oBits=64
+	local oTarget
+	case "${ANDROID_NDK_ARCH}" in
+	arm64)  oTarget="android-arm64" ;;
+	arm)    oTarget="android-arm" ;;
+	x86)    oTarget="android-x86" ;;
+	x86_64) oTarget="android-x86_64" ;;
+	*) echo "build_openssl: unsupported ANDROID_NDK_ARCH=${ANDROID_NDK_ARCH}" ; return 1 ;;
+	esac
 
-	ANDROID_NDK="${ANDROID_NDK_PATH}" PATH="${NATIVE_LIBS_TOOLCHAIN_PATH}/bin/:${PATH}" \
-	./Configure linux-generic${oBits} -fPIC \
-		--prefix="${PREFIX}" --openssldir="${SYSROOT}/etc/ssl" || return $?
-#	sed -i 's/LIBNAME=$$i LIBVERSION=$(SHLIB_MAJOR).$(SHLIB_MINOR) \\/LIBNAME=$$i \\/g' Makefile
-#	sed -i '/LIBCOMPATVERSIONS=";$(SHLIB_VERSION_HISTORY)" \\/d' Makefile
-
-	# Avoid documentation build which is unneded and time consuming
-	echo "exit 0; " > util/process_docs.pl
-	
-	make -j${HOST_NUM_CPU} || return $?
-	make install || return $?
-	rm -f ${PREFIX}/lib/libssl.so*
-	rm -f ${PREFIX}/lib/libcrypto.so*
+	# OpenSSL's android-* targets enable its assembly (ARMv8 crypto
+	# extensions on arm64); a linux-generic target is plain C. They locate the
+	# NDK through ANDROID_NDK_ROOT and want the NDK's own clang first in PATH:
+	# they pick <triple><api>-clang from there, so the CC exported above is
+	# not used. make needs the same PATH.
+	# no-shared: static only, see above.
+	# no-module: the legacy provider (CAST5, IDEA, RIPEMD160) is built into
+	# libcrypto.a instead of a legacy.so nobody would ship in the APK; rnp
+	# needs it to read secret keys protected with CAST5, as old RetroShare
+	# profiles are.
+	(
+		export ANDROID_NDK_ROOT="${ANDROID_NDK_PATH}"
+		export PATH="${ANDROID_NDK_PATH}/toolchains/llvm/prebuilt/linux-x86_64/bin:${PATH}"
+		./Configure ${oTarget} -D__ANDROID_API__=${ANDROID_PLATFORM_VER} \
+			no-shared no-module no-tests no-docs -fPIC \
+			--prefix="${PREFIX}" --libdir=lib \
+			--openssldir="${SYSROOT}/etc/ssl" || exit $?
+		make -j${HOST_NUM_CPU} || exit $?
+		make install_sw || exit $?
+	) || return $?
 	popd
 }
 
@@ -651,7 +677,11 @@ build_zlib()
 	andro_cmake -B. -S../$S_dir || return $?
 	make -j${HOST_NUM_CPU} || return $?
 	make install || return $?
+	# zlib's config package ties ZLIB::ZLIB to the libz.so deleted below and
+	# exports the static one as ZLIB::ZLIBSTATIC, so config mode can never
+	# satisfy find_package(ZLIB) here. Drop it: the FindZLIB module can.
 	rm -fv ${PREFIX}/lib/libz.so*
+	rm -rfv ${PREFIX}/lib/cmake/zlib
 	popd
 }
 
@@ -749,11 +779,21 @@ build_tiff()
 
 	pushd $B_dir
 	#TODO: build dependecies to support more formats
+	# tiff cmake/FindCMath.cmake looks for pow(3) first without any library
+	# then with whatever find_library(NAMES m) returned. On Android pow lives
+	# in libm, and libm is under the API level directory of the NDK sysroot,
+	# which andro_cmake does not put in CMAKE_LIBRARY_PATH, so find_library
+	# comes back empty, the second check links without -lm just like the first
+	# one and configure aborts with
+	#   Could NOT find CMath (missing: CMath_pow)
+	# Give it the library explicitly instead of widening the search path for
+	# every dependency.
 	andro_cmake \
 		-DBUILD_SHARED_LIBS=OFF \
 		-Dlibdeflate=OFF -Djbig=OFF -Dlzma=OFF -Dzstd=OFF -Dwebp=OFF \
 		-Djpeg12=OFF \
 		-Dcxx=OFF \
+		-DCMath_LIBRARY="${SYSROOT}/usr/lib/${compilerTriple}/${ANDROID_PLATFORM_VER}/libm.so" \
 		-B. -S../$S_dir    || return $?
 	make -j${HOST_NUM_CPU} || return $?
 	make install           || return $?
@@ -859,8 +899,18 @@ build_librnp()
 	# 3. Add -static linking via MKF so the binary doesn't need the Android
 	#    dynamic linker which is unavailable on the host even via qemu
 	# 4. Remove quotes around FOF so CMake expands the list correctly
-	# TODO: remove when upstream patches are accepted
 	#
+	# Skip the patch when the checkout already handles the emulator on its own:
+	# rnp got this upstream (rnpgp/rnp 0a0672af, merged 2026-07-31), after the
+	# pinned LIBRNP_SOURCE_VERSION; on an rnp that has it, patching on top of it
+	# prepends the emulator twice and the probe becomes
+	# "qemu-aarch64 /usr/bin/qemu-aarch64 build/findopensslfeatures", which
+	# fails with "Invalid ELF image for this architecture".
+	# TODO: drop the whole block once no supported rnp version needs it
+	#
+	grep -q CMAKE_CROSSCOMPILING_EMULATOR \
+		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake" ||
+	{
 	sed -i '/foreach(feature "hashes"/i\
 if(CMAKE_CROSSCOMPILING_EMULATOR)\
   set(FOF ${CMAKE_CROSSCOMPILING_EMULATOR} ${FOF})\
@@ -876,6 +926,31 @@ endif(CMAKE_CROSSCOMPILING_EMULATOR)' \
 		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
 
 	sed -i 's|COMMAND "${FOF}" "${feature}"|COMMAND ${FOF} "${feature}"|' \
+		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
+	}
+
+	# The feature probe is linked statically, and OpenSSL's libcrypto.a
+	# pulls in dso_dlfcn.o which references dlopen/dlsym/dlclose/dlerror.
+	# CMake's FindOpenSSL does not put ${CMAKE_DL_LIBS} in the OpenSSL::Crypto
+	# interface here, so nothing provides them and the link dies with
+	#
+	#   ld.lld: error: undefined symbol: dlopen
+	#   >>> referenced by dso_dlfcn.c
+	#   >>>               dso_dlfcn.o:(dlfcn_load) in archive .../libcrypto.a
+	#
+	# The NDK ships a static libdl.a defining those symbols, so link it
+	# explicitly, as a linked library rather than CMAKE_EXE_LINKER_FLAGS so
+	# it is ordered after libcrypto.a for linkers that resolve archives in a
+	# single pass (lld does not care, GNU ld does).
+	# Fixed upstream by rnpgp/rnp#2473 (merged 2026-08-31, in no release yet:
+	# v0.18.1 still needs this patch). Skip it when the checkout already links
+	# ${CMAKE_DL_LIBS} into the probe, as origin/main does, instead of adding
+	# a second dl on top.
+	# TODO: drop it once no supported rnp version needs it
+	grep -q CMAKE_DL_LIBS \
+		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake" ||
+	sed -i \
+		's|(findopensslfeatures PRIVATE OpenSSL::Crypto)|(findopensslfeatures PRIVATE OpenSSL::Crypto dl)|' \
 		"${S_dir}/cmake/Modules/FindOpenSSLFeatures.cmake"
 
 	rm -rf "$B_dir"; mkdir "$B_dir"
@@ -924,6 +999,7 @@ build_libretroshare()
 		-D RS_BRODCAST_DISCOVERY=ON -D RS_EXPORT_JNI_ONLOAD=ON \
 		-D RS_SQLCIPHER=OFF -D RS_DH_PRIME_INIT_CHECK=OFF \
 		-D RS_FORUM_DEEP_INDEX=ON -D RS_JSON_API=ON \
+		-D RS_WEBUI=ON \
 		-D RS_LIBRETROSHARE_STANDALONE_INSTALL=ON \
 		$RS_EXTRA_CMAKE_OPTS || return $?
 	make -j${HOST_NUM_CPU} || return $?

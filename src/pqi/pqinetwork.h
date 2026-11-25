@@ -96,15 +96,28 @@ std::string socket_errorType(int err);
 
 bool getLocalAddresses(std::vector<sockaddr_storage> & addrs);
 
+/* Source IPv4 address the routing table uses to reach the Internet, i.e. the
+ * address of the interface that carries the default route. False when there
+ * is no such route (machine offline, isolated LAN). */
+bool getDefaultRouteSourceAddress(sockaddr_storage& src);
+
 /* universal socket interface */
 
 int unix_close(int sockfd);
 int unix_socket(int domain, int type, int protocol);
 int unix_fcntl_nonblock(int sockfd);
+/* Disable Nagle on a TCP peer socket: RS already groups items into packets, and
+ * Nagle holds small items (e.g. turtle tunnel requests) until the previous
+ * segment is acknowledged, on exactly the busiest links. */
+int unix_tcp_nodelay(int sockfd);
 int unix_connect(int sockfd, const sockaddr_storage& serv_addr);
 int unix_getsockopt_error(int sockfd, int *err);
 
 int rs_socket_error();
+
+/* Raw OS code of the last socket error, for socket_errorType(): WSAGetLastError()
+ * on Windows (errno stays 0 there), errno elsewhere. */
+int rs_last_socket_error();
 
 #ifdef WINDOWS_SYS // WINDOWS
 /******************* WINDOWS SPECIFIC PART ******************/

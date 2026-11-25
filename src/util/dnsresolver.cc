@@ -130,6 +130,7 @@ void DNSResolver::start_request()
 
     if(! pthread_create(&tid, 0, &solveDNSEntries, data))
 	    pthread_detach(tid); /* so memory is reclaimed in linux */
+	    /* On Windows this detached thread leaks one handle (winpthreads, mingw-w64 issue 190): see RS_THREAD_JOIN_FINISHED in util/rsthreads.cc */
     else
 	    std::cerr << "(EE) Could not start DNS resolver thread!" << std::endl;
 }

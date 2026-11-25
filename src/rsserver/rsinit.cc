@@ -39,6 +39,10 @@
 #include "util/argstream.h"
 #include "util/rsdebug.h"
 #include "util/rsdir.h"
+#include "util/retrodb.h"
+
+#include <chrono>
+#include <fstream>
 #include "util/rsrandom.h"
 #include "util/folderiterator.h"
 #include "util/rsstring.h"
@@ -61,6 +65,7 @@
 #include <list>
 #include <string>
 
+#include <climits>
 #include <dirent.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -482,7 +487,7 @@ void RsInit::startupWebServices(const RsConfigOptions& conf,bool force_start_jso
         if(!conf.webUIPasswd.empty())
         {
             webui_passwd = conf.webUIPasswd;
-            RsInfo() << "    Using supplied web interface passwd \"" << conf.webUIPasswd << "\"" ;
+            RsInfo() << "    Using the supplied web interface passwd" ;
         }
         else
         {
@@ -491,7 +496,7 @@ void RsInit::startupWebServices(const RsConfigOptions& conf,bool force_start_jso
             if(passwd_it != tokens.end() && !passwd_it->second.empty())
             {
                 webui_passwd = passwd_it->second;
-                RsInfo() << "    Using supplied web interface passwd \"" << webui_passwd << "\"" ;
+                RsInfo() << "    Using the web interface passwd saved in the JSON API tokens" ;
             }
             else
                 RsInfo() << "    No supplied passwd for WEB Interface. Please use the appropriate commandline option." ;
@@ -727,6 +732,124 @@ bool RsInit::LoadCertificates(bool autoLoginNT,LoadCertificateStatus& error_code
     return true;
 }
 
+// The GXS databases, as opened by RsServer::StartupRetroShare().
+static const char* const GXS_DATABASE_NAMES[] = {
+    "gxsid_db", "gxscircles_db", "gxsforums_db", "gxschannels_db", "posted_db",
+    "gxstrans_db", "wire_db", "wiki_db", "calendar_db", "photoV2_db" };
+
+static std::string gxsDatabaseDirectory()
+{
+	return RsAccounts::AccountDirectory() + "/gxs/";
+}
+
+static std::string gxsCompactionMarker()
+{
+	return gxsDatabaseDirectory() + "compact_on_next_start";
+}
+
+static uint64_t gxsFileSize(const std::string& path)
+{
+	std::ifstream f(path, std::ios::binary | std::ios::ate);
+	return f ? (uint64_t)f.tellg() : 0;
+}
+
+bool RsInit::setGxsDatabaseCompactionRequested(bool requested)
+{
+	if(RsAccounts::AccountDirectory().empty())
+		return false;
+
+	const std::string marker = gxsCompactionMarker();
+
+	if(requested)
+	{
+		RsDirUtil::checkCreateDirectory(gxsDatabaseDirectory());
+		std::ofstream f(marker);
+		return (bool)f;
+	}
+
+	return !RsDirUtil::fileExists(marker) || RsDirUtil::removeFile(marker);
+}
+
+bool RsInit::isGxsDatabaseCompactionRequested()
+{
+	return !RsAccounts::AccountDirectory().empty() && RsDirUtil::fileExists(gxsCompactionMarker());
+}
+
+uint64_t RsInit::gxsDatabasesSize()
+{
+	if(RsAccounts::AccountDirectory().empty())
+		return 0;
+
+	uint64_t total = 0;
+
+	for(const char* name : GXS_DATABASE_NAMES)
+		total += gxsFileSize(gxsDatabaseDirectory() + name);
+
+	return total;
+}
+
+bool RsInit::compactGxsDatabases(
+        const std::function<bool(const std::string&, uint64_t, uint64_t)>& progress )
+{
+	if(RsAccounts::AccountDirectory().empty() || !rsInitConfig)
+		return false;
+
+	setGxsDatabaseCompactionRequested(false);
+
+	const uint64_t total = gxsDatabasesSize();
+	uint64_t done = 0;
+	bool ok = true;
+
+	for(const char* name : GXS_DATABASE_NAMES)
+	{
+		const std::string path = gxsDatabaseDirectory() + name;
+
+		if(!RsDirUtil::fileExists(path))
+			continue;
+
+		const uint64_t size = gxsFileSize(path);
+
+		if(progress && !progress(name, done, total))
+		{
+			RsInfo() << "GXS database compaction stopped before " << name;
+			return false;
+		}
+
+		auto t0 = std::chrono::steady_clock::now();
+		bool db_ok = false;
+
+		{
+			RetroDb db(path, RetroDb::OPEN_READWRITE, rsInitConfig->gxs_passwd);
+
+			// VACUUM builds a full copy of the database in a temporary
+			// database. SQLCipher is usually built with SQLITE_TEMP_STORE=2,
+			// which keeps temporary databases in memory: that would cost the
+			// size of the database in RAM. Force it to a file instead (in
+			// SQLITE_TMPDIR, /var/tmp or /tmp), which needs up to the size of
+			// the database in free disk space there. When VACUUM fails (disk
+			// full...) the database is untouched.
+			db_ok = db.isOpen() && db.execSQL("PRAGMA temp_store=FILE;")
+			        && db.execSQL("VACUUM;");
+		}
+
+		auto s = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - t0).count();
+
+		if(db_ok)
+			RsInfo() << "Compacted GXS database " << name << ": " << size / (1024 * 1024) << " MB -> "
+			         << gxsFileSize(path) / (1024 * 1024) << " MB in " << s << " s";
+		else
+			RsErr() << "Could not compact GXS database " << name << " (left as it was)";
+
+		ok = ok && db_ok;
+		done += size;
+	}
+
+	if(progress)
+		progress(std::string(), total, total);
+
+	return ok;
+}
+
 #ifdef RS_AUTOLOGIN
 bool RsInit::RsClearAutoLogin()
 {
@@ -908,6 +1031,7 @@ RsGRouter *rsGRouter = NULL ;
 
 #ifdef RS_RTT
 #include "services/p3rtt.h"
+#include "services/p3mobilelink.h"
 #endif
 
 
@@ -1302,12 +1426,39 @@ int RsServer::StartupRetroShare()
 	//ftserver->setSharedDirectories(fileList);
 
 	rsFiles = ftserver;
+	mFtServer = ftserver;
 
 	std::vector<std::string> plugins_directories ;
 
 #ifdef __APPLE__
 	plugins_directories.push_back(RsAccounts::systemDataDirectory()) ;
 #endif
+
+	// Next to the running binary, so that a relocatable install (an AppImage,
+	// or several versions side by side) loads its own plugins. A plugin found
+	// twice, as the same file or as another build of it, is loaded once: the
+	// plugin manager skips a file whose hash or name is already loaded.
+	//
+	// On Linux the binary is found through /proc/self/exe, not argv[0]: the
+	// AppImage runtime starts the binary with the .AppImage file as argv[0],
+	// which would point next to that file instead of inside the image.
+	std::string exe_path;
+#if defined(__linux__) && !defined(__ANDROID__)
+	{
+		char self_exe[PATH_MAX];
+		const ssize_t len = readlink("/proc/self/exe", self_exe, sizeof(self_exe) - 1);
+		if(len > 0) exe_path.assign(self_exe, static_cast<size_t>(len));
+	}
+#endif
+	if(exe_path.empty()) exe_path = RsInit::executablePath();
+	const std::string exe_dir = exe_path.empty() ? std::string() :
+	        RsDirUtil::getDirectory(RsDirUtil::removeSymLinks(exe_path));
+	if(!exe_dir.empty())
+	{
+		plugins_directories.push_back(exe_dir + "/../lib/retroshare/extensions6/");
+		plugins_directories.push_back(exe_dir + "/lib/retroshare/extensions6/");
+	}
+
 #if !defined(WINDOWS_SYS) && defined(PLUGIN_DIR)
 	plugins_directories.push_back(std::string(PLUGIN_DIR)) ;
 #endif
@@ -1470,15 +1621,10 @@ int RsServer::StartupRetroShare()
 
     p3GxsForums* mGxsForums = new p3GxsForums( gxsforums_ds, nullptr, mGxsIdService );
 
-	RsGxsNetTunnelService* gxsForumsTunnelService = nullptr;
-#ifdef RS_DEEP_FORUMS_INDEX
-	gxsForumsTunnelService = mGxsNetTunnel;
-#endif
-
 	RsGxsNetService* gxsforums_ns = new RsGxsNetService(
 	            RS_SERVICE_GXS_TYPE_FORUMS, gxsforums_ds, nxsMgr, mGxsForums,
 	            mGxsForums->getServiceInfo(), mReputations, mGxsCircles,
-	            mGxsIdService, pgpAuxUtils, gxsForumsTunnelService );
+	            mGxsIdService, pgpAuxUtils, nullptr );
 	mGxsForums->setNetworkExchangeService(gxsforums_ns);
 
 
@@ -1666,6 +1812,7 @@ int RsServer::StartupRetroShare()
 	interfaces.mFiles  = rsFiles;
 	interfaces.mPeers  = rsPeers;
     interfaces.mMail   = rsMail;
+    interfaces.mChats  = rsChats;
 	interfaces.mTurtle = rsTurtle;
 	interfaces.mDisc   = rsDisc;
 #ifdef RS_USE_BITDHT
@@ -1743,6 +1890,27 @@ int RsServer::StartupRetroShare()
 	p3BandwidthControl *mBwCtrl = new p3BandwidthControl(pqih);
 	pqih -> addService(mBwCtrl, true); 
 
+	p3MobileLink *mMobileLink = new p3MobileLink(serviceCtrl);
+	pqih -> addService(mMobileLink, true);
+	rsMobileLink = mMobileLink;
+	tr->setMobileLink(mMobileLink);
+	pqih->setMobileLink(mMobileLink);
+	mLinkMgr->setMobileLink(mMobileLink);
+	mStatusSrv->setMobileLink(mMobileLink);
+	mDisc->setMobileLink(mMobileLink);
+	mHeart->setMobileLink(mMobileLink);
+	chatSrv->setMobileLink(mMobileLink);
+	mMobileLink->setChatService(chatSrv);
+	mBwCtrl->setMobileLink(mMobileLink);
+	mReputations->setMobileLink(mMobileLink);
+	if(mBanList) mBanList->setMobileLink(mMobileLink);
+#ifdef RS_RTT
+	mRtt->setMobileLink(mMobileLink);
+#endif
+#ifdef RS_ENABLE_GXS
+	RsGxsNetService::setMobileLink(mMobileLink);
+#endif
+
 #ifdef SERVICES_DSDV
 	p3Dsdv *mDsdv = new p3Dsdv(serviceCtrl);
 	pqih -> addService(mDsdv, true);
@@ -1781,6 +1949,7 @@ int RsServer::StartupRetroShare()
 	serviceCtrl->registerServiceMonitor(mStatusSrv, mStatusSrv->getServiceInfo().mServiceType);
 	serviceCtrl->registerServiceMonitor(chatSrv, chatSrv->getServiceInfo().mServiceType);
 	serviceCtrl->registerServiceMonitor(mBwCtrl, mBwCtrl->getServiceInfo().mServiceType);
+	serviceCtrl->registerServiceMonitor(mMobileLink, mMobileLink->getServiceInfo().mServiceType);
 
 	/**************************************************************************/
     // Turtle search for GXS services
@@ -1788,9 +1957,6 @@ int RsServer::StartupRetroShare()
 	mGxsNetTunnel->registerSearchableService(gxschannels_ns);
 #ifdef RS_USE_CALENDAR
 	mGxsNetTunnel->registerSearchableService(calendar_ns);
-#endif
-#ifdef RS_DEEP_FORUMS_INDEX
-	mGxsNetTunnel->registerSearchableService(gxsforums_ns);
 #endif
 
 	/**************************************************************************/
@@ -1802,11 +1968,13 @@ int RsServer::StartupRetroShare()
 	mConfigMgr->addConfiguration("gxsnettunnel.cfg", mGxsNetTunnel);
 	mConfigMgr->addConfiguration("peers.cfg"       , mPeerMgr);
 	mConfigMgr->addConfiguration("general.cfg"     , mGeneralConfig);
+    mConfigMgr->addConfiguration("authssl.cfg"     , dynamic_cast<p3Config*>(&AuthSSL::instance()));
 	mConfigMgr->addConfiguration("msgs.cfg"        , msgSrv);
 	mConfigMgr->addConfiguration("chat.cfg"        , chatSrv);
 	mConfigMgr->addConfiguration("p3History.cfg"   , mHistoryMgr);
 	mConfigMgr->addConfiguration("p3Status.cfg"    , mStatusSrv);
 	mConfigMgr->addConfiguration("turtle.cfg"      , tr);
+	mConfigMgr->addConfiguration("mobilelink.cfg"  , mMobileLink);
 
     if(mBanList != NULL)
 		mConfigMgr->addConfiguration("banlist.cfg"     , mBanList);

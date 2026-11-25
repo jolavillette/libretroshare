@@ -111,14 +111,15 @@ public:
 		double ts = getCurrentTS();
 		_time_stamp = ts;
 		_lineno = 0;
-		_info = "[no info]";
+		_function_name = "[no info]";
+		_file_name = "";
 #endif
 	}
 
 	RsStackMutex(RsMutex &mtx, const char *function_name, const char *file_name,
 	             int lineno) : mMtx(mtx)
 #ifdef RS_MUTEX_DEBUG
-	  , _info(std::string(function_name)+" in file "+file_name), _lineno(lineno)
+	  , _function_name(function_name), _file_name(file_name), _lineno(lineno)
 #endif
 	{
 #ifdef RS_MUTEX_DEBUG
@@ -139,8 +140,8 @@ public:
 			std::cerr << "Mutex " << (void*)&mMtx << " \"" << mtx.name() << "\""
 			          << " waited for " << ts - _time_stamp
 			          << " seconds in thread " << pthread_self()
-			          << " for locked thread " << owner << ". in " << _info
-			          << ":" << _lineno << std::endl;
+			          << " for locked thread " << owner << ". in " << _function_name
+			          << " in file " << _file_name << ":" << _lineno << std::endl;
 		_time_stamp = ts ;	// This is to re-init the locking time without accounting for how much we waited.
 #endif
 	}
@@ -156,7 +157,8 @@ public:
 				std::cerr << "Mutex " << (void*)&mMtx << " \"" << mMtx.name()
 				          << "\"" << " locked for " << ts - _time_stamp
 				          << " seconds in thread " << pthread_self()
-				          << ". in " << _info << ":" << _lineno << std::endl;
+				          << ". in " << _function_name << " in file " << _file_name
+				          << ":" << _lineno << std::endl;
 #endif
 	}
 
@@ -166,7 +168,8 @@ private:
 #ifdef RS_MUTEX_DEBUG
 	static double getCurrentTS();
 	double _time_stamp;
-	std::string _info;
+	const char* _function_name; // string literals from the RS_STACK_MUTEX macro: kept as pointers, the
+	const char* _file_name;     // message is only built when a lock waits or is held for over a second
 	int _lineno;
 #endif
 };
@@ -226,9 +229,10 @@ public:
 	 *	any kind of function call or job into a lambda which get no paramethers
 	 *	and return nothing but can capture
 	 * This can be easly optimized later by using a thread pool
+	 * Not inline on purpose: the bookkeeping of the finished threads (see
+	 * rsthreads.cc) must exist once, also when the library is a DLL.
 	 */
-	static void async(const std::function<void()>& fn)
-	{ std::thread(fn).detach(); }
+	static void async(const std::function<void()>& fn);
 
 	/** @return RsThread full name */
 	const std::string& threadName() { return mFullName; }
@@ -263,7 +267,8 @@ private:
 	/** Wait the thread while it is stopping */
 	void waitWhileStopping();
 
-	/** To be sure Init (pthread_setname_np) is done before continue thread.
+	/** Held by start() until the thread id and the thread name are stored:
+	 * the new thread waits for it in wrapRun() before it reads them and runs.
 	 * Else can finish before and crash. */
 	RsMutex mInitMtx;
 

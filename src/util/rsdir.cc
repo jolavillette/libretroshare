@@ -662,7 +662,7 @@ bool RsDirUtil::hashFile(const std::string& filepath,
 #include <iomanip>
 
 /* Function to hash, and get details of a file */
-bool RsDirUtil::getFileHash(const std::string& filepath, RsFileHash &hash, uint64_t &size, RsThread *thread /*= NULL*/)
+bool RsDirUtil::getFileHash(const std::string& filepath, RsFileHash &hash, uint64_t &size, RsThread *thread /*= NULL*/, const std::function<void(uint64_t)>& progress /*= nullptr*/)
 {
 	FILE *fd;
 
@@ -682,20 +682,20 @@ bool RsDirUtil::getFileHash(const std::string& filepath, RsFileHash &hash, uint6
 	size = ftello64(fd);
 	fseeko64(fd, 0, SEEK_SET);
 
-	/* check if thread is running */
-	bool isRunning = thread ? thread->isRunning() : true;
-	int runningCheckCount = 0;
+	/* Bail out as soon as the owning thread is asked to stop (shutdown).
+	 * shouldStop() is checked every iteration, i.e. every HASH_BUFFER_SIZE
+	 * bytes (10 MB) — sub-second responsiveness with negligible overhead. */
+	bool isRunning = thread ? !thread->shouldStop() : true;
 
 	SHA1_Init(sha_ctx);
 	while(isRunning && (len = fread(gblBuf,1, HASH_BUFFER_SIZE, fd)) > 0)
 	{
 		SHA1_Update(sha_ctx, gblBuf, len);
+		if (progress)
+			progress(len);
 
-		if (thread && ++runningCheckCount > (10 * 1024)) {
-			/* check all 50MB if thread is running */
-			isRunning = thread->isRunning();
-			runningCheckCount = 0;
-		}
+		if (thread)
+			isRunning = !thread->shouldStop();
 	}
 
 	/* Thread has ended */

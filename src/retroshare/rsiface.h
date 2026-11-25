@@ -81,6 +81,12 @@ public:
 
 	virtual bool getPeerCryptoDetails(
 	        const RsPeerId& ssl_id,RsPeerCryptoParams& params ) = 0;
+	/**
+	 * @brief Get the name and version of the libraries libretroshare is built
+	 *	with (OpenSSL, SQLite, zlib...)
+	 * @jsonapi{development}
+	 * @param[out] libraries storage for the name and version of each library
+	 */
 	virtual void getLibraries(std::list<RsLibraryInfo> &libraries) = 0;
 
 	/**

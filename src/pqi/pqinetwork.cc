@@ -48,6 +48,7 @@
 int errno;
 #else /* Windows - define errno */
 #include <netdb.h>
+#include <netinet/tcp.h>
 #endif
 
 #ifdef __HAIKU__
@@ -145,6 +146,14 @@ std::string socket_errorType(int err)
 	else if (err == EADDRNOTAVAIL)
 	{
 		return std::string("EADDRNOTAVAIL");
+	}
+	else if (err == EACCES)
+	{
+		return std::string("EACCES");
+	}
+	else if (err == EPERM)
+	{
+		return std::string("EPERM");
 	}
 	//
 
@@ -253,8 +262,34 @@ std::string socket_errorType(int err)
 	{
 		return std::string("WSAEAFNOSUPPORT (normally UDP related!)");
 	}
+	else if (err == WSAECONNABORTED)
+	{
+		return std::string("WSAECONNABORTED");
+	}
+	else if (err == WSAENETRESET)
+	{
+		return std::string("WSAENETRESET");
+	}
+	else if (err == WSAENETDOWN)
+	{
+		return std::string("WSAENETDOWN");
+	}
+	else if (err == WSAENOTCONN)
+	{
+		return std::string("WSAENOTCONN");
+	}
+	else if (err == WSAESHUTDOWN)
+	{
+		return std::string("WSAESHUTDOWN");
+	}
+	else if (err == WSAEHOSTUNREACH)
+	{
+		return std::string("WSAEHOSTUNREACH");
+	}
 
-	return std::string("----WINDOWS OPERATING SYSTEM FAILURE----");
+	std::string out;
+	rs_sprintf(out, "unknown socket error %d", err);
+	return out;
 }
 
 // implement the improved unix inet address fn.
@@ -350,6 +385,42 @@ bool getLocalAddresses(std::vector<sockaddr_storage>& addrs)
 	return !addrs.empty();
 }
 
+bool getDefaultRouteSourceAddress(sockaddr_storage& src)
+{
+	sockaddr_storage_clear(src);
+
+	int fd = unix_socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return false;
+
+	/* connect() on a UDP socket sends nothing: the kernel only looks up the
+	 * route towards the destination and binds the socket to that route's
+	 * source address. Any Internet address takes the default route; this one
+	 * is reserved for documentation (RFC 5737). */
+	sockaddr_in dest{};
+	dest.sin_family = AF_INET;
+	dest.sin_port = htons(9);
+	dest.sin_addr.s_addr = htonl(0xC0000201); // 192.0.2.1
+
+	sockaddr_in local{};
+	socklen_t len = sizeof(local);
+
+	bool found =
+	        connect( fd, reinterpret_cast<const sockaddr*>(&dest),
+	                 sizeof(dest) ) == 0 &&
+	        getsockname( fd, reinterpret_cast<sockaddr*>(&local), &len ) == 0 &&
+	        local.sin_family == AF_INET &&
+	        local.sin_addr.s_addr != htonl(INADDR_ANY);
+
+	unix_close(fd);
+
+	if (!found) return false;
+
+	sockaddr_in& out = reinterpret_cast<sockaddr_in&>(src);
+	out.sin_family = AF_INET;
+	out.sin_addr = local.sin_addr;
+	return true;
+}
+
 
 /*************************************************************
  * Socket Library Wrapper Functions 
@@ -428,6 +499,29 @@ int unix_fcntl_nonblock(int fd)
 	return ret;
 }
 
+int unix_tcp_nodelay(int fd)
+{
+	// Testing switch, to be removed before upstreaming: RS_TCP_NODELAY=0 keeps
+	// Nagle on, so the same build can be measured with and without the fix.
+	static const bool disabled = []() {
+		const char *e = getenv("RS_TCP_NODELAY");
+		bool off = (e != nullptr && e[0] == '0');
+		if (off) RsInfo() << "TCP_NODELAY disabled by RS_TCP_NODELAY=0: peer links keep Nagle";
+		return off;
+	}();
+	if (disabled)
+		return 0;
+
+	int on = 1;
+	int ret = setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, (const char *) &on, sizeof(on));
+
+	if (ret != 0)
+		RsWarn() << __PRETTY_FUNCTION__ << " cannot set TCP_NODELAY on socket " << fd
+		         << ", OS error " << rs_last_socket_error();
+
+	return ret;
+}
+
 
 int unix_connect(int fd, const sockaddr_storage &serv_addr)
 {
@@ -481,6 +575,15 @@ int rs_socket_error()
     return WinToUnixError(WSAGetLastError());
 #else
     return errno;
+#endif
+}
+
+int rs_last_socket_error()
+{
+#ifdef WINDOWS_SYS // ie WINDOWS.
+	return WSAGetLastError();
+#else
+	return errno;
 #endif
 }
 /******************* WINDOWS SPECIFIC PART ******************/

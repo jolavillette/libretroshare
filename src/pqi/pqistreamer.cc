@@ -20,6 +20,7 @@
  *                                                                             *
  *******************************************************************************/
 #include "pqi/pqistreamer.h"
+#include "pqi/pqiechoprobe.h"
 
 #include <sys/time.h>             // for gettimeofday
 #include <stdlib.h>               // for free, realloc, exit
@@ -40,6 +41,53 @@
 
 #include <iomanip>
 
+namespace
+{
+// The totals behind pqistreamer::getCumulativeTraffic(): every item counted
+// once, where it goes through, whichever streamer carries it.
+RsMutex& cumulativeTrafficMtx()
+{
+	static RsMutex mtx("pqistreamer cumulative traffic");
+	return mtx;
+}
+std::map<uint16_t, RsCumulativeTrafficStats> sCumulativeTrafficByService;
+std::map<RsPeerId, RsCumulativeTrafficStats> sCumulativeTrafficByPeer;
+
+void addToCumulativeTraffic(
+        RsCumulativeTrafficStats& stats, bool incoming, uint32_t size,
+        rstime_t now )
+{
+	if(incoming)
+	{
+		stats.bytesIn += size;
+		++stats.countIn;
+	}
+	else
+	{
+		stats.bytesOut += size;
+		++stats.countOut;
+	}
+	if(stats.firstSeen == 0) stats.firstSeen = now;
+	stats.lastSeen = now;
+}
+}
+
+void pqistreamer::getCumulativeTraffic(
+        std::map<uint16_t, RsCumulativeTrafficStats>* byService,
+        std::map<RsPeerId, RsCumulativeTrafficStats>* byPeer )
+{
+	RsStackMutex stack(cumulativeTrafficMtx());
+	if(byService) *byService = sCumulativeTrafficByService;
+	if(byPeer) *byPeer = sCumulativeTrafficByPeer;
+}
+
+void pqistreamer::clearCumulativeTraffic(bool byPeer, bool byService)
+{
+	RsStackMutex stack(cumulativeTrafficMtx());
+	if(byPeer) sCumulativeTrafficByPeer.clear();
+	if(byService) sCumulativeTrafficByService.clear();
+}
+
 //#define DEBUG_PQISTREAMER 1
 
 static struct RsLog::logInfo pqistreamerzoneInfo = {RsLog::Default, "pqistreamer"};
@@ -57,6 +105,7 @@ static const int   PQISTREAM_SLICE_FLAG_ENDS 			= 0x02;		// these flags should b
 static const int   PQISTREAM_SLICE_PROTOCOL_VERSION_ID_01     = 0x10;		// Protocol version ID. Should hold on the 4 lower bits.
 static const int   PQISTREAM_PARTIAL_PACKET_HEADER_SIZE	= 8;   		// Same size than normal header, to make the code simpler.
 static const int   PQISTREAM_PACKET_SLICING_PROBE_DELAY	= 60;  		// send every 60 secs.
+static const uint32_t PQISTREAM_MAX_PARTIAL_PACKETS		= 32;  		// The sender slices at most one item per QoS level (10) at a time.
 
 // This is a probe packet, that won't deserialise (it's empty) but will not cause problems to old peers either, since they will ignore
 // it. This packet however will be understood by new peers as a signal to enable packet slicing. This should go when all peers use the
@@ -411,12 +460,14 @@ int	pqistreamer::queue_outpqi_locked(RsItem *pqi,uint32_t& pktsize)
     	// keep info for stats for a while. Only keep the items for the last two seconds. sec n is ongoing and second n-1
     	// is a full statistics chunk that can be used in the GUI
 
-    	locked_addTrafficClue(pqi,pktsize,mCurrentStatsChunk_Out) ;
+    	locked_addTrafficClue(pqi,pktsize,mCurrentStatsChunk_Out,false) ;
 
         /*******************************************************************************************/
 
 	if (mRsSerialiser->serialise(pqi, ptr, &pktsize))
 	{
+		PqiEchoProbe::instance().sent(PeerId(),ptr,pktsize) ;	// debugging probe, off by default
+
 		locked_storeInOutputQueue(ptr,pktsize,pqi->priority_level()) ;
 
 		if (!(mBio_flags & BIN_FLAGS_NO_DELETE))
@@ -464,14 +515,14 @@ int 	pqistreamer::handleincomingitem(RsItem *pqi,int len)
 	// is a full statistics chunk that can be used in the GUI
 	{
 		RsStackMutex stack(mStreamerMtx); /**** LOCKED MUTEX ****/
-		locked_addTrafficClue(pqi,len,mCurrentStatsChunk_In) ;
+		locked_addTrafficClue(pqi,len,mCurrentStatsChunk_In,true) ;
 	}
 	/*******************************************************************************************/
 
 	return 1;
 }
 
-void pqistreamer::locked_addTrafficClue(const RsItem *pqi,uint32_t pktsize,std::list<RSTrafficClue>& lst)
+void pqistreamer::locked_addTrafficClue(const RsItem *pqi,uint32_t pktsize,std::list<RSTrafficClue>& lst,bool incoming)
 {
     rstime_t now = time(NULL) ;
 
@@ -495,6 +546,12 @@ void pqistreamer::locked_addTrafficClue(const RsItem *pqi,uint32_t pktsize,std::
     tc.service_sub_id = pqi->PacketSubType() ;
 
     lst.push_back(tc) ;
+
+    {
+	    RsStackMutex stack(cumulativeTrafficMtx());
+	    addToCumulativeTraffic(sCumulativeTrafficByService[tc.service_id], incoming, pktsize, now);
+	    addToCumulativeTraffic(sCumulativeTrafficByPeer[tc.peer_id], incoming, pktsize, now);
+    }
 }
 
 rstime_t	pqistreamer::getLastIncomingTS()
@@ -640,8 +697,10 @@ int	pqistreamer::handleoutgoing_locked()
 			{
 				if(slice_size > 0xffff || !mAcceptsPacketSlicing)
 				{
-					std::cerr << "(EE) protocol error in pqistreamer: slice size is too large and cannot be encoded." ;
+					RsErr() << "pqistreamer: slice size is too large and cannot be encoded (peer " << PeerId() << ", " << slice_size << " bytes, slicing " << (mAcceptsPacketSlicing ? "on" : "off") << ")." ;
+					free(dta) ;
 					free(mPkt_wpending) ;
+					mPkt_wpending = NULL ;
 					mPkt_wpending_size = 0;
 //					RsDbg() << "PQISTREAMER pqistreamer::handleoutgoing_locked() stopped error slice size is too large";
 					return sentbytes ;
@@ -1039,6 +1098,8 @@ continue_packet:
 		    pkt = mRsSerialiser->deserialise(block, &pktlen);
 		    if (pkt == NULL)
 			    is_error = true;
+		    else
+			    PqiEchoProbe::instance().received(PeerId(),block,pktlen) ;	// debugging probe, off by default
 	    }
 
 	    if (pkt != NULL)
@@ -1105,6 +1166,19 @@ RsItem *pqistreamer::addPartialPacket(const void *block, uint32_t len, uint32_t 
 		    std::cerr << " (EE) non starting packet has no record. Dropping" << std::endl;
 		    return NULL ;
 	    }
+	    // A well-behaved peer never has more partial packets in flight than it has QoS levels.
+	    // Any excess comes from a broken or hostile peer: drop all of them to bound memory.
+
+	    if(mPartialPackets.size() >= PQISTREAM_MAX_PARTIAL_PACKETS)
+	    {
+		    RsWarn() << "pqistreamer: peer " << PeerId() << " has " << mPartialPackets.size() << " unfinished partial packets. Dropping them all.";
+
+		    for(auto& p: mPartialPackets)
+			    free(p.second.mem) ;
+
+		    mPartialPackets.clear() ;
+	    }
+
 	    PartialPacketRecord& rec = mPartialPackets[slice_packet_id] ;
 
 	    rec.mem = rs_malloc(slice_length) ;
@@ -1137,7 +1211,29 @@ RsItem *pqistreamer::addPartialPacket(const void *block, uint32_t len, uint32_t 
 	    }
 	    // make sure this is a continuing packet, otherwise this is an error.
 
-	    rec.mem = realloc(rec.mem, rec.size + slice_length) ;
+	    // The reassembled packet will be refused by deserialise() if it exceeds MAX_SERIAL_SIZE, but that
+	    // only happens on the ending slice. Check now, otherwise a peer that never sends it grows the buffer forever.
+
+	    if(rec.size + slice_length > RsSerialiser::MAX_SERIAL_SIZE)
+	    {
+		    RsWarn() << "pqistreamer: peer " << PeerId() << " sent a partial packet larger than " << RsSerialiser::MAX_SERIAL_SIZE << " bytes. Dropping it.";
+
+		    free(rec.mem) ;
+		    mPartialPackets.erase(it) ;
+		    return NULL ;
+	    }
+
+	    void *mem = realloc(rec.mem, rec.size + slice_length) ;
+
+	    if(!mem)
+	    {
+		    RsErr() << "pqistreamer: cannot allocate " << rec.size + slice_length << " bytes for a partial packet. Dropping it.";
+
+		    free(rec.mem) ;
+		    mPartialPackets.erase(it) ;
+		    return NULL ;
+	    }
+	    rec.mem = mem ;
 	    memcpy( &((char*)rec.mem)[rec.size],slice_data,slice_length) ;
 	    rec.size += slice_length ;
 
@@ -1151,6 +1247,9 @@ RsItem *pqistreamer::addPartialPacket(const void *block, uint32_t len, uint32_t 
 		    std::cerr << " => deserialising: mem=" << RsUtil::BinToHex((char*)rec.mem,std::min(8u,rec.size)) << std::endl;
 #endif
 		    RsItem *item = mRsSerialiser->deserialise(rec.mem, &rec.size);
+
+		    if(item != NULL)
+			    PqiEchoProbe::instance().received(PeerId(),rec.mem,rec.size) ;	// debugging probe, off by default
 
 		    total_len = rec.size ;
 		    free(rec.mem) ;

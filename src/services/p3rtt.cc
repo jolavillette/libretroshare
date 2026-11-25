@@ -32,6 +32,7 @@
 #include "rsserver/p3face.h"
 #include "util/cxx17retrocompat.h"
 #include "services/p3rtt.h"
+#include "services/p3mobilelink.h"
 #include "rsitems/rsrttitems.h"
 
 
@@ -194,6 +195,10 @@ void p3rtt::sendPingMeasurements()
 	std::set<RsPeerId>::iterator it;
 	for(it = idList.begin(); it != idList.end(); ++it)
 	{
+		// None between a phone in background and its home (MobileLink).
+		if(mMobileLink && mMobileLink->isQuietLink(*it))
+			continue;
+
     		double ts = getCurrentTS();
             
 		/* create the packet */

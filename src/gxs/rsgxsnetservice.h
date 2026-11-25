@@ -89,6 +89,8 @@ struct GroupRequestRecord
  * Incoming transaction are in 3 different states
  *   1. START 2. RECEIVING 3. END
  */
+class p3MobileLink;
+
 class RsGxsNetService :
         public RsNetworkExchangeService, public p3ThreadedService, public p3Config
 {
@@ -114,6 +116,11 @@ public:
 	                uint32_t default_sync_period = RS_GXS_DEFAULT_MSG_REQ_PERIOD);
 
     virtual ~RsGxsNetService();
+
+    /// The service that tells which peers are phones in background, and
+    /// whether this node is one (MobileLink): no periodic sync with them.
+    /// Set once at start-up, for every GXS service.
+    static void setMobileLink(p3MobileLink *mobileLink) { sMobileLink = mobileLink; }
 
     virtual RsServiceInfo getServiceInfo() override { return mServiceInfo; }
 
@@ -407,6 +414,10 @@ private:
      */
     bool locked_checkTransacTimedOut(NxsTransaction* tr);
 
+    // Friends connected for this service, as last asked to the net manager: used to drop the transactions of a peer that went away.
+    std::set<RsPeerId> mOnlineFriendsCache;
+    rstime_t mOnlineFriendsCacheTS = 0;
+
     /** E: Transaction processing **/
 
     /** S: item handlers **/
@@ -627,6 +638,11 @@ private:
     /// for other members save transactions
     RsMutex mNxsMutex;
 
+    static p3MobileLink *sMobileLink;
+
+    /// Removes the phones in background from peers.
+    static void removeQuietPhones(std::set<RsPeerId>& peers);
+
     uint32_t mSyncTs;
     uint32_t mLastKeyPublishTs;
     uint32_t mLastCleanRejectedMessages;
@@ -648,6 +664,8 @@ private:
     std::map<RsGxsGroupId,std::set<RsPeerId> > mPendingPublishKeyRecipients ;
 	std::map<RsPeerId, std::set<RsGxsGroupId> > mExplicitRequest;
     std::map<RsPeerId, std::set<RsGxsGroupId> > mPartialMsgUpdates ;
+    std::map<RsGxsGroupId, rstime_t> mUnloadedCircleMsgSyncTS ; // last msg list request for a circle-restricted group whose circle is not loaded
+    std::set<RsGxsGroupId> mUnreadableCircleGroupsLogged ;       // groups already reported as unreadable, one line per start
 
     // nxs sync optimisation
     // can pull dynamically the latest timestamp for each message

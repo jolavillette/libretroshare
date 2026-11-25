@@ -22,6 +22,10 @@
 #include <csignal>
 #include <cstdlib>
 
+#ifdef _WIN32
+#	include <windows.h>
+#endif
+
 #include "util/stacktrace.h"
 
 #if defined(RS_JEREMY_RIFKIN_CPPTRACE)
@@ -308,5 +312,36 @@ CrashStackTrace::CrashStackTrace()
 
 	print_stacktrace(false);
 
-	exit(-signum);
+	/* Do NOT call exit() here: it runs atexit handlers and static destructors
+	 * from inside a signal handler, on a process whose state is already
+	 * corrupted and whose locks may be held by the crashing thread. Seen in
+	 * practice: a SIGSEGV inside QCoreApplicationPrivate::cleanupThreadData()
+	 * (main thread holding the posted-event list mutex) followed by exit() ->
+	 * QtDBus static destructor -> QThread::wait() on a thread blocked on that
+	 * very mutex, leaving a zombie process that never dies and a debugger
+	 * stack with the crash context buried under the exit machinery.
+	 * Restoring the default disposition and re-raising terminates immediately,
+	 * yields the true exit status and lets the kernel write a core dump.
+	 * The handler was installed with signal(), so on POSIX signum is blocked
+	 * while it runs: unblock it, otherwise raise() only leaves it pending and
+	 * _Exit() below wins, with no core dump.
+	 * Windows has no such path: the UCRT raise() with SIG_DFL ends in exit(),
+	 * and even _Exit() goes through ExitProcess(), whose DLL_PROCESS_DETACH
+	 * runs libretroshare.dll static destructors. Seen in practice: a SIGSEGV
+	 * while the GUI destroyed its main window, then the static RsControl
+	 * ~RsThread() waiting for ever on a thread ExitProcess() had already
+	 * killed. TerminateProcess() skips every handler and DLL notification. */
+#ifdef _WIN32
+	fflush(stderr);
+	TerminateProcess(GetCurrentProcess(), 128 + signum);
+#endif
+	signal(signum, SIG_DFL);
+#ifndef _WIN32
+	sigset_t unblock;
+	sigemptyset(&unblock);
+	sigaddset(&unblock, signum);
+	pthread_sigmask(SIG_UNBLOCK, &unblock, nullptr);
+#endif
+	raise(signum);
+	_Exit(128 + signum);
 }

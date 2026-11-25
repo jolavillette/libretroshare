@@ -29,6 +29,11 @@
 
 #include "rs_android/retroshareserviceandroid.hpp"
 #include "rs_android/rsjni.hpp"
+#include "services/p3mobilelink.h"
+
+#ifdef RS_WEBUI
+#	include "retroshare/rswebui.h"
+#endif
 
 
 /*static*/ std::unique_ptr<AndroidCoutCerrCatcher>
@@ -39,7 +44,8 @@ using ErrorConditionWrap = RsJni::ErrorConditionWrap;
 /*static*/ jni::Local<jni::Object<ErrorConditionWrap>>
 RetroShareServiceAndroid::start(
         JNIEnv& env, jni::Class<RetroShareServiceAndroid>&,
-        jni::jint jsonApiPort, const jni::String& jsonApiBindAddress )
+        jni::jint jsonApiPort, const jni::String& jsonApiBindAddress,
+        const jni::String& webUiDirectory, const jni::String& webUiPasswd )
 {
 	if(jsonApiPort < 0 || jsonApiPort > std::numeric_limits<uint16_t>::max())
 	{
@@ -66,6 +72,28 @@ RetroShareServiceAndroid::start(
 
 	// Dirty workaround, plugins not supported on Android ATM
 	conf.main_executable_path = " ";
+
+#ifdef RS_WEBUI
+	/* The web interface is served out of a directory, and on Android there is no
+	 * RS_DATA_DIR to serve it from: the files are shipped as assets and the Java
+	 * side extracts them before calling us. rsWebUi is a global constructed when
+	 * the library is loaded, so it can be pointed at that directory here, well
+	 * before startupWebServices() reads htmlFilesDirectory(). */
+	const std::string webUiDir = jni::Make<std::string>(env, webUiDirectory);
+	const std::string webUiPwd = jni::Make<std::string>(env, webUiPasswd);
+	if(!webUiDir.empty() && !webUiPwd.empty())
+	{
+		const auto ec = rsWebUi->setHtmlFilesDirectory(webUiDir);
+		if(ec)
+			RS_ERR("Cannot serve the web interface from ", webUiDir, ": ", ec);
+		else
+		{
+			conf.enableWebUI = true;
+			conf.webUIPasswd = webUiPwd;
+			RS_INFO("Web interface enabled, files from ", webUiDir);
+		}
+	}
+#endif // def RS_WEBUI
 
 	int initResult = RsInit::InitRetroShare(conf);
 	if(initResult != RS_INIT_OK)
@@ -100,4 +128,44 @@ RetroShareServiceAndroid::getAndroidContext(JNIEnv& env)
 	        clazz.GetStaticMethod<jni::Object<RetroShareServiceAndroid::Context>()>(
 	            env, "getServiceContext" );
 	return clazz.Call(env, method);
+}
+
+/*static*/ jni::jboolean RetroShareServiceAndroid::mobileLinkKeepAlive(
+        JNIEnv&, jni::Class<RetroShareServiceAndroid>&, jni::jint timeoutSeconds )
+{
+	if(!rsMobileLink || timeoutSeconds <= 0) return jni::jni_false;
+	return rsMobileLink->keepAliveNow(static_cast<uint32_t>(timeoutSeconds)) ?
+	            jni::jni_true : jni::jni_false;
+}
+
+/*static*/ jni::jint RetroShareServiceAndroid::mobileLinkKeepAliveInterval(
+        JNIEnv&, jni::Class<RetroShareServiceAndroid>& )
+{
+	if(!rsMobileLink) return 0;
+	return static_cast<jni::jint>(rsMobileLink->getKeepAliveInterval());
+}
+
+/*static*/ void RetroShareServiceAndroid::registerMobileLinkHooks()
+{
+	// Called on libretroshare's threads: each call attaches the thread to the
+	// Java VM for its duration. Our class was looked up at load time, where
+	// the application class loader is reachable.
+	p3MobileLink::setPlatformHooks(
+	            [](bool allowed)
+	{
+		auto uenv = jni::GetAttachedEnv(RsJni::getVM());
+		JNIEnv& env = *uenv;
+		auto& clazz = jni::Class<RetroShareServiceAndroid>::Singleton(env);
+		auto method = clazz.GetStaticMethod<void(jni::jboolean)>(
+		            env, "mobileLinkSleepAllowedChanged" );
+		clazz.Call(env, method, allowed ? jni::jni_true : jni::jni_false);
+	},
+	            []()
+	{
+		auto uenv = jni::GetAttachedEnv(RsJni::getVM());
+		JNIEnv& env = *uenv;
+		auto& clazz = jni::Class<RetroShareServiceAndroid>::Singleton(env);
+		auto method = clazz.GetStaticMethod<void()>(env, "mobileLinkWakeUp");
+		clazz.Call(env, method);
+	} );
 }

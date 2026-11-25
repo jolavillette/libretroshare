@@ -87,6 +87,11 @@ const uint8_t RS_PKT_SUBTYPE_SUBSCRIBED_CHAT_LOBBY_CONFIG = 0x1D ;
 const uint8_t RS_PKT_SUBTYPE_CHAT_AVATAR_INFO             = 0x1E ;
 const uint8_t RS_PKT_SUBTYPE_CHAT_AVATAR_CONFIG           = 0x1F ;
 
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_PROBE      = 0x20 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_PROBE_RESP = 0x21 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_REQUEST    = 0x22 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_DATA       = 0x23 ;
+
 typedef uint64_t 		ChatLobbyId ;
 typedef uint64_t 		ChatLobbyMsgId ;
 typedef std::string 	ChatLobbyNickName ;
@@ -395,6 +400,69 @@ public:
     uint32_t timestamp;
 	uint32_t image_size; /// size of data in bytes
 	unsigned char* image_data ; /// image data
+};
+
+// ----- Lobby History Retrieval Protocol -----
+
+/// Step 1: Probe sent to the chosen direct friends in the lobby: "do you have history?"
+class RsChatLobbyHistoryProbeItem: public RsChatItem
+{
+public:
+	RsChatLobbyHistoryProbeItem() : RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_PROBE), lobby_id(0) {}
+	virtual ~RsChatLobbyHistoryProbeItem() {}
+
+	void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx);
+
+	uint64_t lobby_id;
+};
+
+/// Step 2: Response to probe: "I have N messages, oldest is TS"
+class RsChatLobbyHistoryProbeResponseItem: public RsChatItem
+{
+public:
+	RsChatLobbyHistoryProbeResponseItem() : RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_PROBE_RESP), lobby_id(0), available_count(0), oldest_timestamp(0) {}
+	virtual ~RsChatLobbyHistoryProbeResponseItem() {}
+
+	void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx);
+
+	uint64_t lobby_id;
+	uint32_t available_count;
+	uint32_t oldest_timestamp;
+};
+
+/// Step 3: Request sent to chosen friend: "send me max N messages, no older than TS"
+class RsChatLobbyHistoryRequestItem: public RsChatItem
+{
+public:
+	RsChatLobbyHistoryRequestItem() : RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_REQUEST), lobby_id(0), request_id(0), max_count(0), oldest_timestamp(0) {}
+	virtual ~RsChatLobbyHistoryRequestItem() {}
+
+	void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx);
+
+	uint64_t lobby_id;
+	uint32_t request_id;	// random, sent back in the data items answering this request
+	uint32_t max_count;
+	uint32_t oldest_timestamp;
+};
+
+/// Step 4: Actual history data sent back, in one or several items. The last
+/// one has last_chunk set, and is sent even when there is nothing to send.
+class RsChatLobbyHistoryDataItem: public RsChatItem
+{
+public:
+	RsChatLobbyHistoryDataItem() : RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_DATA), lobby_id(0), request_id(0), last_chunk(false)
+	{
+		// Bulk data: must not delay the live chat items sent to the same friend.
+		setPriorityLevel(QOS_PRIORITY_RS_CHAT_HISTORY_DATA) ;
+	}
+	virtual ~RsChatLobbyHistoryDataItem() {}
+
+	void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext& ctx);
+
+	uint64_t lobby_id;
+	uint32_t request_id;	// the one of the request this item answers
+	std::vector<LobbyHistoryMsgEntry> msgs;
+	bool last_chunk;
 };
 
 

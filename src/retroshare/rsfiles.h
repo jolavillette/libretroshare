@@ -185,6 +185,7 @@ enum class RsSharedDirectoriesEventCode: uint8_t {
     HASHING_PROCESS_RESUMED  = 0x04, // (void)
     HASHING_PROCESS_FINISHED = 0x05, // (void)
     HASHING_FILE             = 0x06, // mMessage: full path and hashing speed of the file being hashed
+    SCANNING_FILE            = 0x0f, // mFilePath: file the scan of the shared directories is at, mScannedFilesCount: files seen so far. Once per second at most.
     SAVING_FILE_INDEX        = 0x07, // (void)
     EXTRA_LIST_FILE_ADDED    = 0x08, // (void)
     EXTRA_LIST_FILE_REMOVED  = 0x09, // (void)
@@ -192,6 +193,7 @@ enum class RsSharedDirectoriesEventCode: uint8_t {
     FRIEND_DIR_LIST_UPDATED  = 0x0b, // NOTIFY_LIST_DIRLIST_FRIENDS, friend dir list has been updated
     OWN_DIR_LIST_UPDATED     = 0x0c, // NOTIFY_LIST_DIRLIST_LOCAL  , own    dir list has been updated
     OWN_DIR_LIST_PROCESSING  = 0x0d, // NOTIFY_LIST_DIRLIST_LOCAL prechange
+    FILE_HASH_FAILED         = 0x0e, // mFilePath: shared or extra file that could not be hashed (unreadable, vanished, I/O error)
 };
 
 enum class RsFileTransferEventCode: uint8_t {
@@ -205,7 +207,8 @@ struct RsSharedDirectoriesEvent: RsEvent
 {
     RsSharedDirectoriesEvent()
        : RsEvent(RsEventType::SHARED_DIRECTORIES), mEventCode(RsSharedDirectoriesEventCode::UNKNOWN),
-                  mHashingSpeed(0) {}
+                  mHashingSpeed(0), mHashCounter(0), mTotalFilesToHash(0), mTotalHashedSize(0), mTotalSizeToHash(0),
+                  mCurrentFileHashedSize(0), mHashingSpeedBytes(0), mTotalIsProvisional(false), mScannedFilesCount(0) {}
 	~RsSharedDirectoriesEvent() override = default;
 
 	///* @see RsEvent @see RsSerializable
@@ -221,17 +224,29 @@ struct RsSharedDirectoriesEvent: RsEvent
         RS_SERIAL_PROCESS(mTotalFilesToHash) ;
         RS_SERIAL_PROCESS(mTotalHashedSize) ;
         RS_SERIAL_PROCESS(mTotalSizeToHash) ;
+        RS_SERIAL_PROCESS(mCurrentFileHashedSize) ;
+        RS_SERIAL_PROCESS(mHashingSpeedBytes) ;
+        RS_SERIAL_PROCESS(mTotalIsProvisional) ;
+        RS_SERIAL_PROCESS(mScannedFilesCount) ;
     }
 
     RsSharedDirectoriesEventCode mEventCode;
 
     std::string mFilePath; 			// Complete path of the file being hashed
     RsFileHash mFileHash;  			// File hash, null if error occurred
-    uint32_t mHashingSpeed;  			// Hashing speed in MB/s
-    uint64_t mHashCounter ;		// index of current file
-    uint64_t mTotalFilesToHash ;// total number of files to hash
-    uint64_t mTotalHashedSize ;		// total hashed size so far, in MB
-    uint64_t mTotalSizeToHash ;		// total size to hash in MB
+    uint32_t mHashingSpeed;  			// Hashing speed in MB/s, rounded down. See mHashingSpeedBytes.
+
+    // Progress of the current hashing run, sent with HASHING_FILE. A run starts when a first file is queued and
+    // ends when the queue has been empty for a few seconds.
+
+    uint64_t mHashCounter ;		// number of files done so far in this run. The file being hashed is number mHashCounter+1.
+    uint64_t mTotalFilesToHash ;// total number of files of this run, the ones already done included
+    uint64_t mTotalHashedSize ;		// size done so far in this run, in bytes, including the part done of the file being hashed. Never above mTotalSizeToHash.
+    uint64_t mTotalSizeToHash ;		// total size of the files of this run, in bytes, the ones already done included
+    uint64_t mCurrentFileHashedSize ;	// part done of the file being hashed, in bytes
+    uint64_t mHashingSpeedBytes ;	// hashing speed in bytes/s, over the last seconds. 0 when not known yet.
+    bool mTotalIsProvisional ;		// true while the shared directories are still being scanned: both totals may still grow
+    uint64_t mScannedFilesCount ;	// sent with SCANNING_FILE: number of files the current scan of the shared directories has gone through
 };
 
 
@@ -538,7 +553,6 @@ struct BannedFileEntry : RsSerializable
 	}
 };
 
-struct DeepFilesSearchResult;
 
 struct TurtleFileInfoV2 : RsSerializable
 {
@@ -548,9 +562,6 @@ struct TurtleFileInfoV2 : RsSerializable
 	    fSize(oldInfo.size), fHash(oldInfo.hash), fName(oldInfo.name),
 	    fWeight(0) {}
 
-#ifdef RS_DEEP_FILES_INDEX
-	explicit TurtleFileInfoV2(const DeepFilesSearchResult& dRes);
-#endif // def RS_DEEP_FILES_INDEX
 
 	uint64_t fSize;    /// File size
 	RsFileHash fHash;  /// File hash
@@ -812,9 +823,7 @@ public:
 	/**
 	 * @brief Request remote files search
 	 * @jsonapi{development}
-	 * @param[in] matchString string to look for in the search. If files deep
-	 *	indexing is enabled at compile time support advanced features described
-	 *	at https://xapian.org/docs/queryparser.html
+	 * @param[in] matchString string to look for in the search
 	 * @param multiCallback function that will be called each time a search
 	 * result is received
 	 * @param[in] maxWait maximum wait time in seconds for search results
@@ -855,6 +864,24 @@ public:
 		virtual bool changeQueuePosition(const RsFileHash& hash, QueueMove mv) = 0;
 		virtual bool changeDownloadSpeed(const RsFileHash& hash, int speed) = 0;
 		virtual bool getDownloadSpeed(const RsFileHash& hash, int & speed) = 0;
+
+	/**
+	 * @brief Set the speed new downloads start with
+	 * Downloads already in the list keep their speed. The speed of a download
+	 * is not saved: at restart every download takes the default one.
+	 * @jsonapi{development}
+	 * @param[in] speed SPEED_LOW (slower), SPEED_NORMAL (average) or
+	 *	SPEED_HIGH (faster)
+	 */
+	virtual void setDefaultDownloadSpeed(DwlSpeed speed) = 0;
+
+	/**
+	 * @brief Get the speed new downloads start with
+	 * @jsonapi{development}
+	 * @return current default download speed
+	 */
+	virtual DwlSpeed defaultDownloadSpeed() = 0;
+
 		virtual bool clearDownload(const RsFileHash& hash) = 0;
 
 	/**
@@ -1211,7 +1238,18 @@ public:
         virtual bool watchEnabled() =0;
         virtual bool followSymLinks() const=0;
         virtual void setFollowSymLinks(bool b)=0 ;
-		virtual void togglePauseHashingProcess() =0;		// pauses/resumes the hashing process.
+		/**
+		 * @brief Pause the hashing of shared files if it runs, resume it if it
+		 *        is paused
+		 * @jsonapi{development}
+		 */
+		virtual void togglePauseHashingProcess() =0;
+
+		/**
+		 * @brief Tell whether the hashing of shared files is paused
+		 * @jsonapi{development}
+		 * @return true if the hashing is paused
+		 */
 		virtual bool hashingProcessPaused() =0;
 
 		virtual bool	getShareDownloadDirectory() = 0;

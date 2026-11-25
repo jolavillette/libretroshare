@@ -21,6 +21,7 @@
  *******************************************************************************/
 #include <retroshare/rsturtle.h>
 #include "rsserver/p3serverconfig.h"
+#include "pqi/pqistreamer.h"
 #include "services/p3bwctrl.h"
 #include "rsitems/rstrafficstatsitems.h"
 
@@ -185,105 +186,36 @@ int p3ServerConfig::getTrafficInfo(std::list<RSTrafficClue>& out_lst,std::list<R
         return 0 ;
 }
 
+// The streamers count every item they carry (pqistreamer::getCumulativeTraffic());
+// these read those totals.
+
 bool p3ServerConfig::getCumulativeTrafficByPeer(std::map<RsPeerId, RsCumulativeTrafficStats>& stats)
 {
-    RsStackMutex stack(configMtx);
-
-    // First, update cumulative stats from current traffic clues
-    std::list<RSTrafficClue> out_lst, in_lst;
-    if (rsBandwidthControl)
-    {
-        rsBandwidthControl->ExtractTrafficInfo(out_lst, in_lst);
-        
-        rstime_t now = time(nullptr);
-        
-        // Accumulate outgoing traffic
-        for (const auto& clue : out_lst)
-        {
-            auto& peerStats = mCumulativeTrafficByPeer[clue.peer_id];
-            peerStats.bytesOut += clue.size;
-            peerStats.countOut += clue.count;
-            if (peerStats.firstSeen == 0) peerStats.firstSeen = now;
-            peerStats.lastSeen = now;
-        }
-        
-        // Accumulate incoming traffic
-        for (const auto& clue : in_lst)
-        {
-            auto& peerStats = mCumulativeTrafficByPeer[clue.peer_id];
-            peerStats.bytesIn += clue.size;
-            peerStats.countIn += clue.count;
-            if (peerStats.firstSeen == 0) peerStats.firstSeen = now;
-            peerStats.lastSeen = now;
-        }
-    }
-    
-    stats = mCumulativeTrafficByPeer;
+    pqistreamer::getCumulativeTraffic(nullptr, &stats);
     return true;
 }
 
 bool p3ServerConfig::getCumulativeTrafficByService(std::map<uint16_t, RsCumulativeTrafficStats>& stats)
 {
-    RsStackMutex stack(configMtx);
-
-    // First, update cumulative stats from current traffic clues
-    std::list<RSTrafficClue> out_lst, in_lst;
-    if (rsBandwidthControl)
-    {
-        rsBandwidthControl->ExtractTrafficInfo(out_lst, in_lst);
-        
-        rstime_t now = time(nullptr);
-        
-        // Accumulate outgoing traffic by service
-        for (const auto& clue : out_lst)
-        {
-            auto& serviceStats = mCumulativeTrafficByService[clue.service_id];
-            serviceStats.bytesOut += clue.size;
-            serviceStats.countOut += clue.count;
-            if (serviceStats.firstSeen == 0) serviceStats.firstSeen = now;
-            serviceStats.lastSeen = now;
-        }
-        
-        // Accumulate incoming traffic by service
-        for (const auto& clue : in_lst)
-        {
-            auto& serviceStats = mCumulativeTrafficByService[clue.service_id];
-            serviceStats.bytesIn += clue.size;
-            serviceStats.countIn += clue.count;
-            if (serviceStats.firstSeen == 0) serviceStats.firstSeen = now;
-            serviceStats.lastSeen = now;
-        }
-    }
-    
-    stats = mCumulativeTrafficByService;
+    pqistreamer::getCumulativeTraffic(&stats, nullptr);
     return true;
 }
 
 bool p3ServerConfig::clearCumulativeTraffic(bool clearPeerStats, bool clearServiceStats)
 {
-    RsStackMutex stack(configMtx);
-    
-    if (clearPeerStats)
-        mCumulativeTrafficByPeer.clear();
-    
-    if (clearServiceStats)
-        mCumulativeTrafficByService.clear();
-    
+    pqistreamer::clearCumulativeTraffic(clearPeerStats, clearServiceStats);
     return true;
 }
 
 bool p3ServerConfig::getTotalCumulativeTraffic(RsCumulativeTrafficStats& stats)
 {
-    RsStackMutex stack(configMtx);
-    
+    std::map<RsPeerId, RsCumulativeTrafficStats> byPeer;
+    pqistreamer::getCumulativeTraffic(nullptr, &byPeer);
+
     stats.clear();
-    
-    // Sum up all peer stats
-    for (const auto& pair : mCumulativeTrafficByPeer)
-    {
+    for (const auto& pair : byPeer)
         stats += pair.second;
-    }
-    
+
     return true;
 }
 

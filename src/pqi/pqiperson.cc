@@ -55,6 +55,20 @@ pqiperson::~pqiperson()
 
 int pqiperson::SendItem(RsItem *i,uint32_t& serialized_size)
 {
+	// Read now: the streamer owns the item once it has it.
+	const uint16_t service = i->PacketService();
+	const uint8_t subtype = i->PacketSubType();
+
+	int sent = sendToActive(i, serialized_size);
+
+	// Outside mPersonMtx: MobileLink takes its own mutex.
+	if(sent) pqipg->noteOutgoing(PeerId(), service, subtype, serialized_size);
+
+	return sent;
+}
+
+int pqiperson::sendToActive(RsItem *i,uint32_t& serialized_size)
+{
 	RS_STACK_MUTEX(mPersonMtx);
 
 	if(active)
@@ -104,6 +118,10 @@ bool pqiperson::RecvItem(RsItem *item)
 	std::cerr << "pqiperson::RecvItem()" << std::endl;
 #endif
 
+	RsRawItem* raw = dynamic_cast<RsRawItem*>(item);
+	pqipg->noteIncoming( PeerId(), item->PacketService(),
+	                     item->PacketSubType(), raw ? raw->getRawLength() : 0 );
+
 	return pqipg->recvItem((RsRawItem *) item);
 }
 
@@ -134,6 +152,12 @@ int	pqiperson::tick()
 {
 	int activeTick = 0;
 
+	// A phone in background and its home stay silent much longer than the
+	// heartbeat allows (MobileLink).
+	rstime_t tolerance = pqipg ? pqipg->silenceTolerance(PeerId()) : 0;
+	rstime_t heartbeatTimeout = tolerance ? tolerance : HEARTBEAT_REPEAT_TIME * 20;
+	rstime_t incomingTimeout = tolerance ? tolerance : 60;
+
 	{
 		RS_STACK_MUTEX(mPersonMtx);
 
@@ -149,7 +173,7 @@ int	pqiperson::tick()
 #endif
         
 		//if lastHeartbeatReceived is 0, it might be not activated so don't do a net reset.
-		if ( active  && time(NULL)  > lastHeartbeatReceived + HEARTBEAT_REPEAT_TIME * 20)
+		if ( active  && time(NULL)  > lastHeartbeatReceived + heartbeatTimeout)
 		{
 			int ageLastIncoming = time(NULL) - activepqi->getLastIncomingTS();
 
@@ -161,9 +185,9 @@ int	pqiperson::tick()
 					  << "secs ago" << std::endl;
 #endif
 	
-			if (ageLastIncoming > 60) // Check timeout
+			if (ageLastIncoming > incomingTimeout) // Check timeout
 			{
-				std::cerr << "pqiperson::tick() " << PeerId().toStdString() << " No Heartbeat & No Packets for 60 secs -> assume dead." << std::endl;
+				std::cerr << "pqiperson::tick() " << PeerId().toStdString() << " No Heartbeat & No Packets for " << incomingTimeout << " secs -> assume dead." << std::endl;
 				this->reset_locked();
 			}
 	

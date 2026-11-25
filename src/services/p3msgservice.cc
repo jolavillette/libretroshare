@@ -1063,9 +1063,10 @@ void p3MsgService::locked_checkForDuplicates()
                 replace_first(mParentId,old_id,new_id);
             }
             else
+            {
+                already_known_ids.insert(it->first);
                 ++it;
-
-            already_known_ids.insert(it->first);
+            }
         }
         mp.insert(new_mp.begin(),new_mp.end());	// merge back the new list in the modified one
 

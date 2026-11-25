@@ -26,6 +26,7 @@
 
 #include "pqi/p3servicecontrol.h"
 #include "pqi/pqipersongrp.h"
+#include "services/p3mobilelink.h"
 
 //#define HEART_DEBUG	1
 
@@ -87,6 +88,10 @@ int p3heartbeat::tick()
 		mServiceCtrl->getPeersConnected(getServiceInfo().mServiceType, peers);
 		for (pit = peers.begin(); pit != peers.end(); ++pit) 
 		{
+			// A phone in background and its home do without it (MobileLink).
+			if(mMobileLink && !mMobileLink->wantsHeartbeat(*pit))
+				continue;
+
 			sendHeartbeat(*pit);
 		}
 	}

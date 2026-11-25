@@ -753,6 +753,8 @@ bool 	p3Peers::addFriend(const RsPeerId &ssl_id, const RsPgpId &gpg_id,ServicePe
 #ifdef P3PEERS_DEBUG
 			std::cerr << "p3Peers::addFriend() Authorization OK." << std::endl;
 #endif
+			// A profile made a friend is no longer ignored.
+			AuthSSL::instance().removeNotifyDeny(gpg_id);
 		}
 		else
 		{
@@ -792,6 +794,9 @@ bool p3Peers::addSslOnlyFriend( const RsPeerId& sslId, const RsPgpId& pgp_id,con
 {
     if( mPeerMgr->addSslOnlyFriend(sslId, pgp_id,details))
     {
+        // A profile made a friend is no longer ignored.
+        AuthSSL::instance().removeNotifyDeny(pgp_id);
+
         FriendsChanged(sslId,true);
         return true;
     }
@@ -1851,3 +1856,20 @@ RsPeerStateChangedEvent::RsPeerStateChangedEvent(RsPeerId sslId) :
 
 RsPeers::~RsPeers() = default;
 RsAuthSslConnectionAutenticationEvent::~RsAuthSslConnectionAutenticationEvent() = default;
+
+void p3Peers::addToIgnoreList(const RsPgpId& pgpId, const std::string& name)
+{
+	// Never the own profile: it cannot be removed from the friends, and its
+	// other nodes would connect without any notification.
+	if(!pgpId.isNull() && pgpId != AuthPGP::getPgpOwnId())
+		AuthSSL::instance().addNotifyDeny(pgpId, name);
+}
+
+void p3Peers::removeFromIgnoreList(const RsPgpId& pgpId)
+{ AuthSSL::instance().removeNotifyDeny(pgpId); }
+
+bool p3Peers::isIgnored(const RsPgpId& pgpId)
+{ return AuthSSL::instance().isNotifyDenied(pgpId); }
+
+void p3Peers::getIgnoreList(std::map<RsPgpId, std::string>& ids)
+{ AuthSSL::instance().getNotifyDenyList(ids); }
