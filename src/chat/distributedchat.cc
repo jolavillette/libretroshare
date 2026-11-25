@@ -138,7 +138,7 @@ void DistributedChatService::flush()
 	sendHeldItemsToReturnedPhones() ;
 
 	// A phone in background asks for no lobby list (MobileLink).
-	if(last_req_chat_lobby_list + LOBBY_LIST_AUTO_UPDATE_TIME < now && !(mMobileLink && mMobileLink->localQuiet()))
+	if(last_req_chat_lobby_list + LOBBY_LIST_AUTO_UPDATE_TIME < now && !skipLobbyListAsQuietPhone())
 	{
 		std::vector<VisibleChatLobbyRecord> visible_lobbies_tmp ;
 		getListOfNearbyChatLobbies(visible_lobbies_tmp) ;
@@ -919,6 +919,28 @@ void DistributedChatService::handleRecvChatLobbyEventItem(RsChatLobbyEventItem *
     rsEvents->postEvent(ev);
 }
 
+bool DistributedChatService::skipLobbyListAsQuietPhone()
+{
+	if(!(mMobileLink && mMobileLink->localQuiet()))
+		return false ;
+
+	rstime_t now = time(NULL) ;
+	RsStackMutex stack(mDistributedChatMtx); /********** STACK LOCKED MTX ******/
+
+	if(now < mLastQuietLobbyListRequest + 600)
+		return true ;
+
+	// A lobby is joined again when a friend lists it. Started in background,
+	// the phone would stay out of its lobbies until the app is opened.
+	for(const auto& known: _known_lobbies_flags)
+		if((known.second & RS_CHAT_LOBBY_FLAGS_AUTO_SUBSCRIBE) && _chat_lobbys.find(known.first) == _chat_lobbys.end())
+		{
+			mLastQuietLobbyListRequest = now ;
+			return false ;
+		}
+	return true ;
+}
+
 void DistributedChatService::requestLobbyListNow()
 {
 	{
@@ -945,7 +967,7 @@ void DistributedChatService::getListOfNearbyChatLobbies(std::vector<VisibleChatL
 	// A phone in background asks for no lobby list, and nobody asks it for
 	// its own (MobileLink): it would wake its radio every two minutes.
 	if(now > MIN_DELAY_BETWEEN_PUBLIC_LOBBY_REQ + last_visible_lobby_info_request_time &&
-	   !(mMobileLink && mMobileLink->localQuiet()))
+	   !skipLobbyListAsQuietPhone())
 	{
 		std::set<RsPeerId> ids ;
 		mServControl->getPeersConnected(mServType, ids);

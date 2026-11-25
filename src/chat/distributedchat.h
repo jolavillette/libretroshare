@@ -207,6 +207,13 @@ class DistributedChatService
 		/// which goes at once. True when kept.
 		bool locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item) ;
 
+		/// Whether this node, a phone in background, leaves the lobby list
+		/// alone (MobileLink). It does not when a lobby it subscribed to is
+		/// still to be joined again, as after a start in background: then it
+		/// asks, at most every ten minutes.
+		bool skipLobbyListAsQuietPhone() ;
+		rstime_t mLastQuietLobbyListRequest = 0 ;
+
 		/// Whether line mentions phone's nickname in its lobby.
 		bool locked_mentionsPhone(const RsPeerId& phone, const RsChatLobbyMsgItem& line) ;
 
