@@ -590,15 +590,16 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 	RS_DBG("this=", (void*)this, ". serviceInfo=", mServiceInfo);
 #endif
 
+	// A phone in background asks for no update, and is asked for none
+	// (MobileLink), also when a friend tells it that it has something new.
+	// It asks again at the first sync once it is back.
+	if(sMobileLink && sMobileLink->localQuiet())
+		return std::error_condition();
+
 	/* If specific peers are passed as paramether ask only to them */
 	if(peers.empty())
 	{
 		mNetMgr->getOnlineList(mServiceInfo.mServiceType, peers);
-
-		// A phone in background asks for no update, and is asked for none
-		// (MobileLink). It asks again at the first sync once it is back.
-		if(sMobileLink && sMobileLink->localQuiet())
-			return std::error_condition();
 		removeQuietPhones(peers);
 
         if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != nullptr)
@@ -4076,6 +4077,12 @@ void RsGxsNetService::handleRecvSyncGroup(RsNxsSyncGrpReqItem *item)
     if (!item)
 	    return;
 
+    // A phone in background gets no list of groups: a request made before
+    // it went quiet, or by a core restarted behind the app, brought it the
+    // whole list of identities (1800 items). It asks again once it is back.
+    if(sMobileLink && sMobileLink->isQuietPhone(item->PeerId()))
+        return;
+
     RsPeerId peer = item->PeerId();
 #ifdef NXS_NET_DEBUG_0
     GXSNETDEBUG_P_(peer) << "HandleRecvSyncGroup(): Service: " << mServType << " from " << peer << ", Last update TS (from myself) sent from peer is T = " << std::dec<< time(NULL) - item->updateTS << " secs ago" << std::endl;
@@ -4401,6 +4408,10 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
 {
     if (!item)
 	    return;
+
+    // No list of messages either for a phone in background (MobileLink).
+    if(sMobileLink && sMobileLink->isQuietPhone(item->PeerId()))
+        return;
 
     RS_STACK_MUTEX(mNxsMutex) ;
 
