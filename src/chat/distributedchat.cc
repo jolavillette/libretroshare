@@ -1015,6 +1015,12 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 	if(!locked_bouncingObjectCheck(item,peer_id,lobby.participating_friends.size()))
 		return false;
 
+	// A phone is a leaf of its lobbies: it shows what it receives and sends
+	// its own lines, it does not pass on those of the others. Its friends are
+	// desktop nodes that reach each other without it (MobileLink).
+	if(peer_id != mServControl->getOwnId() && mMobileLink && mMobileLink->getPhoneMode())
+		return true ;
+
 	// Forward to allparticipating friends, except this peer.
 
 	for(std::set<RsPeerId>::const_iterator it(lobby.participating_friends.begin());it!=lobby.participating_friends.end();++it)
