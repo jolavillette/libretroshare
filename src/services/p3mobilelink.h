@@ -112,6 +112,12 @@ public:
 	/// Phone side: whether peer is a home that serves this phone.
 	bool isHome(const RsPeerId& peer);
 
+	/// Phone side: whether to dial peer. A phone in background dials only
+	/// the friends that served it as a home, once it knows one: each dial to
+	/// a friend that is away keeps its radio up for seconds, and it dials
+	/// its friends every few minutes, on every address they ever had.
+	bool wantsDial(const RsPeerId& peer);
+
 	/// The chat service, which signs a phone's lobby keep-alives in advance
 	/// and sends them for it on its home. Set once at start-up.
 	void setChatService(DistributedChatService* chat) { mChat = chat; }
@@ -218,6 +224,10 @@ private:
 
 	/// Phone side, per connected friend that runs MobileLink.
 	std::map<RsPeerId, HomeState> mHomes;
+
+	/// Phone side: the friends that said they serve this phone, connected or
+	/// not. Saved.
+	std::set<RsPeerId> mKnownHomes;
 
 	/// Phone side: what the last HELLO said.
 	std::vector<RsGxsId> mOwnIds;

@@ -45,6 +45,7 @@
 #include "retroshare/rspeers.h"
 #include "retroshare/rsdht.h"
 #include "retroshare/rsbanlist.h"
+#include "services/p3mobilelink.h"
 
 /* Network setup States */
 
@@ -373,6 +374,9 @@ void    p3LinkMgrIMPL::statusTick()
 		std::cerr << *it2;
 		std::cerr << std::endl;
 #endif
+		// A phone in background dials only its homes (MobileLink).
+		if(mMobileLink && !mMobileLink->wantsDial(*it2)) continue;
+
 		/* retry it! */
 		retryConnect(*it2);
 	}
@@ -1493,6 +1497,8 @@ bool   p3LinkMgrIMPL::tryConnectUDP(const RsPeerId &id, const struct sockaddr_st
 		return false;
 	}
 
+	// A phone in background dials only its homes (MobileLink).
+	if (mMobileLink && !mMobileLink->wantsDial(id)) return false;
 
 	RsStackMutex stack(mLinkMtx); /****** STACK LOCK MUTEX *******/
 
@@ -1573,6 +1579,9 @@ bool p3LinkMgrIMPL::retryConnectTCP(const RsPeerId &id)
 #endif
 
 	if (id == getOwnId()) return false;
+
+	// A phone in background dials only its homes (MobileLink).
+	if (mMobileLink && !mMobileLink->wantsDial(id)) return false;
 
 	{
 		RS_STACK_MUTEX(mLinkMtx);

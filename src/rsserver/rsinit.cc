@@ -1749,6 +1749,7 @@ int RsServer::StartupRetroShare()
 	rsMobileLink = mMobileLink;
 	tr->setMobileLink(mMobileLink);
 	pqih->setMobileLink(mMobileLink);
+	mLinkMgr->setMobileLink(mMobileLink);
 	mHeart->setMobileLink(mMobileLink);
 	chatSrv->setMobileLink(mMobileLink);
 	mMobileLink->setChatService(chatSrv);

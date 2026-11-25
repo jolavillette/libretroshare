@@ -365,6 +365,14 @@ bool p3MobileLink::isHome(const RsPeerId& peer)
 	return mPhoneMode && it != mHomes.end() && it->second.mServing;
 }
 
+bool p3MobileLink::wantsDial(const RsPeerId& peer)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	if(!mPhoneMode || !mQuiet || mKnownHomes.empty()) return true;
+	return mKnownHomes.count(peer) > 0;
+}
+
 bool p3MobileLink::wantsHeartbeat(const RsPeerId& peer)
 {
 	return !isQuietLink(peer);
@@ -618,12 +626,18 @@ void p3MobileLink::handleHello(const RsMobileLinkHelloItem& item)
 
 void p3MobileLink::handleHome(const RsMobileLinkHomeItem& item)
 {
+	bool knownHomesChanged;
 	{
 		std::lock_guard<std::mutex> lock(mMtx);
 
 		auto it = mHomes.find(item.PeerId());
 		if(it != mHomes.end()) it->second.mServing = item.mServing;
+
+		knownHomesChanged = item.mServing ?
+		            mKnownHomes.insert(item.PeerId()).second :
+		            mKnownHomes.erase(item.PeerId()) > 0;
 	}
+	if(knownHomesChanged) IndicateConfigChanged();
 	updateSleepAllowed();
 }
 
@@ -792,6 +806,13 @@ void p3MobileLink::statusChange(const std::list<pqiServicePeer>& plist)
 {
 	statusChangeLocked(plist);
 	updateSleepAllowed();
+
+	for(const pqiServicePeer& peer: plist)
+		if(peer.actions & RS_SERVICE_PEER_REMOVED)
+		{
+			IndicateConfigChanged();
+			break;
+		}
 }
 
 void p3MobileLink::statusChangeLocked(const std::list<pqiServicePeer>& plist)
@@ -813,7 +834,10 @@ void p3MobileLink::statusChangeLocked(const std::list<pqiServicePeer>& plist)
 		// sends it no heartbeat, no sync and none of the lobby traffic it
 		// keeps for it.
 		if(peer.actions & RS_SERVICE_PEER_REMOVED)
+		{
 			mPhones.erase(peer.id);
+			mKnownHomes.erase(peer.id);
+		}
 	}
 }
 
@@ -848,6 +872,13 @@ bool p3MobileLink::saveList(bool& cleanup, std::list<RsItem*>& lst)
 		kv.key = "KEEP_ALIVE_INTERVAL";
 		kv.value = std::to_string(mKeepAliveInterval);
 		set->tlvkvs.pairs.push_back(kv);
+
+		for(const RsPeerId& home: mKnownHomes)
+		{
+			kv.key = "HOME";
+			kv.value = home.toStdString();
+			set->tlvkvs.pairs.push_back(kv);
+		}
 	}
 	lst.push_back(set);
 
@@ -873,6 +904,11 @@ bool p3MobileLink::loadList(std::list<RsItem*>& load)
 					unsigned long seconds = std::strtoul(kv.value.c_str(), nullptr, 10);
 					if(seconds > 0)
 						mKeepAliveInterval = static_cast<uint32_t>(seconds);
+				}
+				else if(kv.key == "HOME")
+				{
+					RsPeerId home(kv.value);
+					if(!home.isNull()) mKnownHomes.insert(home);
 				}
 			}
 		}

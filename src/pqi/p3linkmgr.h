@@ -136,6 +136,7 @@ class p3NetMgr;
 
 class p3PeerMgrIMPL;
 class p3NetMgrIMPL;
+class p3MobileLink;
 
 std::string textPeerConnectState(peerConnectState &state);
 
@@ -267,6 +268,10 @@ void 	printPeerLists(std::ostream &out);
 
     virtual bool checkPotentialAddr(const sockaddr_storage& addr);
 
+	/// A phone in background dials only its homes (MobileLink). Set once at
+	/// start-up.
+	void setMobileLink(p3MobileLink* mobileLink) { mMobileLink = mobileLink; }
+
 protected:
 	/* THESE CAN PROBABLY BE REMOVED */
 //bool	shutdown(); /* blocking shutdown call */
@@ -311,6 +316,7 @@ private:
 
 	p3PeerMgrIMPL *mPeerMgr;
 	p3NetMgrIMPL  *mNetMgr;
+	p3MobileLink  *mMobileLink = nullptr;
 
 	RsMutex mLinkMtx; /* protects below */
 
