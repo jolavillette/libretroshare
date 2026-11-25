@@ -176,6 +176,7 @@ private:
 		std::set<TurtleFileHash> mGRouterHashes;
 
 		bool mQuiet = false;
+		rstime_t mQuietEndedAt = 0;
 		uint32_t mKeepAliveInterval = 0;
 		rstime_t mLastHello = 0;
 		rstime_t mLastPing = 0;
@@ -238,6 +239,10 @@ private:
 
 	bool mPhoneMode = false;
 	bool mQuiet = false;
+
+	/// When the phone last left the background. The link keeps its long
+	/// silence allowance a little longer: see silenceTolerance().
+	rstime_t mQuietEndedAt = 0;
 	bool mServePhones = true;
 	uint32_t mKeepAliveInterval;
 

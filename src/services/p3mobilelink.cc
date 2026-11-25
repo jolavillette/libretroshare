@@ -79,6 +79,10 @@ static const rstime_t MIN_SILENCE_TOLERANCE = 900;
 /// How often each end logs what its quiet links carried.
 static const rstime_t QUIET_TRAFFIC_LOG_PERIOD = 600;
 
+/// Seconds a link keeps its long silence allowance after the phone left
+/// the background.
+static const rstime_t BACK_FROM_QUIET_GRACE = 120;
+
 static rstime_t silenceToleranceFor(uint32_t keepAliveInterval)
 {
 	return std::max<rstime_t>( MIN_SILENCE_TOLERANCE,
@@ -154,7 +158,11 @@ void p3MobileLink::setQuiet(bool quiet)
 		if(!mPhoneMode || mQuiet == quiet) return;
 
 		mQuiet = quiet;
-		if(!quiet) mStockUntil = 0;
+		if(!quiet)
+		{
+			mStockUntil = 0;
+			mQuietEndedAt = time(nullptr);
+		}
 		for(const auto& home: mHomes) homes.push_back(home.first);
 	}
 	RsInfo() << "MobileLink: " << (quiet ? "quiet" : "active");
@@ -339,13 +347,22 @@ rstime_t p3MobileLink::silenceTolerance(const RsPeerId& peer)
 {
 	std::lock_guard<std::mutex> lock(mMtx);
 
+	// A link that was silent for minutes is not dead the second the phone
+	// is back: its last packet is as old as the silence, and with the usual
+	// 60 s allowance the phone cut the link at each wake, at the very moment
+	// its home sent it what it had kept. The allowance stays until the
+	// traffic of an active link has had time to start again.
+	rstime_t now = time(nullptr);
+
 	// Home side: a phone in background.
 	auto phone = mPhones.find(peer);
-	if(phone != mPhones.end() && phone->second.mQuiet)
+	if(phone != mPhones.end() &&
+	   (phone->second.mQuiet || now < phone->second.mQuietEndedAt + BACK_FROM_QUIET_GRACE))
 		return silenceToleranceFor(phone->second.mKeepAliveInterval);
 
 	// Phone side: its homes while it is in background.
-	if(mPhoneMode && mQuiet && mHomes.count(peer))
+	if(mPhoneMode && mHomes.count(peer) &&
+	   (mQuiet || now < mQuietEndedAt + BACK_FROM_QUIET_GRACE))
 		return silenceToleranceFor(mKeepAliveInterval);
 
 	return 0;
@@ -748,6 +765,7 @@ void p3MobileLink::handleState(const RsMobileLinkStateItem& item)
 	auto it = mPhones.find(item.PeerId());
 	if(it == mPhones.end()) return;
 
+	if(it->second.mQuiet && !item.mQuiet) it->second.mQuietEndedAt = time(nullptr);
 	it->second.mQuiet = item.mQuiet;
 	it->second.mKeepAliveInterval = item.mKeepAliveInterval;
 
