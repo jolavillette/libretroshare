@@ -932,13 +932,18 @@ void DistributedChatService::getListOfNearbyChatLobbies(std::vector<VisibleChatL
 
 	rstime_t now = time(NULL) ;
 
-	if(now > MIN_DELAY_BETWEEN_PUBLIC_LOBBY_REQ + last_visible_lobby_info_request_time)
+	// A phone in background asks for no lobby list, and nobody asks it for
+	// its own (MobileLink): it would wake its radio every two minutes.
+	if(now > MIN_DELAY_BETWEEN_PUBLIC_LOBBY_REQ + last_visible_lobby_info_request_time &&
+	   !(mMobileLink && mMobileLink->localQuiet()))
 	{
 		std::set<RsPeerId> ids ;
 		mServControl->getPeersConnected(mServType, ids);
 
 		for(std::set<RsPeerId>::const_iterator it(ids.begin());it!=ids.end();++it)
 		{
+			if(mMobileLink && mMobileLink->isQuietPhone(*it)) continue;
+
 #ifdef DEBUG_CHAT_LOBBIES
 			std::cerr << "  asking list of public lobbies to " << *it << std::endl;
 #endif
