@@ -949,6 +949,7 @@ void DistributedChatService::getListOfNearbyChatLobbies(std::vector<VisibleChatL
 	{
 		std::set<RsPeerId> ids ;
 		mServControl->getPeersConnected(mServType, ids);
+		uint32_t asked = 0 ;
 
 		for(std::set<RsPeerId>::const_iterator it(ids.begin());it!=ids.end();++it)
 		{
@@ -961,9 +962,17 @@ void DistributedChatService::getListOfNearbyChatLobbies(std::vector<VisibleChatL
 			item->PeerId(*it) ;
 
 			sendChatItem(item);
+			++asked ;
 		}
-		last_visible_lobby_info_request_time = now ;
-		_should_reset_lobby_counts = true ;
+
+		// A request that went to nobody (no friend connected yet, right
+		// after the start) does not count: the next read asks again instead
+		// of waiting for the delay between two requests.
+		if(asked > 0)
+		{
+			last_visible_lobby_info_request_time = now ;
+			_should_reset_lobby_counts = true ;
+		}
 	}
 }
 
