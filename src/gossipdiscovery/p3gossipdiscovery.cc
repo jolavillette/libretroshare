@@ -28,6 +28,7 @@
 #include "rsserver/p3face.h"
 #include "util/rsdebug.h"
 #include "retroshare/rspeers.h"
+#include "services/p3mobilelink.h"
 
 /****
  * #define P3DISC_DEBUG	1
@@ -754,6 +755,11 @@ void p3discovery2::updatePeers_locked(const RsPeerId &aboutId)
 	std::cerr << std::endl;
 #endif
 
+	// A phone learns the addresses of its friends and tells them its own;
+	// it does not pass the ones of a friend on to the others, who are desktop
+	// nodes that know each other without it (MobileLink).
+	if(mMobileLink && mMobileLink->getPhoneMode()) return;
+
 	RsPgpId aboutPgpId = getPGPId(aboutId);
 
 	auto ait = mFriendList.find(aboutPgpId);
@@ -892,6 +898,28 @@ void p3discovery2::sendContactInfo_locked(const RsPgpId &aboutId, const RsPeerId
                     pkt->currentConnectAddress.addr = detail2.connectaddr;
                 else
                     sockaddr_storage_clear(pkt->currentConnectAddress.addr) ;
+
+				// A phone in background gets what changed, at once, not the
+				// same information again at each of its reconnections.
+				if(sit->first != toId && mMobileLink && mMobileLink->isQuietPhone(toId))
+				{
+					std::string content = pkt->location + '|' + pkt->version + '|' + pkt->dyndns
+					        + '|' + pkt->hiddenAddr + ':' + std::to_string(pkt->hiddenPort)
+					        + '|' + std::to_string(pkt->netMode) + ',' + std::to_string(pkt->vs_disc)
+					        + ',' + std::to_string(pkt->vs_dht)
+					        + '|' + sockaddr_storage_tostring(pkt->localAddrV4.addr)
+					        + '|' + sockaddr_storage_tostring(pkt->extAddrV4.addr)
+					        + '|' + sockaddr_storage_tostring(pkt->localAddrV6.addr)
+					        + '|' + sockaddr_storage_tostring(pkt->extAddrV6.addr);
+
+					std::string& sent = mSentToPhones[toId][sit->first];
+					if(sent == content)
+					{
+						delete pkt;
+						continue;
+					}
+					sent = content;
+				}
 
 #ifdef P3DISC_DEBUG
 				std::cerr << "p3discovery2::sendContactInfo_locked() Sending";
