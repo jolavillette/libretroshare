@@ -31,6 +31,7 @@
 #include "util/rstime.h"
 
 #include "pqi/p3linkmgr.h"
+#include "services/p3mobilelink.h"
 
 std::ostream& operator<<(std::ostream& out, const StatusInfo& si)
 {
@@ -190,6 +191,16 @@ bool p3StatusService::sendStatus(const RsPeerId &id, RsStatusValue status)
 
 	// send to all peers online
 	for(it = onlineList.begin(); it != onlineList.end(); ++it){
+		// A phone in background gets it when it comes back (MobileLink): a
+		// status change, as often as every minute on an idle desktop, would
+		// wake its radio each time.
+		if(id.isNull() && mMobileLink && mMobileLink->isQuietPhone(*it))
+		{
+			RsStackMutex stack(mStatusMtx);
+			mMissedByPhones[*it] = statusInfo.status;
+			continue;
+		}
+
 		RsStatusItem* statusItem = new RsStatusItem();
 		statusItem->sendTime = time(NULL);
         statusItem->status = (uint32_t)statusInfo.status;
@@ -354,7 +365,32 @@ int p3StatusService::tick()
 		receiveStatusQueue();
 	}
 
+	sendStatusToReturnedPhones();
+
 	return 0;
+}
+
+void p3StatusService::sendStatusToReturnedPhones()
+{
+	if(!mMobileLink) return;
+
+	std::map<RsPeerId, RsStatusValue> returned;
+	{
+		RsStackMutex stack(mStatusMtx);
+
+		for(auto it = mMissedByPhones.begin(); it != mMissedByPhones.end(); )
+			if(mMobileLink->isQuietPhone(it->first))
+				++it;
+			else
+			{
+				returned.insert(*it);
+				it = mMissedByPhones.erase(it);
+			}
+	}
+
+	for(const auto& phone: returned)
+		if(mServiceCtrl->isPeerConnected(getServiceInfo().mServiceType, phone.first))
+			sendStatus(phone.first, phone.second);
 }
 
 int p3StatusService::status(){
