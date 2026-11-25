@@ -376,6 +376,42 @@ bool getLocalAddresses(std::vector<sockaddr_storage>& addrs)
 	return !addrs.empty();
 }
 
+bool getDefaultRouteSourceAddress(sockaddr_storage& src)
+{
+	sockaddr_storage_clear(src);
+
+	int fd = unix_socket(AF_INET, SOCK_DGRAM, 0);
+	if (fd < 0) return false;
+
+	/* connect() on a UDP socket sends nothing: the kernel only looks up the
+	 * route towards the destination and binds the socket to that route's
+	 * source address. Any Internet address takes the default route; this one
+	 * is reserved for documentation (RFC 5737). */
+	sockaddr_in dest{};
+	dest.sin_family = AF_INET;
+	dest.sin_port = htons(9);
+	dest.sin_addr.s_addr = htonl(0xC0000201); // 192.0.2.1
+
+	sockaddr_in local{};
+	socklen_t len = sizeof(local);
+
+	bool found =
+	        connect( fd, reinterpret_cast<const sockaddr*>(&dest),
+	                 sizeof(dest) ) == 0 &&
+	        getsockname( fd, reinterpret_cast<sockaddr*>(&local), &len ) == 0 &&
+	        local.sin_family == AF_INET &&
+	        local.sin_addr.s_addr != htonl(INADDR_ANY);
+
+	unix_close(fd);
+
+	if (!found) return false;
+
+	sockaddr_in& out = reinterpret_cast<sockaddr_in&>(src);
+	out.sin_family = AF_INET;
+	out.sin_addr = local.sin_addr;
+	return true;
+}
+
 
 /*************************************************************
  * Socket Library Wrapper Functions 

@@ -96,6 +96,11 @@ std::string socket_errorType(int err);
 
 bool getLocalAddresses(std::vector<sockaddr_storage> & addrs);
 
+/* Source IPv4 address the routing table uses to reach the Internet, i.e. the
+ * address of the interface that carries the default route. False when there
+ * is no such route (machine offline, isolated LAN). */
+bool getDefaultRouteSourceAddress(sockaddr_storage& src);
+
 /* universal socket interface */
 
 int unix_close(int sockfd);
