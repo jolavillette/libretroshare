@@ -1052,8 +1052,13 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 	lobby.msg_cache[item->msg_id] = now ;
 	lobby.last_activity = now ;
 
-	// Check that if we have a lobby bouncing object, it's not flooding the lobby
-	if(!locked_bouncingObjectCheck(item,peer_id,lobby.participating_friends.size()))
+	// Check that if we have a lobby bouncing object, it's not flooding the lobby.
+	// What a home kept for this phone while it was in background comes in one
+	// burst when it is back, the presence of every participant first: counted
+	// as a flood, the lines that followed were dropped. A phone passes
+	// nothing on, so there is nothing to protect from its home (MobileLink).
+	if(!(mMobileLink && mMobileLink->isHome(peer_id)) &&
+	   !locked_bouncingObjectCheck(item,peer_id,lobby.participating_friends.size()))
 		return false;
 
 	// A phone is a leaf of its lobbies: it shows what it receives and sends
