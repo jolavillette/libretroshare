@@ -52,6 +52,7 @@ class RsChatLobbyMsgItem ;
 class RsChatLobbyEventItem ;
 class RsChatLobbyBouncingObject ;
 class RsGixs ;
+class HistoryMsg ;
 class p3MobileLink ;
 class p3MobilePush ;
 
