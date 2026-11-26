@@ -208,4 +208,25 @@ public:
 	 * @return which lines notify
 	 */
 	virtual RsMobilePushLobbyMode getDefaultLobbyMode() = 0;
+
+	/**
+	 * @brief Phone side: set which lines of a chat lobby this phone wants to
+	 *  be notified of. Sent to the homes, which notify of a line only when
+	 *  their own mode and this one both let it through: a phone can ask for
+	 *  less than its home gives, not for more. Saved.
+	 * @jsonapi{development}
+	 * @param[in] lobbyId the lobby
+	 * @param[in] mode which lines notify; ALL is what a lobby has unless set.
+	 *  With OWN_LINES only the lines written by the home notify.
+	 */
+	virtual void setLobbyPreference(
+	        uint64_t lobbyId, RsMobilePushLobbyMode mode ) = 0;
+
+	/**
+	 * @brief Phone side: the lobbies this phone asked less than ALL for
+	 * @jsonapi{development}
+	 * @param[out] modes mode per lobby id
+	 */
+	virtual void getLobbyPreferences(
+	        std::map<uint64_t, RsMobilePushLobbyMode>& modes ) = 0;
 };

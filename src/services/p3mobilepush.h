@@ -74,6 +74,10 @@ public:
 	        std::map<uint64_t, RsMobilePushLobbyMode>& modes ) override;
 	void setDefaultLobbyMode(RsMobilePushLobbyMode mode) override;
 	RsMobilePushLobbyMode getDefaultLobbyMode() override;
+	void setLobbyPreference(
+	        uint64_t lobbyId, RsMobilePushLobbyMode mode ) override;
+	void getLobbyPreferences(
+	        std::map<uint64_t, RsMobilePushLobbyMode>& modes ) override;
 
 	/// Home side: the chat service kept line of lobby lobbyName for phone.
 	/// Called with the chat service's mutex held: it only seals and queues.
@@ -119,6 +123,9 @@ private:
 	{
 		RsMobilePushRegistration mRegistration;
 
+		/// The lobbies the phone wants fewer notifications of. Saved.
+		std::map<uint64_t, RsMobilePushLobbyMode> mLobbyPreferences;
+
 		/// The lines kept for the phone since it left, per lobby: see
 		/// lineHeldForPhone(). Emptied when the phone is back.
 		std::map<uint64_t, LobbyBurst> mBursts;
@@ -137,6 +144,8 @@ private:
 
 	void handleRegistration( const RsPeerId& peer,
 	                         const RsMobilePushRegistration& registration );
+	void handlePreferences( const RsPeerId& peer,
+	                        const std::map<uint64_t, uint8_t>& lobbyModes );
 
 	/// Home side: reads from MobileLink which phones are present, and their
 	/// identities.
@@ -158,7 +167,8 @@ private:
 	/// notification of their lobby, once that one is old enough.
 	void flushBursts(rstime_t now);
 
-	/// Phone side: sends the registration to the homes that do not have it.
+	/// Phone side: sends the registration and the lobby preferences to the
+	/// homes that do not have them.
 	void sendRegistrationToHomes();
 
 	p3ServiceControl* mServiceControl;
@@ -170,8 +180,12 @@ private:
 	/// Phone side.
 	RsMobilePushRegistration mRegistration;
 
+	/// Phone side: the lobbies this phone wants fewer notifications of. Saved.
+	std::map<uint64_t, RsMobilePushLobbyMode> mLobbyPreferences;
+
 	/// Phone side: the connected friends that do not have the registration
-	/// yet. A friend gets it once MobileLink knows it as a home.
+	/// and the lobby preferences yet. A friend gets them once MobileLink
+	/// knows it as a home.
 	std::set<RsPeerId> mToRegisterWith;
 
 	/// Home side. Saved.

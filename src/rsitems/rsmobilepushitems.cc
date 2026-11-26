@@ -30,6 +30,8 @@ RsItem* RsMobilePushSerialiser::create_item(uint16_t service, uint8_t subtype) c
 	{
 	case RS_PKT_SUBTYPE_MOBILE_PUSH_REGISTRATION:
 		return new RsMobilePushRegistrationItem();
+	case RS_PKT_SUBTYPE_MOBILE_PUSH_PREFERENCES:
+		return new RsMobilePushPreferencesItem();
 	default: return nullptr;
 	}
 }
