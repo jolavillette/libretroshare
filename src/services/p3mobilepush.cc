@@ -54,6 +54,9 @@ static const size_t PUSH_TAG_SIZE = 16;
 /// a few kilobytes in all, sealing and base64 included.
 static const size_t MAX_NOTIFICATION_TEXT = 1000;
 
+/// A home takes at most this many lobby preferences from a phone.
+static const size_t MAX_LOBBY_PREFERENCES = 1000;
+
 /// A home keeps at most this many notifications, for all its phones.
 static const size_t MAX_QUEUED_NOTIFICATIONS = 500;
 
@@ -277,6 +280,32 @@ RsMobilePushLobbyMode p3MobilePush::getDefaultLobbyMode()
 	return mDefaultLobbyMode;
 }
 
+void p3MobilePush::setLobbyPreference(
+        uint64_t lobbyId, RsMobilePushLobbyMode mode )
+{
+	if(!validMode(static_cast<unsigned long>(mode))) return;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		if(mode == RsMobilePushLobbyMode::ALL)
+			mLobbyPreferences.erase(lobbyId);
+		else
+			mLobbyPreferences[lobbyId] = mode;
+
+		std::set<RsPeerId> connected;
+		mServiceControl->getPeersConnected(getServiceInfo().mServiceType, connected);
+		mToRegisterWith = connected;
+	}
+	IndicateConfigChanged();
+}
+
+void p3MobilePush::getLobbyPreferences(
+        std::map<uint64_t, RsMobilePushLobbyMode>& modes )
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+	modes = mLobbyPreferences;
+}
+
 /******************************************************************************/
 /*                                Home side                                   */
 /******************************************************************************/
@@ -291,8 +320,16 @@ void p3MobilePush::lineHeldForPhone( const RsPeerId& phone, uint64_t lobby,
 	if(it == mPhones.end()) return;
 	PhoneState& state(it->second);
 
+	// The home's mode and what the phone asked for, whichever lets less
+	// through: the modes go from every line to none.
 	auto modeIt = mLobbyModes.find(lobby);
-	switch(modeIt != mLobbyModes.end() ? modeIt->second : mDefaultLobbyMode)
+	RsMobilePushLobbyMode mode =
+	        modeIt != mLobbyModes.end() ? modeIt->second : mDefaultLobbyMode;
+	auto preference = state.mLobbyPreferences.find(lobby);
+	if(preference != state.mLobbyPreferences.end())
+		mode = std::max(mode, preference->second);
+
+	switch(mode)
 	{
 	case RsMobilePushLobbyMode::ALL: break;
 	case RsMobilePushLobbyMode::OWN_LINES:
@@ -506,13 +543,36 @@ void p3MobilePush::handleRegistration(
 	IndicateConfigChanged();
 }
 
+void p3MobilePush::handlePreferences(
+        const RsPeerId& peer, const std::map<uint64_t, uint8_t>& lobbyModes )
+{
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		// A phone registers first.
+		auto it = mPhones.find(peer);
+		if(it == mPhones.end()) return;
+
+		std::map<uint64_t, RsMobilePushLobbyMode> preferences;
+		for(const auto& lobby: lobbyModes)
+			if( validMode(lobby.second) &&
+			        preferences.size() < MAX_LOBBY_PREFERENCES )
+				preferences[lobby.first] =
+				        static_cast<RsMobilePushLobbyMode>(lobby.second);
+
+		if(preferences == it->second.mLobbyPreferences) return;
+		it->second.mLobbyPreferences = preferences;
+	}
+	IndicateConfigChanged();
+}
+
 /******************************************************************************/
 /*                                Phone side                                  */
 /******************************************************************************/
 
 void p3MobilePush::sendRegistrationToHomes()
 {
-	std::list<RsMobilePushRegistrationItem*> toSend;
+	std::list<RsItem*> toSend;
 	{
 		std::lock_guard<std::mutex> lock(mMtx);
 
@@ -530,6 +590,14 @@ void p3MobilePush::sendRegistrationToHomes()
 				item->PeerId(*it);
 				item->mRegistration = mRegistration;
 				toSend.push_back(item);
+
+				auto preferences = new RsMobilePushPreferencesItem();
+				preferences->PeerId(*it);
+				for(const auto& lobby: mLobbyPreferences)
+					preferences->mLobbyModes[lobby.first] =
+					        static_cast<uint8_t>(lobby.second);
+				toSend.push_back(preferences);
+
 				it = mToRegisterWith.erase(it);
 			}
 			else
@@ -563,6 +631,8 @@ bool p3MobilePush::recvItem(RsItem* item)
 {
 	if(auto registration = dynamic_cast<RsMobilePushRegistrationItem*>(item))
 		handleRegistration(item->PeerId(), registration->mRegistration);
+	else if(auto preferences = dynamic_cast<RsMobilePushPreferencesItem*>(item))
+		handlePreferences(item->PeerId(), preferences->mLobbyModes);
 
 	delete item;
 	return true;
@@ -642,11 +712,25 @@ bool p3MobilePush::saveList(bool& cleanup, std::list<RsItem*>& lst)
 			kv.value = registrationToString(phone.second.mRegistration);
 			set->tlvkvs.pairs.push_back(kv);
 
-			// After the phone: loadList() gives identities to a known phone.
+			// After the phone: loadList() gives these to a known phone.
+			kv.key = "PHONE_PREFS " + phone.first.toStdString();
+			kv.value.clear();
+			for(const auto& lobby: phone.second.mLobbyPreferences)
+				kv.value += std::to_string(lobby.first) + ":" + std::to_string(
+				            static_cast<unsigned>(lobby.second) ) + " ";
+			set->tlvkvs.pairs.push_back(kv);
+
 			kv.key = "PHONE_IDS " + phone.first.toStdString();
 			kv.value.clear();
 			for(const RsGxsId& id: phone.second.mOwnIds)
 				kv.value += id.toStdString() + " ";
+			set->tlvkvs.pairs.push_back(kv);
+		}
+
+		for(const auto& lobby: mLobbyPreferences)
+		{
+			kv.key = "LOBBY_PREF " + std::to_string(lobby.first);
+			kv.value = std::to_string(static_cast<unsigned>(lobby.second));
 			set->tlvkvs.pairs.push_back(kv);
 		}
 
@@ -687,6 +771,36 @@ bool p3MobilePush::loadList(std::list<RsItem*>& load)
 					else
 						mLobbyModes[std::strtoull(kv.key.c_str() + 11, nullptr, 10)] =
 						        static_cast<RsMobilePushLobbyMode>(mode);
+					continue;
+				}
+
+				if(kv.key.compare(0, 11, "LOBBY_PREF ") == 0)
+				{
+					unsigned long mode = std::strtoul(kv.value.c_str(), nullptr, 10);
+					if(validMode(mode))
+						mLobbyPreferences[std::strtoull(kv.key.c_str() + 11, nullptr, 10)] =
+						        static_cast<RsMobilePushLobbyMode>(mode);
+					continue;
+				}
+
+				if(kv.key.compare(0, 12, "PHONE_PREFS ") == 0)
+				{
+					auto phone = mPhones.find(RsPeerId(kv.key.substr(12)));
+					if(phone == mPhones.end()) continue;
+
+					for(size_t start = 0, end; (end = kv.value.find(' ', start))
+					        != std::string::npos; start = end + 1)
+					{
+						size_t colon = kv.value.find(':', start);
+						if(colon == std::string::npos || colon > end) continue;
+
+						unsigned long mode =
+						        std::strtoul(kv.value.c_str() + colon + 1, nullptr, 10);
+						if(validMode(mode))
+							phone->second.mLobbyPreferences[
+							        std::strtoull(kv.value.c_str() + start, nullptr, 10) ] =
+							        static_cast<RsMobilePushLobbyMode>(mode);
+					}
 					continue;
 				}
 
