@@ -35,6 +35,8 @@ RsItem* RsMobileLinkSerialiser::create_item(uint16_t service, uint8_t subtype) c
 	case RS_PKT_SUBTYPE_MOBILE_LINK_PONG:  return new RsMobileLinkPongItem();
 	case RS_PKT_SUBTYPE_MOBILE_LINK_KEEP_ALIVE_STOCK:
 		return new RsMobileLinkKeepAliveStockItem();
+	case RS_PKT_SUBTYPE_MOBILE_LINK_HELD_END: return new RsMobileLinkHeldEndItem();
+	case RS_PKT_SUBTYPE_MOBILE_LINK_HELD_ACK: return new RsMobileLinkHeldAckItem();
 	default: return nullptr;
 	}
 }

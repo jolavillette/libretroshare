@@ -81,6 +81,9 @@ class DistributedChatService
 		/// id is the phone.
 		void releasePresignedKeepAlive(RsChatLobbyEventItem *item) ;
 
+		/// Home side: phone received the kept lines of batch (MobileLink).
+		void heldLinesAcknowledged(const RsPeerId& phone, uint32_t batch) ;
+
 		// Interface part to communicate with
 		//
 		bool getVirtualPeerId(const ChatLobbyId& lobby_id, RsPeerId& virtual_peer_id) ;
@@ -243,11 +246,18 @@ class DistributedChatService
 			/// The last keep-alive, join or leave of each participant, per
 			/// lobby: enough for the phone's participant lists.
 			std::map<std::pair<ChatLobbyId,RsGxsId>,RsChatLobbyEventItem*> presence ;
+
+			/// The first sentLines lines were sent as batch sentBatch at
+			/// sentAt and wait for the phone's acknowledgement; 0 when
+			/// nothing is waiting.
+			uint32_t sentBatch = 0 ;
+			size_t sentLines = 0 ;
+			rstime_t sentAt = 0 ;
 		};
 
 		/// Keeps item for phone, unless it is a line that mentions the phone,
 		/// which goes at once. True when kept.
-		bool locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item) ;
+		bool locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item, bool connected) ;
 
 		/// Whether this node, a phone in background, leaves the lobby list
 		/// alone (MobileLink). It does not when a lobby it subscribed to is
@@ -264,4 +274,5 @@ class DistributedChatService
 
 		p3MobileLink *mMobileLink = nullptr ;
 		std::map<RsPeerId,HeldForPhone> mHeldForPhones ;	// locked by mDistributedChatMtx
+		uint32_t mLastHeldBatch = 0 ;						// locked by mDistributedChatMtx
 };
