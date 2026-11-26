@@ -924,6 +924,12 @@ RsControl *RsControl::instance()
 	return &rsicontrol;
 }
 
+void RsControl::earlyInitNotificationSystem()
+{
+	rsControl = instance();
+	static_cast<RsServer*>(rsControl)->startEventsService();
+}
+
 
 /*
  * The Real RetroShare Startup Function.
