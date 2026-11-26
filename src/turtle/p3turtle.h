@@ -155,6 +155,7 @@
 class ftServer ;
 class p3LinkMgr;
 class p3MobileLink;
+class p3MobilePush;
 class ftDataMultiplex;
 class RsSerialiser;
 
@@ -233,6 +234,11 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		/// The service that tells which requests a phone among the friends
 		/// wants. Set once at start-up, before the router runs.
 		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink ; }
+
+		/// The service that tells a phone which is away that a tunnel is
+		/// asked for one of its identities. Set once at start-up, before the
+		/// router runs.
+		void setMobilePush(p3MobilePush *mobilePush) { mMobilePush = mobilePush ; }
 
 		// Enables/disable the service. Still ticks, but does nothing. Default is true.
 		//
@@ -422,6 +428,7 @@ class p3turtle: public p3Service, public RsTurtle, public p3Config
 		p3ServiceControl   *mServiceControl;
 
 		p3MobileLink       *mMobileLink = nullptr;
+		p3MobilePush       *mMobilePush = nullptr;
 		p3LinkMgr          *mLinkMgr;
 		RsTurtleSerialiser *_serialiser ;
 		RsPeerId            _own_id ;

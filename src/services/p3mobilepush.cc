@@ -31,6 +31,7 @@
 
 #include "chat/rschatitems.h"
 #include "crypto/chacha20.h"
+#include "gxstunnel/p3gxstunnel.h"
 #include "pqi/p3servicecontrol.h"
 #include "retroshare/rsidentity.h"
 #include "retroshare/rsmobilelink.h"
@@ -63,6 +64,11 @@ static const rstime_t MAX_NOTIFICATION_AGE = 86400;
 /// phone by the chat service: it gets them when it comes back.
 static const double PUSH_BURST = 5;
 static const rstime_t PUSH_PERIOD = 20;
+
+/// Somebody who waits for a distant chat asks for a tunnel again about every
+/// minute. The phone is told once, then again after this long for as long as
+/// it stays away.
+static const rstime_t DISTANT_CHAT_PUSH_PERIOD = 900;
 
 static const std::string MOBILE_PUSH_APP_NAME = "mobilepush";
 static const uint16_t MOBILE_PUSH_APP_MAJOR_VERSION = 1;
@@ -304,13 +310,56 @@ void p3MobilePush::lineHeldForPhone( const RsPeerId& phone, uint64_t lobby,
 	writer.Key("thread"); writer.String(std::to_string(lobby).c_str());
 	writer.EndObject();
 
-	RsMobilePushNotification notification;
-	notification.mPayload = seal(
-	            std::string(buffer.GetString(), buffer.GetSize()),
-	            state.mRegistration.mKey );
-	if(notification.mPayload.empty()) return;
+	if(locked_queue( phone, state,
+	                 std::string(buffer.GetString(), buffer.GetSize()), now ))
+		state.mAllowance -= 1;
+}
 
-	state.mAllowance -= 1;
+void p3MobilePush::tunnelRequestSeen(const TurtleFileHash& hash)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+	if(mPhones.empty()) return;
+
+	// A distant chat request has its destination identity in clear in the
+	// hash. The content of the chat is sealed for the phone alone, and so is
+	// the identity of who asks: the notification says neither.
+	const RsGxsId destination(p3GxsTunnelService::destinationGxsIdFromHash(hash));
+
+	rstime_t now = time(nullptr);
+	for(auto& phone: mPhones)
+	{
+		PhoneState& state(phone.second);
+		if(!state.mOwnIds.count(destination)) continue;
+
+		// A phone that is there answers the request itself.
+		if(state.mPresent) return;
+		if( state.mDistantChatNotified != 0 &&
+		        now < state.mDistantChatNotified + DISTANT_CHAT_PUSH_PERIOD )
+			return;
+
+		rapidjson::StringBuffer buffer;
+		rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
+		writer.StartObject();
+		writer.Key("kind");   writer.String("distant_chat");
+		writer.Key("title");  writer.String("RetroShare");
+		writer.Key("text");   writer.String("Someone wants to chat with you");
+		writer.Key("to");     writer.String(destination.toStdString().c_str());
+		writer.Key("thread"); writer.String("distant_chat");
+		writer.EndObject();
+
+		if(locked_queue( phone.first, state,
+		                 std::string(buffer.GetString(), buffer.GetSize()), now ))
+			state.mDistantChatNotified = now;
+		return;
+	}
+}
+
+bool p3MobilePush::locked_queue( const RsPeerId& phone, const PhoneState& state,
+                                 const std::string& clear, rstime_t now )
+{
+	RsMobilePushNotification notification;
+	notification.mPayload = seal(clear, state.mRegistration.mKey);
+	if(notification.mPayload.empty()) return false;
 
 	notification.mId = mNextId++;
 	notification.mPhone = phone;
@@ -321,6 +370,51 @@ void p3MobilePush::lineHeldForPhone( const RsPeerId& phone, uint64_t lobby,
 
 	mQueue.push_back(notification);
 	while(mQueue.size() > MAX_QUEUED_NOTIFICATIONS) mQueue.pop_front();
+	return true;
+}
+
+void p3MobilePush::watchPhones()
+{
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		if(mPhones.empty()) return;
+	}
+
+	std::vector<RsMobileLinkPhoneInfo> known;
+	mMobileLink->getPhones(known);
+	std::set<RsPeerId> connected;
+	mServiceControl->getPeersConnected(getServiceInfo().mServiceType, connected);
+
+	bool changed = false;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		for(auto& phone: mPhones)
+		{
+			PhoneState& state(phone.second);
+
+			auto info = std::find_if( known.begin(), known.end(),
+			        [&phone](const RsMobileLinkPhoneInfo& p)
+			        { return p.mPeerId == phone.first; } );
+
+			state.mPresent = info != known.end() && !info->mQuiet &&
+			        connected.count(phone.first);
+			if(state.mPresent) state.mDistantChatNotified = 0;
+
+			// MobileLink forgets a phone it has not heard of for long, and a
+			// phone that just started may not know its identities yet: the
+			// last known ones stay.
+			if(info == known.end() || info->mOwnIds.empty()) continue;
+
+			std::set<RsGxsId> ids(info->mOwnIds.begin(), info->mOwnIds.end());
+			if(ids != state.mOwnIds)
+			{
+				state.mOwnIds = ids;
+				changed = true;
+			}
+		}
+	}
+	if(changed) IndicateConfigChanged();
 }
 
 void p3MobilePush::handleRegistration(
@@ -405,6 +499,7 @@ int p3MobilePush::tick()
 		while(!mQueue.empty() && mQueue.front().mCreated + MAX_NOTIFICATION_AGE < now)
 			mQueue.pop_front();
 	}
+	watchPhones();
 	sendRegistrationToHomes();
 	return 0;
 }
@@ -491,6 +586,13 @@ bool p3MobilePush::saveList(bool& cleanup, std::list<RsItem*>& lst)
 			kv.key = "PHONE " + phone.first.toStdString();
 			kv.value = registrationToString(phone.second.mRegistration);
 			set->tlvkvs.pairs.push_back(kv);
+
+			// After the phone: loadList() gives identities to a known phone.
+			kv.key = "PHONE_IDS " + phone.first.toStdString();
+			kv.value.clear();
+			for(const RsGxsId& id: phone.second.mOwnIds)
+				kv.value += id.toStdString() + " ";
+			set->tlvkvs.pairs.push_back(kv);
 		}
 
 		kv.key = "DEFAULT_LOBBY_MODE";
@@ -530,6 +632,20 @@ bool p3MobilePush::loadList(std::list<RsItem*>& load)
 					else
 						mLobbyModes[std::strtoull(kv.key.c_str() + 11, nullptr, 10)] =
 						        static_cast<RsMobilePushLobbyMode>(mode);
+					continue;
+				}
+
+				if(kv.key.compare(0, 10, "PHONE_IDS ") == 0)
+				{
+					auto phone = mPhones.find(RsPeerId(kv.key.substr(10)));
+					if(phone == mPhones.end()) continue;
+
+					for(size_t start = 0, end; (end = kv.value.find(' ', start))
+					        != std::string::npos; start = end + 1)
+					{
+						RsGxsId id(kv.value.substr(start, end - start));
+						if(!id.isNull()) phone->second.mOwnIds.insert(id);
+					}
 					continue;
 				}
 

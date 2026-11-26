@@ -92,8 +92,10 @@ struct RsMobilePushNotification: RsSerializable
 	std::string mTopic;
 
 	/// The sealed message in base64: a ChaCha20-Poly1305 box (12-byte nonce,
-	/// ciphertext, 16-byte tag) around a JSON object with the fields "title",
-	/// "from", "text" and "thread".
+	/// ciphertext, 16-byte tag) around a JSON object. For a lobby line: the
+	/// fields "title", "from", "text" and "thread". For a distant chat
+	/// request, which has "kind" set to "distant_chat": "title", "text",
+	/// "thread", and "to", the identity of the phone that is asked for.
 	std::string mPayload;
 
 	rstime_t mCreated = 0;

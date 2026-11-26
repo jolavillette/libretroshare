@@ -41,6 +41,7 @@
 #include "pqi/p3linkmgr.h"
 #include "retroshare/rspeers.h"
 #include "services/p3mobilelink.h"
+#include "services/p3mobilepush.h"
 
 #include "ft/ftserver.h"
 #include "ft/ftdatamultiplex.h"
@@ -1868,6 +1869,10 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 		// This is a new request. Let's add it to the request map, and forward
 		// it to open peers, while the mutex is locked, so no-one can trigger the
 		// lock before the data is consistent.
+
+		// A phone that is away cannot answer a request for one of its
+		// identities: its home lets it know (MobilePush).
+		if(mMobilePush) mMobilePush->tunnelRequestSeen(item->file_hash) ;
 
 		TurtleTunnelRequestInfo& req( _tunnel_requests_origins[item->request_id] ) ;
 		req.origin = item->PeerId() ;
