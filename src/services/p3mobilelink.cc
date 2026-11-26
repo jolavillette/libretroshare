@@ -37,6 +37,7 @@
 #include "pqi/p3servicecontrol.h"
 #include "retroshare/rschats.h"
 #include "retroshare/rsidentity.h"
+#include "retroshare/rspeers.h"
 #include "retroshare/rsiface.h"
 #include "rsitems/rsconfigitems.h"
 #include "util/rsdebug.h"
@@ -84,6 +85,13 @@ static const rstime_t QUIET_TRAFFIC_LOG_PERIOD = 600;
 /// Seconds a link keeps its long silence allowance after the phone left
 /// the background.
 static const rstime_t BACK_FROM_QUIET_GRACE = 120;
+
+/// A phone dials a home it lost after this many seconds, then doubles the
+/// delay at each failure up to the maximum. The link manager alone tries
+/// every 140 s at best, which leaves a phone with a single home cut off for
+/// minutes after each change of network or restart of the home.
+static const rstime_t HOME_DIAL_FIRST_DELAY = 5;
+static const rstime_t HOME_DIAL_MAX_DELAY = 120;
 
 static rstime_t silenceToleranceFor(uint32_t keepAliveInterval)
 {
@@ -164,6 +172,13 @@ void p3MobileLink::setQuiet(bool quiet)
 		{
 			mStockUntil = 0;
 			mQuietEndedAt = time(nullptr);
+
+			// The user is back: a missing home is dialed at the next tick.
+			for(auto& dial: mHomeDials)
+			{
+				dial.second.mDelay = HOME_DIAL_FIRST_DELAY;
+				dial.second.mNext = 1;
+			}
 		}
 		for(const auto& home: mHomes) homes.push_back(home.first);
 	}
@@ -443,6 +458,7 @@ int p3MobileLink::tick()
 	}
 	if(keepAliveDue) sendPings();
 
+	dialMissingHomes();
 	refillKeepAliveStock();
 	releaseDueKeepAlives();
 	updateQuietPeers();
@@ -473,6 +489,48 @@ int p3MobileLink::tick()
 	}
 
 	return 0;
+}
+
+void p3MobileLink::dialMissingHomes()
+{
+	std::vector<RsPeerId> dial;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		if(!mPhoneMode)
+		{
+			mHomeDials.clear();
+			return;
+		}
+
+		// A phone asleep does not tick: there the next dial happens at its
+		// next wake, whatever the delay says.
+		rstime_t now = time(nullptr);
+		for(const RsPeerId& home: mKnownHomes)
+		{
+			if(mHomes.count(home))
+			{
+				mHomeDials.erase(home);
+				continue;
+			}
+
+			HomeDial& state = mHomeDials[home];
+			if(state.mNext == 0)
+			{
+				state.mDelay = HOME_DIAL_FIRST_DELAY;
+				state.mNext = now + state.mDelay;
+				continue;
+			}
+			if(now < state.mNext) continue;
+
+			dial.push_back(home);
+			state.mDelay = std::min(2 * state.mDelay, HOME_DIAL_MAX_DELAY);
+			state.mNext = now + state.mDelay;
+		}
+	}
+
+	// Outside the lock: the link manager calls this service back.
+	if(rsPeers)
+		for(const RsPeerId& home: dial) rsPeers->connectAttempt(home);
 }
 
 void p3MobileLink::setPlatformHooks( std::function<void(bool)> sleepAllowedChanged,
