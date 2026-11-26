@@ -24,6 +24,7 @@
 #include <mutex>
 #include <string>
 
+#include "retroshare/rsconfig.h"
 #include "retroshare/rsinit.h"
 #include "retroshare/rsiface.h"
 #include "util/rsdebug.h"
@@ -86,4 +87,14 @@ int rs_ios_is_running(void)
 {
 	std::lock_guard<std::mutex> lock(sMutex);
 	return sRunning ? 1 : 0;
+}
+
+void rs_ios_save_config(void)
+{
+	std::lock_guard<std::mutex> lock(sMutex);
+	if(!sRunning) return;
+
+	// There is no configuration manager before the login.
+	if(RsConfigMgr* manager = RsControl::instance()->configManager())
+		manager->saveConfiguration();
 }

@@ -42,6 +42,13 @@ void rs_ios_stop(void);
 /** @return 1 between a successful rs_ios_start() and rs_ios_stop(), else 0 */
 int rs_ios_is_running(void);
 
+/**
+ * Save the configuration that changed. To be called when the application
+ * leaves the screen: iOS may end a suspended process without notice, and the
+ * core saves most of its configuration only from time to time.
+ */
+void rs_ios_save_config(void);
+
 #ifdef __cplusplus
 }
 #endif

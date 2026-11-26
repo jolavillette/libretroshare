@@ -580,6 +580,9 @@ public:
                         SAVE_OFTEN        = 0x03,	// For GUI configuration, so that it's saved within 1 min.
                         SAVE_NOW          = 0x04	// Stuff we do not want to re-do on crash: adding friends, file transfers, etc.
     };
+
+    /// Saves now everything that changed, whatever its priority.
+    virtual void saveConfiguration() = 0;
 };
 
 #endif
