@@ -93,10 +93,19 @@ struct RsMobilePushNotification: RsSerializable
 
 	/// The sealed message in base64: a ChaCha20-Poly1305 box (12-byte nonce,
 	/// ciphertext, 16-byte tag) around a JSON object. For a lobby line: the
-	/// fields "title", "from", "text" and "thread". For a distant chat
+	/// fields "title", "from", "text", "thread", and "count", the number of
+	/// lines of that lobby the phone has not seen. For a distant chat
 	/// request, which has "kind" set to "distant_chat": "title", "text",
 	/// "thread", and "to", the identity of the phone that is asked for.
 	std::string mPayload;
+
+	/// Whether the notification is to come without sound and without
+	/// lighting the screen: it updates one the phone was already told of.
+	bool mQuiet = false;
+
+	/// Not empty: the notification replaces the one delivered before with
+	/// the same value. It says nothing of what the notification is about.
+	std::string mReplaces;
 
 	rstime_t mCreated = 0;
 
@@ -109,6 +118,8 @@ struct RsMobilePushNotification: RsSerializable
 		RS_SERIAL_PROCESS(mToken);
 		RS_SERIAL_PROCESS(mTopic);
 		RS_SERIAL_PROCESS(mPayload);
+		RS_SERIAL_PROCESS(mQuiet);
+		RS_SERIAL_PROCESS(mReplaces);
 		RS_SERIAL_PROCESS(mCreated);
 	}
 };

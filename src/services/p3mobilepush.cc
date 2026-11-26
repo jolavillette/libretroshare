@@ -38,6 +38,7 @@
 #include "rsitems/rsconfigitems.h"
 #include "services/p3mobilelink.h"
 #include "util/radix64.h"
+#include "util/rsdir.h"
 #include "util/rsdebug.h"
 #include "util/rsrandom.h"
 
@@ -59,11 +60,16 @@ static const size_t MAX_QUEUED_NOTIFICATIONS = 500;
 /// A notification nobody delivered for this long is dropped.
 static const rstime_t MAX_NOTIFICATION_AGE = 86400;
 
-/// A phone gets at most this many notifications in a row, then one more for
-/// each period that passes. The lines beyond that are still kept for the
-/// phone by the chat service: it gets them when it comes back.
-static const double PUSH_BURST = 5;
-static const rstime_t PUSH_PERIOD = 20;
+/// A line in a lobby that was silent for this long rings the phone. The lines
+/// that follow do not: a lobby can go from nothing for hours to a line every
+/// few seconds.
+static const rstime_t LOBBY_BURST_GAP = 300;
+
+/// While the lines follow each other, the phone's notification of the lobby
+/// is replaced at most this often, without sound, by one that gives the last
+/// line and how many came. All the lines are kept for the phone by the chat
+/// service: it gets them when it comes back.
+static const rstime_t LOBBY_UPDATE_PERIOD = 120;
 
 /// Somebody who waits for a distant chat asks for a tunnel again about every
 /// minute. The phone is told once, then again after this long for as long as
@@ -296,23 +302,66 @@ void p3MobilePush::lineHeldForPhone( const RsPeerId& phone, uint64_t lobby,
 	}
 
 	rstime_t now = time(nullptr);
-	state.mAllowance = std::min( PUSH_BURST, state.mAllowance +
-	        static_cast<double>(now - state.mAllowanceTime) / PUSH_PERIOD );
-	state.mAllowanceTime = now;
-	if(state.mAllowance < 1) return;
+	LobbyBurst& burst(state.mBursts[lobby]);
+
+	bool rings = burst.mLastLine == 0 ||
+	        now >= burst.mLastLine + LOBBY_BURST_GAP;
+
+	++burst.mLines;
+	burst.mLastLine = now;
+	burst.mPending = true;
+	burst.mLobbyName = lobbyName;
+	burst.mNick = line.nick;
+	burst.mText = plainText(line.message);
+
+	if(rings)
+		locked_notifyBurst(phone, state, lobby, burst, false, now);
+	else if(now >= burst.mLastNotified + LOBBY_UPDATE_PERIOD)
+		locked_notifyBurst(phone, state, lobby, burst, true, now);
+	// Else flushBursts() tells the phone, if no other line does before.
+}
+
+void p3MobilePush::locked_notifyBurst(
+        const RsPeerId& phone, const PhoneState& state, uint64_t lobby,
+        LobbyBurst& burst, bool quiet, rstime_t now )
+{
+	const std::string thread(std::to_string(lobby));
 
 	rapidjson::StringBuffer buffer;
 	rapidjson::Writer<rapidjson::StringBuffer> writer(buffer);
 	writer.StartObject();
-	writer.Key("title");  writer.String(lobbyName.c_str());
-	writer.Key("from");   writer.String(line.nick.c_str());
-	writer.Key("text");   writer.String(plainText(line.message).c_str());
-	writer.Key("thread"); writer.String(std::to_string(lobby).c_str());
+	writer.Key("title");  writer.String(burst.mLobbyName.c_str());
+	writer.Key("from");   writer.String(burst.mNick.c_str());
+	writer.Key("text");   writer.String(burst.mText.c_str());
+	writer.Key("thread"); writer.String(thread.c_str());
+	writer.Key("count");  writer.Uint(burst.mLines);
 	writer.EndObject();
 
-	if(locked_queue( phone, state,
-	                 std::string(buffer.GetString(), buffer.GetSize()), now ))
-		state.mAllowance -= 1;
+	// The push service reads what tells it which notification to replace:
+	// it must not learn the lobby from it.
+	const std::string named(state.mRegistration.mKey + thread);
+	const std::string replaces( RsDirUtil::sha1sum(
+	        reinterpret_cast<const uint8_t*>(named.data()),
+	        static_cast<uint32_t>(named.size()) ).toStdString() );
+
+	// A failure is not tried again for each line that follows.
+	locked_queue( phone, state,
+	              std::string(buffer.GetString(), buffer.GetSize()), now,
+	              quiet, replaces );
+	burst.mLastNotified = now;
+	burst.mPending = false;
+}
+
+void p3MobilePush::flushBursts(rstime_t now)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	for(auto& phone: mPhones)
+		for(auto& burst: phone.second.mBursts)
+			if( burst.second.mPending &&
+			        now >= burst.second.mLastNotified + LOBBY_UPDATE_PERIOD )
+				locked_notifyBurst( phone.first, phone.second, burst.first,
+				                    burst.second, true, now );
 }
 
 void p3MobilePush::tunnelRequestSeen(const TurtleFileHash& hash)
@@ -355,7 +404,8 @@ void p3MobilePush::tunnelRequestSeen(const TurtleFileHash& hash)
 }
 
 bool p3MobilePush::locked_queue( const RsPeerId& phone, const PhoneState& state,
-                                 const std::string& clear, rstime_t now )
+                                 const std::string& clear, rstime_t now,
+                                 bool quiet, const std::string& replaces )
 {
 	RsMobilePushNotification notification;
 	notification.mPayload = seal(clear, state.mRegistration.mKey);
@@ -366,6 +416,8 @@ bool p3MobilePush::locked_queue( const RsPeerId& phone, const PhoneState& state,
 	notification.mProvider = state.mRegistration.mProvider;
 	notification.mToken = state.mRegistration.mToken;
 	notification.mTopic = state.mRegistration.mTopic;
+	notification.mQuiet = quiet;
+	notification.mReplaces = replaces;
 	notification.mCreated = now;
 
 	mQueue.push_back(notification);
@@ -399,7 +451,11 @@ void p3MobilePush::watchPhones()
 
 			state.mPresent = info != known.end() && !info->mQuiet &&
 			        connected.count(phone.first);
-			if(state.mPresent) state.mDistantChatNotified = 0;
+			if(state.mPresent)
+			{
+				state.mDistantChatNotified = 0;
+				state.mBursts.clear();
+			}
 
 			// MobileLink forgets a phone it has not heard of for long, and a
 			// phone that just started may not know its identities yet: the
@@ -440,8 +496,6 @@ void p3MobilePush::handleRegistration(
 		{
 			PhoneState& state(mPhones[peer]);
 			state.mRegistration = registration;
-			state.mAllowance = PUSH_BURST;
-			state.mAllowanceTime = time(nullptr);
 		}
 		else
 			return;
@@ -500,6 +554,7 @@ int p3MobilePush::tick()
 			mQueue.pop_front();
 	}
 	watchPhones();
+	flushBursts(now);
 	sendRegistrationToHomes();
 	return 0;
 }
@@ -662,8 +717,6 @@ bool p3MobilePush::loadList(std::list<RsItem*>& load)
 
 					PhoneState& state(mPhones[phone]);
 					state.mRegistration = registration;
-					state.mAllowance = PUSH_BURST;
-					state.mAllowanceTime = time(nullptr);
 				}
 			}
 		}

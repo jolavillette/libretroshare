@@ -100,15 +100,28 @@ protected:
 	bool loadList(std::list<RsItem*>& load) override;
 
 private:
+	/// The lines of one lobby that a phone has not seen.
+	struct LobbyBurst
+	{
+		uint32_t mLines = 0;
+		rstime_t mLastLine = 0;
+		rstime_t mLastNotified = 0;
+
+		/// The last line, when the phone was not told of it yet.
+		bool mPending = false;
+		std::string mLobbyName;
+		std::string mNick;
+		std::string mText;
+	};
+
 	/// What a home knows of a registered phone.
 	struct PhoneState
 	{
 		RsMobilePushRegistration mRegistration;
 
-		/// How many notifications the phone may still get at once, and when
-		/// that was last worked out: see lineHeldForPhone().
-		double mAllowance = 0;
-		rstime_t mAllowanceTime = 0;
+		/// The lines kept for the phone since it left, per lobby: see
+		/// lineHeldForPhone(). Emptied when the phone is back.
+		std::map<uint64_t, LobbyBurst> mBursts;
 
 		/// The phone's identities, as MobileLink last gave them. Saved: a
 		/// phone that is away is not there to say them again.
@@ -130,9 +143,20 @@ private:
 	void watchPhones();
 
 	/// Home side: seals clear for phone and queues it. False when it cannot
-	/// be sealed.
+	/// be sealed. See RsMobilePushNotification for quiet and replaces.
 	bool locked_queue( const RsPeerId& phone, const PhoneState& state,
-	                   const std::string& clear, rstime_t now );
+	                   const std::string& clear, rstime_t now,
+	                   bool quiet = false,
+	                   const std::string& replaces = std::string() );
+
+	/// Home side: queues the notification of the last line of a lobby.
+	void locked_notifyBurst( const RsPeerId& phone, const PhoneState& state,
+	                         uint64_t lobby, LobbyBurst& burst, bool quiet,
+	                         rstime_t now );
+
+	/// Home side: tells the phones of the lines that came after the last
+	/// notification of their lobby, once that one is old enough.
+	void flushBursts(rstime_t now);
 
 	/// Phone side: sends the registration to the homes that do not have it.
 	void sendRegistrationToHomes();
