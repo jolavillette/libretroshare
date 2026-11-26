@@ -266,6 +266,18 @@ private:
 	/// not. Saved.
 	std::set<RsPeerId> mKnownHomes;
 
+	/// Phone side: when a known home that is not connected is dialed next,
+	/// and the delay that led there.
+	struct HomeDial
+	{
+		rstime_t mNext = 0;
+		rstime_t mDelay = 0;
+	};
+	std::map<RsPeerId, HomeDial> mHomeDials;
+
+	/// Phone side: dials the known homes that are not connected.
+	void dialMissingHomes();
+
 	/// Phone side: what the last HELLO said.
 	std::vector<RsGxsId> mOwnIds;
 	std::map<uint64_t, RsGxsId> mLobbyIds;
