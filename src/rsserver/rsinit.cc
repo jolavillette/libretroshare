@@ -1752,6 +1752,9 @@ int RsServer::StartupRetroShare()
 	mLinkMgr->setMobileLink(mMobileLink);
 	mStatusSrv->setMobileLink(mMobileLink);
 	mDisc->setMobileLink(mMobileLink);
+#ifdef RS_BROADCAST_DISCOVERY
+	if(broadcastDiscoveryService) broadcastDiscoveryService->setMobileLink(mMobileLink);
+#endif // def RS_BROADCAST_DISCOVERY
 	mHeart->setMobileLink(mMobileLink);
 	chatSrv->setMobileLink(mMobileLink);
 	mMobileLink->setChatService(chatSrv);

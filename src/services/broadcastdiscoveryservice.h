@@ -40,6 +40,7 @@
 
 namespace UDC = udpdiscovery;
 class RsPeers;
+class p3MobileLink;
 
 class BroadcastDiscoveryService :
         public RsBroadcastDiscovery, public RsTickingThread
@@ -62,6 +63,9 @@ public:
 
 	void threadTick() override; /// @see RsTickingThread
 
+	/// A phone in background neither announces itself nor listens (MobileLink).
+	void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
+
 protected:
 	constexpr static uint16_t port = 36405;
 	constexpr static uint32_t appId = 904571;
@@ -75,6 +79,15 @@ protected:
 	RsMutex mDiscoveredDataMutex;
 
 	RsPeers& mRsPeers;
+
+	p3MobileLink *mMobileLink = nullptr;
+
+	/// False while the announces are stopped for a phone in background.
+	bool mAnnouncing = true;
+
+	/// Stops or resumes the announces and the listening, as the phone goes
+	/// to background or comes back. @return true while announcing.
+	bool followPhoneQuiet();
 
 	/**
 	 * @brief Create result object from data
