@@ -162,6 +162,9 @@ void RsServer::rsGlobalShutDown()
 			service->askForStop();
 		for(RsTickingThread* service: mRegisteredServiceThreads)
 			service->fullstop();
+
+		// The next start registers its own threads.
+		mRegisteredServiceThreads.clear();
 	}
 
 	{ ShutdownStep s("stop RsServer tick thread"); fullstop(); }
@@ -191,6 +194,9 @@ void RsServer::rsGlobalShutDown()
         ShutdownStep s("close database " + db->dbName());
         delete db;
     }
+
+    // The next start registers its own databases.
+    mRegisteredDataServices.clear();
 
 	mShutdownCallback(0);
 }

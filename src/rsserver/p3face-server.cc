@@ -130,7 +130,7 @@ RsServer::RsServer() :
 void RsServer::startEventsService()
 {
 	if(!mEventsService->isRunning())
-		mEventsService->start("RsEventsService");
+		startServiceThread(mEventsService, "RsEventsService");
 }
 
 RsServer::~RsServer()
