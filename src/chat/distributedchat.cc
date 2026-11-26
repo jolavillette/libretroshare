@@ -1151,13 +1151,18 @@ bool DistributedChatService::locked_holdForQuietPhone(const RsPeerId& phone, RsC
 		rstime_t& last(held.lastLine[line->lobby_id]) ;
 		const bool wakes = last == 0 || now >= last + LOBBY_WAKE_GAP ;
 
-		// Without a link nothing can go: the next line after the link is
-		// back will tell.
-		if(connected)
+		// Nothing goes at once without a link, nor to a phone that is told
+		// by push: its link looks alive for minutes after its system froze
+		// it, and a line sent there would be lost. That phone's lines are
+		// all kept, and the push service decides when to ring.
+		const bool direct = connected && !(mMobilePush && mMobilePush->pushesTo(phone)) ;
+
+		// The next line after the link is back will tell.
+		if(direct)
 			last = now ;
 
-		// A line that mentions the phone goes at once too. Both need a link.
-		if(connected && (wakes || locked_mentionsPhone(phone, *line)))
+		// A line that mentions the phone goes at once too.
+		if(direct && (wakes || locked_mentionsPhone(phone, *line)))
 			return false ;
 
 		held.lines.push_back(dynamic_cast<RsChatLobbyMsgItem*>(line->duplicate())) ;
