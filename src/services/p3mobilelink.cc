@@ -33,9 +33,11 @@
 #include "grouter/groutertypes.h"
 #include "grouter/p3grouter.h"
 #include "gxstunnel/p3gxstunnel.h"
+#include "pqi/p3cfgmgr.h"
 #include "pqi/p3servicecontrol.h"
 #include "retroshare/rschats.h"
 #include "retroshare/rsidentity.h"
+#include "retroshare/rsiface.h"
 #include "rsitems/rsconfigitems.h"
 #include "util/rsdebug.h"
 
@@ -174,6 +176,14 @@ void p3MobileLink::setQuiet(bool quiet)
 	// keeps a lobby it is not in for a minute only: ask at once, so the list
 	// is there when the user opens it.
 	if(!quiet && mChat) mChat->requestLobbyListNow();
+
+	// The system may end a phone's process in background without notice,
+	// and most of the configuration is saved only at shutdown or once an
+	// hour: a lobby joined meanwhile would be gone at the next start, while
+	// the home goes on keeping its lines. Save now what changed.
+	if(quiet)
+		if(auto manager = dynamic_cast<p3ConfigMgr*>(RsControl::instance()->configManager()))
+			manager->saveConfiguration();
 }
 
 bool p3MobileLink::getQuiet()
