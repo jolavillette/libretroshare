@@ -151,5 +151,11 @@ void RsServer::rsGlobalShutDown()
     // The next start registers its own databases.
     mRegisteredDataServices.clear();
 
+	// The configurations it holds belong to the services stopped and deleted
+	// above: nothing can be saved through it any more. The next start makes
+	// its own; until then configManager() answers that there is none.
+	delete mConfigMgr;
+	mConfigMgr = nullptr;
+
 	mShutdownCallback(0);
 }
