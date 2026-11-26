@@ -66,6 +66,11 @@ public:
 	void getPendingNotifications(
 	        std::vector<RsMobilePushNotification>& notifications ) override;
 	void acknowledgeNotifications(const std::vector<uint32_t>& ids) override;
+	void setLobbyMode(uint64_t lobbyId, RsMobilePushLobbyMode mode) override;
+	void getLobbyModes(
+	        std::map<uint64_t, RsMobilePushLobbyMode>& modes ) override;
+	void setDefaultLobbyMode(RsMobilePushLobbyMode mode) override;
+	RsMobilePushLobbyMode getDefaultLobbyMode() override;
 
 	/// Home side: the chat service kept line of lobby lobbyName for phone.
 	/// Called with the chat service's mutex held: it only seals and queues.
@@ -119,6 +124,10 @@ private:
 
 	/// Home side. Saved.
 	std::map<RsPeerId, PhoneState> mPhones;
+
+	/// Home side: which lines notify, per lobby and for the others. Saved.
+	std::map<uint64_t, RsMobilePushLobbyMode> mLobbyModes;
+	RsMobilePushLobbyMode mDefaultLobbyMode = RsMobilePushLobbyMode::ALL;
 
 	/// Home side, oldest first.
 	std::list<RsMobilePushNotification> mQueue;

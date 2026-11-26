@@ -22,6 +22,7 @@
 #pragma once
 
 #include <cstdint>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -37,6 +38,22 @@ class RsMobilePush;
  * @jsonapi{development}
  */
 extern RsMobilePush* rsMobilePush;
+
+/// Which lines of a chat lobby a home turns into notifications for its phones.
+/// It changes nothing to what a phone gets when it comes back: every line the
+/// home kept.
+enum class RsMobilePushLobbyMode: uint8_t
+{
+	/// Every line kept for a phone.
+	ALL       = 0,
+
+	/// Only the lines written with one of the home's own identities: the
+	/// home announces, the others talk without notifying anyone.
+	OWN_LINES = 1,
+
+	/// None.
+	NONE      = 2
+};
 
 /// What a phone gives its homes so that they can reach it through the push
 /// service of its platform while the application is not running.
@@ -146,4 +163,36 @@ public:
 	 * @param[in] ids their mId
 	 */
 	virtual void acknowledgeNotifications(const std::vector<uint32_t>& ids) = 0;
+
+	/**
+	 * @brief Home side: set which lines of a chat lobby notify the phones.
+	 *  Saved.
+	 * @jsonapi{development}
+	 * @param[in] lobbyId the lobby
+	 * @param[in] mode which lines notify
+	 */
+	virtual void setLobbyMode(uint64_t lobbyId, RsMobilePushLobbyMode mode) = 0;
+
+	/**
+	 * @brief Home side: the lobbies that have a mode of their own
+	 * @jsonapi{development}
+	 * @param[out] modes mode per lobby id
+	 */
+	virtual void getLobbyModes(
+	        std::map<uint64_t, RsMobilePushLobbyMode>& modes ) = 0;
+
+	/**
+	 * @brief Home side: set the mode of the lobbies that have none of their
+	 *  own. ALL unless set. Saved.
+	 * @jsonapi{development}
+	 * @param[in] mode which lines notify
+	 */
+	virtual void setDefaultLobbyMode(RsMobilePushLobbyMode mode) = 0;
+
+	/**
+	 * @brief Home side: the mode of the lobbies that have none of their own
+	 * @jsonapi{development}
+	 * @return which lines notify
+	 */
+	virtual RsMobilePushLobbyMode getDefaultLobbyMode() = 0;
 };

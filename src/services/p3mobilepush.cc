@@ -32,6 +32,7 @@
 #include "chat/rschatitems.h"
 #include "crypto/chacha20.h"
 #include "pqi/p3servicecontrol.h"
+#include "retroshare/rsidentity.h"
 #include "retroshare/rsmobilelink.h"
 #include "rsitems/rsconfigitems.h"
 #include "services/p3mobilelink.h"
@@ -68,6 +69,9 @@ static const uint16_t MOBILE_PUSH_APP_MAJOR_VERSION = 1;
 static const uint16_t MOBILE_PUSH_APP_MINOR_VERSION = 0;
 static const uint16_t MOBILE_PUSH_MIN_MAJOR_VERSION = 1;
 static const uint16_t MOBILE_PUSH_MIN_MINOR_VERSION = 0;
+
+static bool validMode(unsigned long value)
+{ return value <= static_cast<unsigned long>(RsMobilePushLobbyMode::NONE); }
 
 static bool validKey(const std::string& base64)
 { return Radix64::decode(base64).size() == PUSH_KEY_SIZE; }
@@ -228,6 +232,39 @@ void p3MobilePush::acknowledgeNotifications(const std::vector<uint32_t>& ids)
 	{ return std::find(ids.begin(), ids.end(), n.mId) != ids.end(); } );
 }
 
+void p3MobilePush::setLobbyMode(uint64_t lobbyId, RsMobilePushLobbyMode mode)
+{
+	if(!validMode(static_cast<unsigned long>(mode))) return;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		mLobbyModes[lobbyId] = mode;
+	}
+	IndicateConfigChanged();
+}
+
+void p3MobilePush::getLobbyModes(
+        std::map<uint64_t, RsMobilePushLobbyMode>& modes )
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+	modes = mLobbyModes;
+}
+
+void p3MobilePush::setDefaultLobbyMode(RsMobilePushLobbyMode mode)
+{
+	if(!validMode(static_cast<unsigned long>(mode))) return;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		mDefaultLobbyMode = mode;
+	}
+	IndicateConfigChanged();
+}
+
+RsMobilePushLobbyMode p3MobilePush::getDefaultLobbyMode()
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+	return mDefaultLobbyMode;
+}
+
 /******************************************************************************/
 /*                                Home side                                   */
 /******************************************************************************/
@@ -241,6 +278,16 @@ void p3MobilePush::lineHeldForPhone( const RsPeerId& phone, uint64_t lobby,
 	auto it = mPhones.find(phone);
 	if(it == mPhones.end()) return;
 	PhoneState& state(it->second);
+
+	auto modeIt = mLobbyModes.find(lobby);
+	switch(modeIt != mLobbyModes.end() ? modeIt->second : mDefaultLobbyMode)
+	{
+	case RsMobilePushLobbyMode::ALL: break;
+	case RsMobilePushLobbyMode::OWN_LINES:
+		if(!rsIdentity || !rsIdentity->isOwnId(line.signature.keyId)) return;
+		break;
+	case RsMobilePushLobbyMode::NONE: return;
+	}
 
 	rstime_t now = time(nullptr);
 	state.mAllowance = std::min( PUSH_BURST, state.mAllowance +
@@ -445,6 +492,17 @@ bool p3MobilePush::saveList(bool& cleanup, std::list<RsItem*>& lst)
 			kv.value = registrationToString(phone.second.mRegistration);
 			set->tlvkvs.pairs.push_back(kv);
 		}
+
+		kv.key = "DEFAULT_LOBBY_MODE";
+		kv.value = std::to_string(static_cast<unsigned>(mDefaultLobbyMode));
+		set->tlvkvs.pairs.push_back(kv);
+
+		for(const auto& lobby: mLobbyModes)
+		{
+			kv.key = "LOBBY_MODE " + std::to_string(lobby.first);
+			kv.value = std::to_string(static_cast<unsigned>(lobby.second));
+			set->tlvkvs.pairs.push_back(kv);
+		}
 	}
 	lst.push_back(set);
 
@@ -461,6 +519,20 @@ bool p3MobilePush::loadList(std::list<RsItem*>& load)
 
 			for(const RsTlvKeyValue& kv: set->tlvkvs.pairs)
 			{
+				if( kv.key == "DEFAULT_LOBBY_MODE" ||
+				        kv.key.compare(0, 11, "LOBBY_MODE ") == 0 )
+				{
+					unsigned long mode = std::strtoul(kv.value.c_str(), nullptr, 10);
+					if(!validMode(mode)) continue;
+
+					if(kv.key == "DEFAULT_LOBBY_MODE")
+						mDefaultLobbyMode = static_cast<RsMobilePushLobbyMode>(mode);
+					else
+						mLobbyModes[std::strtoull(kv.key.c_str() + 11, nullptr, 10)] =
+						        static_cast<RsMobilePushLobbyMode>(mode);
+					continue;
+				}
+
 				RsMobilePushRegistration registration;
 				if(!registrationFromString(kv.value, registration))
 					continue;
