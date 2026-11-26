@@ -468,6 +468,31 @@ bool p3ChatService::joinVisibleChatLobby(const ChatLobbyId& lobby_id,const RsGxs
 {
     return DistributedChatService::joinVisibleChatLobby(lobby_id,own_id);
 }
+bool p3ChatService::setChatLobbyPolicy(const ChatLobbyId& lobby_id, bool enabled, bool membersSeeEachOther, bool membersTalk)
+{
+    return DistributedChatService::setChatLobbyPolicy(lobby_id, enabled, membersSeeEachOther, membersTalk);
+}
+
+bool p3ChatService::getChatLobbyPolicy(const ChatLobbyId& lobby_id, ChatLobbyPolicy& policy)
+{
+    return DistributedChatService::getChatLobbyPolicy(lobby_id, policy);
+}
+
+bool p3ChatService::setChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node, const RsGxsId& identity, bool admin)
+{
+    return DistributedChatService::setChatLobbyParticipant(lobby_id, node, identity, admin);
+}
+
+bool p3ChatService::removeChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node)
+{
+    return DistributedChatService::removeChatLobbyParticipant(lobby_id, node);
+}
+
+bool p3ChatService::getChatLobbyRole(const ChatLobbyId& lobby_id, ChatLobbyRole& role)
+{
+    return DistributedChatService::getChatLobbyRole(lobby_id, role);
+}
+
 bool p3ChatService::getChatLobbyInfo(const ChatLobbyId& id,ChatLobbyInfo& info)
 {
     return DistributedChatService::getChatLobbyInfo(id,info);
@@ -1926,6 +1951,8 @@ void p3ChatService::statusChange(const std::list<pqiServicePeer> &plist)
 	{
 		if (it->actions & RS_SERVICE_PEER_CONNECTED)
 		{
+			lobbyPolicyPeerConnected(it->id);
+
 			/* send the saved outgoing messages */
 			bool changed = false;
 			std::vector<RsChatMsgItem*> to_send;

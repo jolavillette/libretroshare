@@ -43,6 +43,8 @@ class RsChatLobbyInviteItem ;
 class RsChatLobbyMsgItem ;
 class RsChatLobbyConnectChallengeItem ;
 class RsChatLobbyUnsubscribeItem ;
+class RsChatLobbyRoleItem ;
+class RsChatLobbyIdentityItem ;
 
 class RsChatItem ;
 class RsChatMsgItem ;
@@ -124,10 +126,22 @@ class DistributedChatService
 		void allowHistorySharing(bool allow) { _allow_history_sharing = allow; triggerConfigSave(); }
 		bool isHistorySharingAllowed() const { return _allow_history_sharing; }
 
+		// Relay rules of a lobby, see ChatLobbyPolicy in retroshare/rschats.h.
+		// The first four are for the node that holds the rules, the last
+		// one for a participant.
+		bool setChatLobbyPolicy(const ChatLobbyId& lobby_id, bool enabled, bool membersSeeEachOther, bool membersTalk) ;
+		bool getChatLobbyPolicy(const ChatLobbyId& lobby_id, ChatLobbyPolicy& policy) ;
+		bool setChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node, const RsGxsId& identity, bool admin) ;
+		bool removeChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node) ;
+		bool getChatLobbyRole(const ChatLobbyId& lobby_id, ChatLobbyRole& role) ;
+
 	protected:
 		bool handleRecvItem(RsChatItem *) ;
 
 		virtual void sendChatItem(RsChatItem *) =0 ;
+
+		/// Handles an item as if it had just been received. Takes ownership.
+		virtual void handleIncomingItem(RsItem *) =0 ;
 		virtual void locked_storeIncomingMsg(RsChatMsgItem *) =0 ;
 		virtual void triggerConfigSave() =0;
 
@@ -139,7 +153,14 @@ class DistributedChatService
 		bool sendLobbyChat(const ChatLobbyId &lobby_id, const std::string&) ;
 		bool handleRecvChatLobbyMsgItem(RsChatMsgItem *item) ;
 
-		bool checkSignature(RsChatLobbyBouncingObject *obj,const RsPeerId& peer_id) ;
+		/// verified tells whether the signature was checked against the
+		/// author's key: an object whose key is not known yet is accepted
+		/// without it.
+		bool checkSignature(RsChatLobbyBouncingObject *obj,const RsPeerId& peer_id,bool& verified) ;
+
+		/// Tells peer, that just connected, its role in the lobbies this
+		/// node holds relay rules for.
+		void lobbyPolicyPeerConnected(const RsPeerId& peer) ;
 
 	private:
 		/// make some statistics about time shifts, to prevent various issues. 
@@ -162,7 +183,49 @@ class DistributedChatService
 		void sendConnectionChallenge(ChatLobbyId id) ;
 		void handleFriendUnsubscribeLobby(RsChatLobbyUnsubscribeItem*) ;
 		void cleanLobbyCaches() ;
-		bool bounceLobbyObject(RsChatLobbyBouncingObject *obj, const RsPeerId& peer_id) ;
+		/// authorVerified: the object's signature was checked against its
+		/// author's key.
+		bool bounceLobbyObject(RsChatLobbyBouncingObject *obj, const RsPeerId& peer_id, bool authorVerified) ;
+
+		void handleRecvLobbyRole(RsChatLobbyRoleItem *item) ;
+		void handleRecvLobbyIdentity(RsChatLobbyIdentityItem *item) ;
+
+		/// The rules of the lobby obj belongs to when they keep obj, that
+		/// came from peer_id, for the admins only; null when obj goes to
+		/// every participating friend.
+		const ChatLobbyPolicy *locked_restrictedToAdmins(const RsChatLobbyBouncingObject& obj, const RsPeerId& peer_id, bool authorVerified) ;
+
+		/// The identity a participant signs with in the lobby: the one of
+		/// its row, else the one a phone announced to its home (MobileLink).
+		RsGxsId locked_participantIdentity(const ChatLobbyId& lobby_id, const ChatLobbyParticipant& participant) ;
+
+		static bool isAdminNode(const ChatLobbyPolicy& policy, const RsPeerId& node) ;
+		static ChatLobbyParticipant *findParticipant(ChatLobbyPolicy& policy, const RsPeerId& node) ;
+
+		/// Whether the number of participants of the lobby is kept from peer.
+		bool locked_hidesParticipantCount(const ChatLobbyId& lobby_id, const RsPeerId& peer) const ;
+
+		void locked_sendLobbyRole(const ChatLobbyId& lobby_id, const ChatLobbyPolicy& policy, const RsPeerId& node) ;
+
+		/// Tells the friend that holds the rules of the lobby, if any,
+		/// which identity this node signs with in it.
+		void sendLobbyIdentityToHost(const ChatLobbyId& lobby_id) ;
+
+		void postLobbyPolicyChanged(const ChatLobbyId& lobby_id) ;
+
+		/// Removes from msgs, the history of a lobby asked for by requester,
+		/// the lines the relay rules of the lobby kept from it.
+		void keepLobbyHistoryAllowedFor(const ChatLobbyId& lobby_id, const RsPeerId& requester, std::list<HistoryMsg>& msgs) ;
+
+		/// In a lobby this node holds rules for, an object whose signature
+		/// cannot be checked yet, the author's key being asked for, is put
+		/// aside until the key is there: who wrote it decides where it goes.
+		/// True when obj was put aside; the caller then drops it.
+		bool waitForAuthorKey(RsChatLobbyBouncingObject *obj, bool authorVerified) ;
+
+		/// Handles the objects put aside whose author's key came, or that
+		/// waited long enough.
+		void handleObjectsWaitingForAuthorKey() ;
 
 		void sendLobbyStatusItem(const ChatLobbyId&, int type, const std::string& status_string) ;
 		void sendLobbyStatusPeerChangedNickname(const ChatLobbyId& lobby_id, const std::string& newnick) ;
@@ -197,6 +260,24 @@ class DistributedChatService
 
 		std::map<ChatLobbyId,ChatLobbyEntry> _chat_lobbys ;
 		std::map<ChatLobbyId,ChatLobbyInvite> _lobby_invites_queue ;
+
+		/// The relay rules this node holds, per lobby. Saved.
+		std::map<ChatLobbyId,ChatLobbyPolicy> mLobbyPolicies ;
+
+		/// What the friend that holds the rules of a lobby told this node.
+		/// Not saved: that friend tells it again at each connection.
+		std::map<ChatLobbyId,ChatLobbyRole> mLobbyRoles ;
+
+		struct WaitingObject
+		{
+			RsChatLobbyBouncingObject *object ;
+			rstime_t since ;
+		};
+
+		/// Objects put aside until their author's key is known, in arrival
+		/// order, and the ones being handled again after the wait.
+		std::list<WaitingObject> mWaitingForAuthorKey ;
+		std::set<ChatLobbyMsgId> mWaitedForAuthorKey ;
 		std::map<ChatLobbyId,VisibleChatLobbyRecord> _visible_lobbies ;
 		std::map<ChatLobbyId,ChatLobbyFlags> _known_lobbies_flags ;	// flags for all lobbies, including the ones that are not known. So we can't
 		std::map<ChatLobbyId,std::vector<RsChatLobbyMsgItem*> > _pendingPartialLobbyMessages ;	// store them in _chat_lobbies (subscribed lobbies) nor _visible_lobbies.

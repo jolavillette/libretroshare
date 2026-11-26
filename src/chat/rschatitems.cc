@@ -48,6 +48,9 @@ RsItem *RsChatSerialiser::create_item(uint16_t service_id,uint8_t item_sub_id) c
 	case RS_PKT_SUBTYPE_CHAT_LOBBY_INVITE_DEPRECATED: return new RsChatLobbyInviteItem_Deprecated(); // to be removed (deprecated since May 2017)
 	case RS_PKT_SUBTYPE_CHAT_LOBBY_CHALLENGE: return new RsChatLobbyConnectChallengeItem();
 	case RS_PKT_SUBTYPE_CHAT_LOBBY_UNSUBSCRIBE: return new RsChatLobbyUnsubscribeItem();
+	case RS_PKT_SUBTYPE_CHAT_LOBBY_ROLE: return new RsChatLobbyRoleItem();
+	case RS_PKT_SUBTYPE_CHAT_LOBBY_IDENTITY: return new RsChatLobbyIdentityItem();
+	case RS_PKT_SUBTYPE_CHAT_LOBBY_POLICY_CONFIG: return new RsChatLobbyPolicyConfigItem();
 	case RS_PKT_SUBTYPE_CHAT_LOBBY_SIGNED_EVENT: return new RsChatLobbyEventItem();
 	case RS_PKT_SUBTYPE_CHAT_LOBBY_LIST_REQUEST: return new RsChatLobbyListRequestItem();
 	case RS_PKT_SUBTYPE_CHAT_LOBBY_LIST: return new RsChatLobbyListItem();
@@ -178,6 +181,24 @@ void RsChatAvatarInfoItem::serial_process(RsGenericSerializer::SerializeJob j,Rs
 void RsSubscribedChatLobbyConfigItem::serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx)
 {
     info.serial_process(j,ctx);
+}
+
+void RsChatLobbyRoleItem::serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx)
+{
+    RsTypeSerializer::serial_process<uint64_t>(j,ctx,lobby_id,"lobby_id") ;
+    RsTypeSerializer::serial_process<uint32_t>(j,ctx,role_flags,"role_flags") ;
+}
+
+void RsChatLobbyIdentityItem::serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx)
+{
+    RsTypeSerializer::serial_process<uint64_t>(j,ctx,lobby_id,"lobby_id") ;
+    RsTypeSerializer::serial_process(j,ctx,identity,"identity") ;
+}
+
+void RsChatLobbyPolicyConfigItem::serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx)
+{
+    RsTypeSerializer::serial_process<uint64_t>(j,ctx,lobby_id,"lobby_id") ;
+    policy.serial_process(j,ctx);
 }
 
 void RsChatLobbyConfigItem::serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx)

@@ -128,6 +128,8 @@ void DistributedChatService::flush()
 
 	rstime_t now = time(NULL) ;
 
+	handleObjectsWaitingForAuthorKey() ;
+
 	if(last_clean_time_lobby + LOBBY_CACHE_CLEANING_PERIOD < now)
 	{
 		cleanLobbyCaches() ;
@@ -201,14 +203,18 @@ bool DistributedChatService::handleRecvChatLobbyMsgItem(RsChatMsgItem *ci)
         logBannedIdentityDrop(cli->signature.keyId);
         return false ;
     }
-    if(!checkSignature(cli,cli->PeerId()))	// check the object's signature and possibly request missing keys
+    bool authorVerified = false ;
+
+    if(!checkSignature(cli,cli->PeerId(),authorVerified))	// check the object's signature and possibly request missing keys
     {
         std::cerr << "Signature mismatched for this lobby event item. Item will be dropped: " << std::endl;
         cli->print(std::cerr) ;
         std::cerr << std::endl;
         return false;
     }
-    
+    if(waitForAuthorKey(cli,authorVerified))
+        return false ;
+
     // add a routing clue for this peer/GXSid combination. This is quite reliable since the lobby transport is almost instantaneous
     
     rsGRouter->addRoutingClue(GRouterKeyId(cli->signature.keyId),cli->PeerId()) ;
@@ -252,7 +258,7 @@ bool DistributedChatService::handleRecvChatLobbyMsgItem(RsChatMsgItem *ci)
 	    }
     }
     
-    if(!bounceLobbyObject(cli,cli->PeerId()))	// forwards the message to friends, keeps track of subscribers, etc.
+    if(!bounceLobbyObject(cli,cli->PeerId(),authorVerified))	// forwards the message to friends, keeps track of subscribers, etc.
         return false;
 
     // setup the peer id to the virtual peer id of the lobby.
@@ -264,8 +270,10 @@ bool DistributedChatService::handleRecvChatLobbyMsgItem(RsChatMsgItem *ci)
     return true ;
 }
 
-bool DistributedChatService::checkSignature(RsChatLobbyBouncingObject *obj,const RsPeerId& peer_id)
+bool DistributedChatService::checkSignature(RsChatLobbyBouncingObject *obj,const RsPeerId& peer_id,bool& verified)
 {
+    verified = false ;
+
     // Always request the key. If not present, it will be asked to the peer id who sent this item.
 
     std::list<RsPeerId> peer_list ;
@@ -331,6 +339,7 @@ bool DistributedChatService::checkSignature(RsChatLobbyBouncingObject *obj,const
     std::cerr << "  signature: CHECKS" << std::endl;
 #endif
 
+    verified = true ;
     return true ;
 }
 
@@ -506,6 +515,8 @@ bool DistributedChatService::handleRecvItem(RsChatItem *item)
 		case RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_PROBE_RESP: handleRecvLobbyHistoryProbeResponse(dynamic_cast<RsChatLobbyHistoryProbeResponseItem *>(item)) ; break ;
 		case RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_REQUEST:    handleRecvLobbyHistoryRequest      (dynamic_cast<RsChatLobbyHistoryRequestItem       *>(item)) ; break ;
 		case RS_PKT_SUBTYPE_CHAT_LOBBY_HISTORY_DATA:       handleRecvLobbyHistoryData         (dynamic_cast<RsChatLobbyHistoryDataItem          *>(item)) ; break ;
+		case RS_PKT_SUBTYPE_CHAT_LOBBY_ROLE:              handleRecvLobbyRole              (dynamic_cast<RsChatLobbyRoleItem             *>(item)) ; break ;
+		case RS_PKT_SUBTYPE_CHAT_LOBBY_IDENTITY:          handleRecvLobbyIdentity          (dynamic_cast<RsChatLobbyIdentityItem         *>(item)) ; break ;
 		default:                                          return false ;
 	}
 	return true ;
@@ -542,7 +553,7 @@ void DistributedChatService::handleRecvChatLobbyListRequest(RsChatLobbyListReque
                 info.id    = it->first ;
                 info.name  = it->second.lobby_name ;
                 info.topic = it->second.lobby_topic ;
-                info.count = it->second.gxs_ids.size() ;
+                info.count = locked_hidesParticipantCount(it->first, clr->PeerId()) ? 0 : it->second.gxs_ids.size() ;
                 info.flags = ChatLobbyFlags(EXTRACT_PRIVACY_FLAGS(it->second.lobby_flags)) ;
 
                 item->lobbies.push_back(info) ;
@@ -799,13 +810,17 @@ void DistributedChatService::handleRecvChatLobbyEventItem(RsChatLobbyEventItem *
         	logBannedIdentityDrop(item->signature.keyId);
 	        return ;
 	}
-	if(!checkSignature(item,item->PeerId()))	// check the object's signature and possibly request missing keys
+	bool authorVerified = false ;
+
+	if(!checkSignature(item,item->PeerId(),authorVerified))	// check the object's signature and possibly request missing keys
 	{
         	std::cerr << "Signature mismatched for this lobby event item: " << std::endl;
 	        item->print(std::cerr) ;
         	std::cerr << std::endl;
 	        return ;
 	}
+	if(waitForAuthorKey(item,authorVerified))
+		return ;
         
 	if(IS_PGP_SIGNED_LOBBY(fl))
 	{
@@ -845,7 +860,7 @@ void DistributedChatService::handleRecvChatLobbyEventItem(RsChatLobbyEventItem *
 	// add a routing clue for this peer/GXSid combination. This is quite reliable since the lobby transport is almost instantaneous
 	rsGRouter->addRoutingClue(GRouterKeyId(item->signature.keyId),item->PeerId()) ;
     
-	if(! bounceLobbyObject(item,item->PeerId()))
+	if(! bounceLobbyObject(item,item->PeerId(),authorVerified))
 		return ;
 
 	addTimeShiftStatistics((int)now - (int)item->sendTime, item->signature.keyId);
@@ -1022,7 +1037,7 @@ void DistributedChatService::getListOfNearbyChatLobbies(std::vector<VisibleChatL
 // 	true: the object is not a duplicate and should be used
 // 	false: the object is a duplicate or there is an error, and it should be destroyed.
 //
-bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,const RsPeerId& peer_id)
+bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,const RsPeerId& peer_id,bool authorVerified)
 {
 	rstime_t now = time(NULL) ;
 	RsStackMutex stack(mDistributedChatMtx); /********** STACK LOCKED MTX ******/
@@ -1087,11 +1102,18 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 	if(peer_id != mServControl->getOwnId() && mMobileLink && mMobileLink->getPhoneMode())
 		return true ;
 
+	// In a lobby this node holds relay rules for, what a member wrote and
+	// its presence go to the admins only, unless the rules open them.
+	const ChatLobbyPolicy *adminsOnly = locked_restrictedToAdmins(*item, peer_id, authorVerified) ;
+
 	// Forward to allparticipating friends, except this peer.
 
 	for(std::set<RsPeerId>::const_iterator it(lobby.participating_friends.begin());it!=lobby.participating_friends.end();++it)
 		if((*it)!=peer_id)
 		{
+			if(adminsOnly && !isAdminNode(*adminsOnly, *it))
+				continue ;
+
 			const bool connected = mServControl->isPeerConnected(mServType, *it) ;
 
 			// A phone in background gets now only the lines that mention it;
@@ -1117,6 +1139,433 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 	++lobby.connexion_challenge_count ;
 
 	return true ;
+}
+
+/// How long an object waits for its author's key in a lobby with relay
+/// rules, before it is handled as written by a member. The key is asked from
+/// the friend that sent the object, or loaded from this node's own store.
+static const rstime_t MAX_WAIT_FOR_AUTHOR_KEY = 20 ;
+
+bool DistributedChatService::waitForAuthorKey(RsChatLobbyBouncingObject *obj, bool authorVerified)
+{
+	RS_STACK_MUTEX(mDistributedChatMtx);
+
+	if(mWaitedForAuthorKey.erase(obj->msg_id) > 0)
+		return false ;	// it waited already
+
+	std::map<ChatLobbyId,ChatLobbyPolicy>::const_iterator pit = mLobbyPolicies.find(obj->lobby_id) ;
+
+	if(pit == mLobbyPolicies.end() || !pit->second.enabled)
+		return false ;
+
+	// An object of an author that has others waiting waits behind them, to
+	// keep that author's lines in order.
+	bool behindOthers = false ;
+
+	for(const WaitingObject& waiting : mWaitingForAuthorKey)
+		if(waiting.object->lobby_id == obj->lobby_id && waiting.object->signature.keyId == obj->signature.keyId)
+		{
+			if(waiting.object->msg_id == obj->msg_id)
+				return true ;	// the same object, from another friend
+
+			behindOthers = true ;
+		}
+
+	if(authorVerified && !behindOthers)
+		return false ;
+
+	WaitingObject waiting ;
+	waiting.object = obj->duplicate() ;
+	waiting.since = time(nullptr) ;
+	mWaitingForAuthorKey.push_back(waiting) ;
+
+	return true ;
+}
+
+void DistributedChatService::handleObjectsWaitingForAuthorKey()
+{
+	std::list<RsChatLobbyBouncingObject*> ready ;
+	{
+		RS_STACK_MUTEX(mDistributedChatMtx);
+
+		if(mWaitingForAuthorKey.empty())
+			return ;
+
+		const rstime_t now = time(nullptr) ;
+		std::set<std::pair<ChatLobbyId,RsGxsId> > stillWaiting ;
+
+		for(std::list<WaitingObject>::iterator it(mWaitingForAuthorKey.begin());it!=mWaitingForAuthorKey.end();)
+		{
+			const std::pair<ChatLobbyId,RsGxsId> author(it->object->lobby_id, it->object->signature.keyId) ;
+
+			// An object goes only when those of the same author before it went.
+			if(stillWaiting.find(author) == stillWaiting.end()
+			   && (it->since + MAX_WAIT_FOR_AUTHOR_KEY < now || mGixs->haveKey(author.second)))
+			{
+				mWaitedForAuthorKey.insert(it->object->msg_id) ;
+				ready.push_back(it->object) ;
+				it = mWaitingForAuthorKey.erase(it) ;
+			}
+			else
+			{
+				stillWaiting.insert(author) ;
+				++it ;
+			}
+		}
+	}
+
+	for(RsChatLobbyBouncingObject *object : ready)
+	{
+		const ChatLobbyMsgId msg_id = object->msg_id ;
+
+		handleIncomingItem(dynamic_cast<RsItem*>(object)) ;
+
+		// An object dropped before the signature check has left its mark.
+		RS_STACK_MUTEX(mDistributedChatMtx);
+		mWaitedForAuthorKey.erase(msg_id) ;
+	}
+}
+
+void DistributedChatService::keepLobbyHistoryAllowedFor(const ChatLobbyId& lobby_id, const RsPeerId& requester, std::list<HistoryMsg>& msgs)
+{
+	RS_STACK_MUTEX(mDistributedChatMtx);
+
+	std::map<ChatLobbyId,ChatLobbyPolicy>::const_iterator pit = mLobbyPolicies.find(lobby_id) ;
+
+	if(pit == mLobbyPolicies.end() || !pit->second.enabled || pit->second.membersTalk || isAdminNode(pit->second, requester))
+		return ;
+
+	// A member did not get the lines of the other members when they were
+	// written: it does not get them from the history either. The lines of
+	// this node, the host, and of the admins are left.
+	std::set<RsGxsId> admins ;
+
+	for(const ChatLobbyParticipant& participant : pit->second.participants)
+		if(participant.admin)
+			admins.insert(locked_participantIdentity(lobby_id, participant)) ;
+
+	for(std::list<HistoryMsg>::iterator it(msgs.begin()); it != msgs.end();)
+		if(it->incoming && admins.find(RsGxsId(it->peerId)) == admins.end())
+			it = msgs.erase(it) ;
+		else
+			++it ;
+}
+
+const ChatLobbyPolicy *DistributedChatService::locked_restrictedToAdmins(const RsChatLobbyBouncingObject& obj, const RsPeerId& peer_id, bool authorVerified)
+{
+	std::map<ChatLobbyId,ChatLobbyPolicy>::const_iterator pit = mLobbyPolicies.find(obj.lobby_id) ;
+
+	if(pit == mLobbyPolicies.end() || !pit->second.enabled)
+		return nullptr ;
+
+	const ChatLobbyPolicy& policy(pit->second) ;
+
+	// The node that holds the rules is an admin.
+	if(peer_id == mServControl->getOwnId())
+		return nullptr ;
+
+	// An admin is known by its signature, whatever friend passed the object
+	// on, and only when the signature was checked: without the key anyone
+	// could sign as an admin.
+	if(authorVerified)
+		for(const ChatLobbyParticipant& participant : policy.participants)
+			if(participant.admin && locked_participantIdentity(obj.lobby_id, participant) == obj.signature.keyId)
+				return nullptr ;
+
+	const bool line = dynamic_cast<const RsChatLobbyMsgItem*>(&obj) != nullptr ;
+
+	return (line ? policy.membersTalk : policy.membersSeeEachOther) ? nullptr : &policy ;
+}
+
+RsGxsId DistributedChatService::locked_participantIdentity(const ChatLobbyId& lobby_id, const ChatLobbyParticipant& participant)
+{
+	RsGxsId id = participant.identity ;
+
+	if(id.isNull() && mMobileLink)
+		mMobileLink->phoneLobbyIdentity(participant.node, lobby_id, id) ;
+
+	return id ;
+}
+
+bool DistributedChatService::isAdminNode(const ChatLobbyPolicy& policy, const RsPeerId& node)
+{
+	for(const ChatLobbyParticipant& participant : policy.participants)
+		if(participant.node == node)
+			return participant.admin ;
+
+	return false ;
+}
+
+ChatLobbyParticipant *DistributedChatService::findParticipant(ChatLobbyPolicy& policy, const RsPeerId& node)
+{
+	for(ChatLobbyParticipant& participant : policy.participants)
+		if(participant.node == node)
+			return &participant ;
+
+	return nullptr ;
+}
+
+bool DistributedChatService::locked_hidesParticipantCount(const ChatLobbyId& lobby_id, const RsPeerId& peer) const
+{
+	std::map<ChatLobbyId,ChatLobbyPolicy>::const_iterator pit = mLobbyPolicies.find(lobby_id) ;
+
+	return pit != mLobbyPolicies.end() && pit->second.enabled && !pit->second.membersSeeEachOther && !isAdminNode(pit->second, peer) ;
+}
+
+void DistributedChatService::locked_sendLobbyRole(const ChatLobbyId& lobby_id, const ChatLobbyPolicy& policy, const RsPeerId& node)
+{
+	if(!mServControl->isPeerConnected(mServType, node))
+		return ;	// it is told when it connects
+
+	RsChatLobbyRoleItem *item = new RsChatLobbyRoleItem ;
+
+	item->lobby_id = lobby_id ;
+
+	if(policy.enabled)
+	{
+		item->role_flags |= RsChatLobbyRoleItem::RULED ;
+
+		if(isAdminNode(policy, node))     item->role_flags |= RsChatLobbyRoleItem::ADMIN ;
+		if(policy.membersSeeEachOther)    item->role_flags |= RsChatLobbyRoleItem::MEMBERS_SEE_EACH_OTHER ;
+		if(policy.membersTalk)            item->role_flags |= RsChatLobbyRoleItem::MEMBERS_TALK ;
+	}
+	item->PeerId(node) ;
+
+	sendChatItem(item) ;
+}
+
+void DistributedChatService::lobbyPolicyPeerConnected(const RsPeerId& peer)
+{
+	RS_STACK_MUTEX(mDistributedChatMtx);
+
+	for(std::map<ChatLobbyId,ChatLobbyPolicy>::iterator it(mLobbyPolicies.begin());it!=mLobbyPolicies.end();++it)
+		if(findParticipant(it->second, peer) != nullptr)
+			locked_sendLobbyRole(it->first, it->second, peer) ;
+}
+
+void DistributedChatService::postLobbyPolicyChanged(const ChatLobbyId& lobby_id)
+{
+	auto ev = std::make_shared<RsChatLobbyEvent>() ;
+	ev->mEventCode = RsChatLobbyEventCode::CHAT_LOBBY_POLICY_CHANGED ;
+	ev->mLobbyId = lobby_id ;
+	rsEvents->postEvent(ev) ;
+}
+
+bool DistributedChatService::setChatLobbyPolicy(const ChatLobbyId& lobby_id, bool enabled, bool membersSeeEachOther, bool membersTalk)
+{
+	{
+		RS_STACK_MUTEX(mDistributedChatMtx);
+
+		std::map<ChatLobbyId,ChatLobbyEntry>::const_iterator it = _chat_lobbys.find(lobby_id) ;
+
+		if(it == _chat_lobbys.end())
+			return false ;
+
+		ChatLobbyPolicy& policy(mLobbyPolicies[lobby_id]) ;
+
+		policy.enabled = enabled ;
+		policy.membersSeeEachOther = membersSeeEachOther ;
+		policy.membersTalk = membersTalk ;
+
+		// The friends already in the lobby are participants, as members.
+		for(const RsPeerId& friendId : it->second.participating_friends)
+			if(findParticipant(policy, friendId) == nullptr)
+			{
+				ChatLobbyParticipant participant ;
+				participant.node = friendId ;
+				policy.participants.push_back(participant) ;
+			}
+
+		for(const ChatLobbyParticipant& participant : policy.participants)
+			locked_sendLobbyRole(lobby_id, policy, participant.node) ;
+	}
+	triggerConfigSave() ;
+	postLobbyPolicyChanged(lobby_id) ;
+
+	return true ;
+}
+
+bool DistributedChatService::getChatLobbyPolicy(const ChatLobbyId& lobby_id, ChatLobbyPolicy& policy)
+{
+	RS_STACK_MUTEX(mDistributedChatMtx);
+
+	std::map<ChatLobbyId,ChatLobbyPolicy>::const_iterator pit = mLobbyPolicies.find(lobby_id) ;
+
+	if(pit == mLobbyPolicies.end())
+		return false ;
+
+	policy = pit->second ;
+
+	for(ChatLobbyParticipant& participant : policy.participants)
+		participant.identity = locked_participantIdentity(lobby_id, participant) ;
+
+	return true ;
+}
+
+bool DistributedChatService::setChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node, const RsGxsId& identity, bool admin)
+{
+	{
+		RS_STACK_MUTEX(mDistributedChatMtx);
+
+		std::map<ChatLobbyId,ChatLobbyPolicy>::iterator pit = mLobbyPolicies.find(lobby_id) ;
+
+		if(pit == mLobbyPolicies.end())
+			return false ;
+
+		ChatLobbyParticipant *participant = findParticipant(pit->second, node) ;
+
+		if(participant == nullptr)
+		{
+			pit->second.participants.push_back(ChatLobbyParticipant()) ;
+			participant = &pit->second.participants.back() ;
+			participant->node = node ;
+		}
+		if(!identity.isNull())
+			participant->identity = identity ;
+
+		participant->admin = admin ;
+
+		locked_sendLobbyRole(lobby_id, pit->second, node) ;
+	}
+	triggerConfigSave() ;
+	postLobbyPolicyChanged(lobby_id) ;
+
+	return true ;
+}
+
+bool DistributedChatService::removeChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node)
+{
+	{
+		RS_STACK_MUTEX(mDistributedChatMtx);
+
+		std::map<ChatLobbyId,ChatLobbyPolicy>::iterator pit = mLobbyPolicies.find(lobby_id) ;
+
+		if(pit == mLobbyPolicies.end())
+			return false ;
+
+		std::vector<ChatLobbyParticipant>& participants(pit->second.participants) ;
+		std::vector<ChatLobbyParticipant>::iterator it = participants.begin() ;
+
+		while(it != participants.end() && it->node != node)
+			++it ;
+
+		if(it == participants.end())
+			return false ;
+
+		participants.erase(it) ;
+
+		locked_sendLobbyRole(lobby_id, pit->second, node) ;	// it is a member from now on
+	}
+	triggerConfigSave() ;
+	postLobbyPolicyChanged(lobby_id) ;
+
+	return true ;
+}
+
+bool DistributedChatService::getChatLobbyRole(const ChatLobbyId& lobby_id, ChatLobbyRole& role)
+{
+	RS_STACK_MUTEX(mDistributedChatMtx);
+
+	std::map<ChatLobbyId,ChatLobbyRole>::const_iterator it = mLobbyRoles.find(lobby_id) ;
+
+	if(it == mLobbyRoles.end())
+		return false ;
+
+	role = it->second ;
+	return true ;
+}
+
+void DistributedChatService::handleRecvLobbyRole(RsChatLobbyRoleItem *item)
+{
+	if(item == nullptr)
+		return ;
+
+	bool subscribed = false ;
+	{
+		RS_STACK_MUTEX(mDistributedChatMtx);
+
+		// Only a friend this node shares the lobby with, or that invited it,
+		// is listened to.
+		std::map<ChatLobbyId,ChatLobbyEntry>::const_iterator it = _chat_lobbys.find(item->lobby_id) ;
+		std::map<ChatLobbyId,ChatLobbyInvite>::const_iterator iit = _lobby_invites_queue.find(item->lobby_id) ;
+
+		subscribed = it != _chat_lobbys.end() && it->second.participating_friends.find(item->PeerId()) != it->second.participating_friends.end() ;
+		const bool invited = iit != _lobby_invites_queue.end() && iit->second.peer_id == item->PeerId() ;
+
+		if(!subscribed && !invited)
+			return ;
+
+		if(item->role_flags & RsChatLobbyRoleItem::RULED)
+		{
+			ChatLobbyRole& role(mLobbyRoles[item->lobby_id]) ;
+
+			role.ruled = true ;
+			role.admin = item->role_flags & RsChatLobbyRoleItem::ADMIN ;
+			role.membersSeeEachOther = item->role_flags & RsChatLobbyRoleItem::MEMBERS_SEE_EACH_OTHER ;
+			role.membersTalk = item->role_flags & RsChatLobbyRoleItem::MEMBERS_TALK ;
+			role.host = item->PeerId() ;
+		}
+		else
+		{
+			std::map<ChatLobbyId,ChatLobbyRole>::iterator rit = mLobbyRoles.find(item->lobby_id) ;
+
+			if(rit == mLobbyRoles.end() || rit->second.host != item->PeerId())
+				return ;
+
+			mLobbyRoles.erase(rit) ;
+			subscribed = false ;	// nobody left to tell the identity to
+		}
+	}
+	if(subscribed)
+		sendLobbyIdentityToHost(item->lobby_id) ;
+
+	postLobbyPolicyChanged(item->lobby_id) ;
+}
+
+void DistributedChatService::sendLobbyIdentityToHost(const ChatLobbyId& lobby_id)
+{
+	RS_STACK_MUTEX(mDistributedChatMtx);
+
+	std::map<ChatLobbyId,ChatLobbyRole>::const_iterator rit = mLobbyRoles.find(lobby_id) ;
+	std::map<ChatLobbyId,ChatLobbyEntry>::const_iterator it = _chat_lobbys.find(lobby_id) ;
+
+	if(rit == mLobbyRoles.end() || it == _chat_lobbys.end() || it->second.gxs_id.isNull())
+		return ;
+
+	RsChatLobbyIdentityItem *item = new RsChatLobbyIdentityItem ;
+
+	item->lobby_id = lobby_id ;
+	item->identity = it->second.gxs_id ;
+	item->PeerId(rit->second.host) ;
+
+	sendChatItem(item) ;
+}
+
+void DistributedChatService::handleRecvLobbyIdentity(RsChatLobbyIdentityItem *item)
+{
+	if(item == nullptr || item->identity.isNull())
+		return ;
+
+	{
+		RS_STACK_MUTEX(mDistributedChatMtx);
+
+		std::map<ChatLobbyId,ChatLobbyPolicy>::iterator pit = mLobbyPolicies.find(item->lobby_id) ;
+
+		if(pit == mLobbyPolicies.end())
+			return ;
+
+		// A node gets its row when it is invited or when the rules are set.
+		// One that is in neither case was brought by somebody else: it
+		// stays out of the table, and so is a member.
+		ChatLobbyParticipant *participant = findParticipant(pit->second, item->PeerId()) ;
+
+		if(participant == nullptr || participant->identity == item->identity)
+			return ;
+
+		participant->identity = item->identity ;
+	}
+	triggerConfigSave() ;
+	postLobbyPolicyChanged(item->lobby_id) ;
 }
 
 bool DistributedChatService::makePresignedKeepAlives(const ChatLobbyId& lobby_id, rstime_t from, uint32_t count, std::list<RsChatLobbyEventItem*>& items)
@@ -1152,6 +1601,8 @@ DistributedChatService::~DistributedChatService()
 		for(RsChatLobbyMsgItem *line: held.second.lines) delete line ;
 		for(auto& presence: held.second.presence) delete presence.second ;
 	}
+	for(WaitingObject& waiting: mWaitingForAuthorKey)
+		delete dynamic_cast<RsItem*>(waiting.object) ;
 }
 
 bool DistributedChatService::locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item, bool connected)
@@ -1426,7 +1877,7 @@ void DistributedChatService::sendLobbyStatusItem(const ChatLobbyId& lobby_id,int
             return ;
     }
     RsPeerId ownId = mServControl->getOwnId();
-    bounceLobbyObject(&item,ownId) ;
+    bounceLobbyObject(&item,ownId,true) ;
 }
 
 bool DistributedChatService::locked_initLobbyBouncableObject(const ChatLobbyId& lobby_id,RsChatLobbyBouncingObject& item)
@@ -1537,7 +1988,7 @@ bool DistributedChatService::sendLobbyChat(const ChatLobbyId& lobby_id, const st
 
     RsPeerId ownId = rsPeers->getOwnId();
 
-    bounceLobbyObject(&item, ownId) ;
+    bounceLobbyObject(&item, ownId, true) ;
 
     ChatMessage message;
     message.chatflags = 0;
@@ -1749,6 +2200,23 @@ void DistributedChatService::invitePeerToLobby(const ChatLobbyId& lobby_id, cons
 
 	sendChatItem(item) ;
 
+	// A node invited to a lobby this node holds rules for gets a row in the
+	// participant table, as a member, and is told its role.
+	std::map<ChatLobbyId,ChatLobbyPolicy>::iterator pit = mLobbyPolicies.find(lobby_id) ;
+	bool newParticipant = false ;
+
+	if(!connexion_challenge && pit != mLobbyPolicies.end())
+	{
+		if(findParticipant(pit->second, peer_id) == nullptr)
+		{
+			ChatLobbyParticipant participant ;
+			participant.node = peer_id ;
+			pit->second.participants.push_back(participant) ;
+			newParticipant = true ;
+		}
+		locked_sendLobbyRole(lobby_id, pit->second, peer_id) ;
+	}
+
 	//FOR BACKWARD COMPATIBILITY
 	{// to be removed (deprecated since May 2017)
 		RsChatLobbyInviteItem_Deprecated *item = new RsChatLobbyInviteItem_Deprecated ;
@@ -1761,6 +2229,9 @@ void DistributedChatService::invitePeerToLobby(const ChatLobbyId& lobby_id, cons
 
 		sendChatItem(item) ;
 	}
+
+	if(newParticipant)
+		triggerConfigSave() ;
 }
 
 // to be removed (deprecated since May 2017)
@@ -1960,6 +2431,8 @@ bool DistributedChatService::acceptLobbyInvite(const ChatLobbyId& lobby_id,const
 
     // send AKN item
 	sendLobbyStatusNewPeer(lobby_id) ;
+
+	sendLobbyIdentityToHost(lobby_id) ;
 
 	return true ;
 }
@@ -2211,6 +2684,8 @@ void DistributedChatService::unsubscribeChatLobby(const ChatLobbyId& id)
 		// remove lobby information
 
 		_chat_lobbys.erase(it) ;
+		mLobbyPolicies.erase(id) ;
+		mLobbyRoles.erase(id) ;
 	}
 
 	triggerConfigSave();	// so that we save the subscribed lobbies
@@ -2337,6 +2812,8 @@ bool DistributedChatService::setIdentityForChatLobby(const ChatLobbyId& lobby_id
     }
 
     triggerConfigSave() ;
+
+    sendLobbyIdentityToHost(lobby_id) ;
 
     return true ;
 }
@@ -2538,6 +3015,14 @@ void DistributedChatService::addToSaveList(std::list<RsItem*>& list) const
 		list.push_back(scli);
 	}
 
+	for(auto it(mLobbyPolicies.begin());it!=mLobbyPolicies.end();++it)
+	{
+		RsChatLobbyPolicyConfigItem *item = new RsChatLobbyPolicyConfigItem ;
+		item->lobby_id = it->first ;
+		item->policy = it->second ;
+		list.push_back(item) ;
+	}
+
 	/* Save Default Nick Name */
 	{
 		RsConfigKeyValueSet *vitem = new RsConfigKeyValueSet ;
@@ -2637,6 +3122,15 @@ bool DistributedChatService::processLoadListItem(const RsItem *item)
 	if(NULL != (clci = dynamic_cast<const RsChatLobbyConfigItem*>(item)))
 	{
 		_known_lobbies_flags[clci->lobby_Id] = ChatLobbyFlags(clci->flags) ;
+		return true ;
+	}
+
+	const RsChatLobbyPolicyConfigItem *policyItem = dynamic_cast<const RsChatLobbyPolicyConfigItem*>(item) ;
+
+	if(policyItem != nullptr)
+	{
+		RS_STACK_MUTEX(mDistributedChatMtx);
+		mLobbyPolicies[policyItem->lobby_id] = policyItem->policy ;
 		return true ;
 	}
 
@@ -2782,6 +3276,7 @@ void DistributedChatService::handleRecvLobbyHistoryProbe(RsChatLobbyHistoryProbe
 	// Retrieve our local history for this lobby
 	std::list<HistoryMsg> msgs ;
 	mHistMgr->getMessages(ChatId(item->lobby_id), msgs, 0) ; // 0 = get all available
+	keepLobbyHistoryAllowedFor(item->lobby_id, item->PeerId(), msgs) ;
 
 	uint32_t available_count = (uint32_t)msgs.size() ;
 	uint32_t oldest_ts = 0 ;
@@ -2914,6 +3409,7 @@ void DistributedChatService::handleRecvLobbyHistoryRequest(RsChatLobbyHistoryReq
 	// max_count lines that are not older than what is asked for.
 	std::list<HistoryMsg> msgs ;
 	mHistMgr->getMessages(ChatId(item->lobby_id), msgs, 0) ;
+	keepLobbyHistoryAllowedFor(item->lobby_id, item->PeerId(), msgs) ;
 
 	for(std::list<HistoryMsg>::iterator it(msgs.begin()); it != msgs.end();)
 		if(it->sendTime < item->oldest_timestamp)
