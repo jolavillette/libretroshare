@@ -240,6 +240,31 @@ void p3Msgs::setCustomStateString(const std::string& state_string)
 	mChatSrv->setOwnCustomStateString(state_string) ;
 }
 
+bool p3Msgs::setChatLobbyPolicy(const ChatLobbyId& lobby_id, bool enabled, bool membersSeeEachOther, bool membersTalk)
+{
+    return mChatSrv->setChatLobbyPolicy(lobby_id, enabled, membersSeeEachOther, membersTalk);
+}
+
+bool p3Msgs::getChatLobbyPolicy(const ChatLobbyId& lobby_id, ChatLobbyPolicy& policy)
+{
+    return mChatSrv->getChatLobbyPolicy(lobby_id, policy);
+}
+
+bool p3Msgs::setChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node, const RsGxsId& identity, bool admin)
+{
+    return mChatSrv->setChatLobbyParticipant(lobby_id, node, identity, admin);
+}
+
+bool p3Msgs::removeChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node)
+{
+    return mChatSrv->removeChatLobbyParticipant(lobby_id, node);
+}
+
+bool p3Msgs::getChatLobbyRole(const ChatLobbyId& lobby_id, ChatLobbyRole& role)
+{
+    return mChatSrv->getChatLobbyRole(lobby_id, role);
+}
+
 bool p3Msgs::getChatLobbyInfo(const ChatLobbyId& id,ChatLobbyInfo& linfo)
 {
     return mChatSrv->getChatLobbyInfo(id,linfo) ;

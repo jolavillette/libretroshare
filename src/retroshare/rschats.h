@@ -240,6 +240,7 @@ enum class RsChatLobbyEventCode: uint8_t
     CHAT_LOBBY_EVENT_PEER_JOINED          = 0x07,	 // RS_CHAT_LOBBY_EVENT_PEER_JOINED
     CHAT_LOBBY_EVENT_PEER_CHANGE_NICKNAME = 0x08,	 // RS_CHAT_LOBBY_EVENT_PEER_CHANGE_NICKNAME
     CHAT_LOBBY_EVENT_KEEP_ALIVE           = 0x09,	 // RS_CHAT_LOBBY_EVENT_KEEP_ALIVE
+    CHAT_LOBBY_POLICY_CHANGED             = 0x0a,	 // the relay rules of a lobby, its participant table or the role this node has in it
 };
 
 enum class RsDistantChatEventCode: uint8_t
@@ -387,6 +388,64 @@ public:
     }
 };
 
+/// One node invited to a lobby by the node that holds the lobby's relay
+/// rules, and the identity that node took in it.
+struct ChatLobbyParticipant : RsSerializable
+{
+    ChatLobbyParticipant() : admin(false) {}
+
+    RsPeerId node ;      // the friend that was invited
+    RsGxsId  identity ;  // the identity it signs with in the lobby; null until it is known
+    bool     admin ;     // its packets go to everyone, and it receives the packets of everyone
+
+    void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) override {
+        RS_SERIAL_PROCESS(node);
+        RS_SERIAL_PROCESS(identity);
+        RS_SERIAL_PROCESS(admin);
+    }
+};
+
+/// The relay rules a node applies to a lobby: what it passes on between the
+/// participants. A lobby without rules is relayed to every participating
+/// friend. The node that holds the rules is always an admin.
+struct ChatLobbyPolicy : RsSerializable
+{
+    ChatLobbyPolicy() : enabled(false), membersSeeEachOther(false), membersTalk(false) {}
+
+    bool enabled ;              // false: the lobby is relayed as a lobby without rules
+    bool membersSeeEachOther ;  // presence of a member goes to every participant, not to the admins only
+    bool membersTalk ;          // lines of a member go to every participant, not to the admins only
+    std::vector<ChatLobbyParticipant> participants ;
+
+    void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) override {
+        RS_SERIAL_PROCESS(enabled);
+        RS_SERIAL_PROCESS(membersSeeEachOther);
+        RS_SERIAL_PROCESS(membersTalk);
+        RS_SERIAL_PROCESS(participants);
+    }
+};
+
+/// What a participant was told about a lobby by the friend that holds its
+/// relay rules. It is informative: the rules are applied by that friend.
+struct ChatLobbyRole : RsSerializable
+{
+    ChatLobbyRole() : ruled(false), admin(false), membersSeeEachOther(false), membersTalk(false) {}
+
+    bool ruled ;                // false: nobody told this node of rules for the lobby
+    bool admin ;                // this node is an admin of the lobby
+    bool membersSeeEachOther ;
+    bool membersTalk ;
+    RsPeerId home ;             // the friend that holds the rules
+
+    void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) override {
+        RS_SERIAL_PROCESS(ruled);
+        RS_SERIAL_PROCESS(admin);
+        RS_SERIAL_PROCESS(membersSeeEachOther);
+        RS_SERIAL_PROCESS(membersTalk);
+        RS_SERIAL_PROCESS(home);
+    }
+};
+
 /****************************************/
 /* Main entry point class for all chats */
 /****************************************/
@@ -507,6 +566,55 @@ public:
      * @param[in] peer_id peer to invite
      */
     virtual void invitePeerToLobby(const ChatLobbyId &lobby_id, const RsPeerId &peer_id) = 0;
+    /**
+     * @brief setChatLobbyPolicy set the relay rules this node applies to a subscribed lobby
+     * @jsonapi{development}
+     * @param[in] lobby_id lobby the rules are for
+     * @param[in] enabled false to relay the lobby as a lobby without rules; the participant table is kept
+     * @param[in] membersSeeEachOther presence of a member goes to every participant, not to the admins only
+     * @param[in] membersTalk lines of a member go to every participant, not to the admins only
+     * @return false if the lobby is not subscribed
+     */
+    virtual bool setChatLobbyPolicy(const ChatLobbyId &lobby_id, bool enabled, bool membersSeeEachOther, bool membersTalk) = 0 ;
+
+    /**
+     * @brief getChatLobbyPolicy get the relay rules and the participant table this node holds for a lobby
+     * @jsonapi{development}
+     * @param[in] lobby_id lobby to get the rules of
+     * @param[out] policy rules and participant table
+     * @return false if this node holds no rules for the lobby
+     */
+    virtual bool getChatLobbyPolicy(const ChatLobbyId &lobby_id, ChatLobbyPolicy &policy) = 0 ;
+
+    /**
+     * @brief setChatLobbyParticipant add a node to the participant table of a lobby this node holds rules for, or change its row
+     * @jsonapi{development}
+     * @param[in] lobby_id lobby the table belongs to
+     * @param[in] node friend the row is for
+     * @param[in] identity identity the node signs with in the lobby; a null id keeps the one already known
+     * @param[in] admin whether the node is an admin of the lobby
+     * @return false if this node holds no rules for the lobby
+     */
+    virtual bool setChatLobbyParticipant(const ChatLobbyId &lobby_id, const RsPeerId &node, const RsGxsId &identity, bool admin) = 0 ;
+
+    /**
+     * @brief removeChatLobbyParticipant remove a node from the participant table of a lobby; it is then treated as a member
+     * @jsonapi{development}
+     * @param[in] lobby_id lobby the table belongs to
+     * @param[in] node friend to remove
+     * @return false if the node has no row in the table
+     */
+    virtual bool removeChatLobbyParticipant(const ChatLobbyId &lobby_id, const RsPeerId &node) = 0 ;
+
+    /**
+     * @brief getChatLobbyRole get what this node was told about a lobby by the friend that holds its relay rules
+     * @jsonapi{development}
+     * @param[in] lobby_id lobby to get the role in
+     * @param[out] role role of this node and rules of the lobby
+     * @return false if nobody told this node of rules for the lobby
+     */
+    virtual bool getChatLobbyRole(const ChatLobbyId &lobby_id, ChatLobbyRole &role) = 0 ;
+
 
     /**
      * @brief acceptLobbyInvite accept a chat invite

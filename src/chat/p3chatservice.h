@@ -126,6 +126,11 @@ public:
     virtual void getChatLobbyList(std::list<ChatLobbyId>& lids) override;
     virtual void clearChatLobby(const ChatId& id)override;
     virtual bool getChatLobbyInfo(const ChatLobbyId& id,ChatLobbyInfo& info) override;
+    virtual bool setChatLobbyPolicy(const ChatLobbyId& lobby_id, bool enabled, bool membersSeeEachOther, bool membersTalk) override;
+    virtual bool getChatLobbyPolicy(const ChatLobbyId& lobby_id, ChatLobbyPolicy& policy) override;
+    virtual bool setChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node, const RsGxsId& identity, bool admin) override;
+    virtual bool removeChatLobbyParticipant(const ChatLobbyId& lobby_id, const RsPeerId& node) override;
+    virtual bool getChatLobbyRole(const ChatLobbyId& lobby_id, ChatLobbyRole& role) override;
     virtual void getListOfNearbyChatLobbies(std::vector<VisibleChatLobbyRecord>& public_lobbies) override;
     virtual void invitePeerToLobby(const ChatLobbyId &lobby_id, const RsPeerId &peer_id) override;
     virtual bool denyLobbyInvite(const ChatLobbyId &id) override ;

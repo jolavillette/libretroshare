@@ -86,6 +86,9 @@ const uint8_t RS_PKT_SUBTYPE_OUTGOING_MAP                 = 0x1C ;
 const uint8_t RS_PKT_SUBTYPE_SUBSCRIBED_CHAT_LOBBY_CONFIG = 0x1D ;
 const uint8_t RS_PKT_SUBTYPE_CHAT_AVATAR_INFO             = 0x1E ;
 const uint8_t RS_PKT_SUBTYPE_CHAT_AVATAR_CONFIG           = 0x1F ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_ROLE              = 0x20 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_IDENTITY          = 0x21 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_POLICY_CONFIG     = 0x22 ;
 
 typedef uint64_t 		ChatLobbyId ;
 typedef uint64_t 		ChatLobbyMsgId ;
@@ -230,6 +233,58 @@ class RsChatLobbyUnsubscribeItem: public RsChatItem
 		void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
 
 		uint64_t lobby_id ;
+};
+
+/// Sent by the node that holds the relay rules of a lobby to one of its
+/// participants: the participant's role and the rules. Informative; the
+/// participant answers with a RsChatLobbyIdentityItem.
+class RsChatLobbyRoleItem: public RsChatItem
+{
+	public:
+		RsChatLobbyRoleItem() :RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_ROLE), lobby_id(0), role_flags(0) {}
+
+		virtual ~RsChatLobbyRoleItem() {}
+
+		void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
+
+		static const uint32_t RULED                  = 0x0001 ;	// the sender applies rules to the lobby
+		static const uint32_t ADMIN                  = 0x0002 ;	// the destination is an admin
+		static const uint32_t MEMBERS_SEE_EACH_OTHER = 0x0004 ;
+		static const uint32_t MEMBERS_TALK           = 0x0008 ;
+
+		uint64_t lobby_id ;
+		uint32_t role_flags ;
+};
+
+/// Sent by a participant to the friend that holds the relay rules of a
+/// lobby: the identity the participant signs with in that lobby. It goes to
+/// that friend only and is not passed on.
+class RsChatLobbyIdentityItem: public RsChatItem
+{
+	public:
+		RsChatLobbyIdentityItem() :RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_IDENTITY), lobby_id(0) {}
+
+		virtual ~RsChatLobbyIdentityItem() {}
+
+		void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
+
+		uint64_t lobby_id ;
+		RsGxsId identity ;
+};
+
+/// Config: the relay rules and the participant table this node holds for a
+/// lobby.
+class RsChatLobbyPolicyConfigItem: public RsChatItem
+{
+	public:
+		RsChatLobbyPolicyConfigItem() :RsChatItem(RS_PKT_SUBTYPE_CHAT_LOBBY_POLICY_CONFIG), lobby_id(0) {}
+
+		virtual ~RsChatLobbyPolicyConfigItem() {}
+
+		void serial_process(RsGenericSerializer::SerializeJob j,RsGenericSerializer::SerializeContext& ctx);
+
+		uint64_t lobby_id ;
+		ChatLobbyPolicy policy ;
 };
 
 class RsChatLobbyConnectChallengeItem: public RsChatItem
