@@ -54,6 +54,7 @@ static const rstime_t		MAX_KEEP_MSG_RECORD                 = 1200 ; // keep msg 
 static const size_t		MAX_HELD_LINES_PER_PHONE            = 1000 ; // lobby lines a home keeps for a phone in background
 static const rstime_t		MAX_HELD_LINE_AGE                   = 86400; // and for at most one day
 static const rstime_t		HELD_ACK_TIMEOUT                    =   60 ; // kept lines not acknowledged after this are sent again
+static const rstime_t		LOBBY_WAKE_GAP                      =  300 ; // a lobby silent this long lets its next line through to a phone in background
 static const rstime_t	 	MAX_KEEP_INACTIVE_NICKNAME          =  180 ; // keep inactive nicknames for 3 mn max.
 static const rstime_t		LOBBY_HISTORY_REQUEST_TIMEOUT       =  120 ; // accept history DATA for 2 mn after the request
 static const uint32_t		LOBBY_HISTORY_MAX_MSGS              = 5000 ; // max messages served / accepted per request
@@ -1157,11 +1158,25 @@ bool DistributedChatService::locked_holdForQuietPhone(const RsPeerId& phone, RsC
 {
 	if(RsChatLobbyMsgItem *line = dynamic_cast<RsChatLobbyMsgItem*>(item))
 	{
-		// A line that mentions the phone goes at once, when there is a link.
-		if(connected && locked_mentionsPhone(phone, *line))
+		HeldForPhone& held(mHeldForPhones[phone]) ;
+
+		// The first line of a lobby since the phone went to background, or
+		// after the lobby was silent for a while, goes at once: the phone
+		// shows it as a notification, so its user knows the lobby is alive
+		// again. What follows closely waits, as before.
+		rstime_t now = time(NULL) ;
+		rstime_t& last(held.lastLine[line->lobby_id]) ;
+		const bool wakes = last == 0 || now >= last + LOBBY_WAKE_GAP ;
+
+		// Without a link nothing can go: the next line after the link is
+		// back will tell.
+		if(connected)
+			last = now ;
+
+		// A line that mentions the phone goes at once too. Both need a link.
+		if(connected && (wakes || locked_mentionsPhone(phone, *line)))
 			return false ;
 
-		HeldForPhone& held(mHeldForPhones[phone]) ;
 		held.lines.push_back(dynamic_cast<RsChatLobbyMsgItem*>(line->duplicate())) ;
 
 		if(mMobilePush)
@@ -1258,7 +1273,12 @@ void DistributedChatService::sendHeldItemsToReturnedPhones()
 
 			if(held.lines.empty() && held.presence.empty())
 			{
-				it = mHeldForPhones.erase(it) ;
+				// Kept while the phone is in background: it tells which
+				// lobbies were silent.
+				if(mMobileLink->isQuietPhone(phone))
+					++it ;
+				else
+					it = mHeldForPhones.erase(it) ;
 				continue ;
 			}
 
@@ -1320,6 +1340,7 @@ void DistributedChatService::sendHeldItemsToReturnedPhones()
 			held.sentBatch = mLastHeldBatch ;
 			held.sentLines = held.lines.size() ;
 			held.sentAt = now ;
+			held.lastLine.clear() ;	// the phone is back
 			batches.push_back(std::make_pair(phone, held.sentBatch)) ;
 			++it ;
 		}
