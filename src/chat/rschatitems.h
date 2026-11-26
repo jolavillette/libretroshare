@@ -86,9 +86,9 @@ const uint8_t RS_PKT_SUBTYPE_OUTGOING_MAP                 = 0x1C ;
 const uint8_t RS_PKT_SUBTYPE_SUBSCRIBED_CHAT_LOBBY_CONFIG = 0x1D ;
 const uint8_t RS_PKT_SUBTYPE_CHAT_AVATAR_INFO             = 0x1E ;
 const uint8_t RS_PKT_SUBTYPE_CHAT_AVATAR_CONFIG           = 0x1F ;
-const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_ROLE              = 0x20 ;
-const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_IDENTITY          = 0x21 ;
-const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_POLICY_CONFIG     = 0x22 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_ROLE              = 0x30 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_IDENTITY          = 0x31 ;
+const uint8_t RS_PKT_SUBTYPE_CHAT_LOBBY_POLICY_CONFIG     = 0x32 ;
 
 typedef uint64_t 		ChatLobbyId ;
 typedef uint64_t 		ChatLobbyMsgId ;

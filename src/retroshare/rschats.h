@@ -240,7 +240,7 @@ enum class RsChatLobbyEventCode: uint8_t
     CHAT_LOBBY_EVENT_PEER_JOINED          = 0x07,	 // RS_CHAT_LOBBY_EVENT_PEER_JOINED
     CHAT_LOBBY_EVENT_PEER_CHANGE_NICKNAME = 0x08,	 // RS_CHAT_LOBBY_EVENT_PEER_CHANGE_NICKNAME
     CHAT_LOBBY_EVENT_KEEP_ALIVE           = 0x09,	 // RS_CHAT_LOBBY_EVENT_KEEP_ALIVE
-    CHAT_LOBBY_POLICY_CHANGED             = 0x0a,	 // the relay rules of a lobby, its participant table or the role this node has in it
+    CHAT_LOBBY_POLICY_CHANGED             = 0x10,	 // the relay rules of a lobby, its participant table or the role this node has in it
 };
 
 enum class RsDistantChatEventCode: uint8_t
