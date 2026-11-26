@@ -60,8 +60,8 @@ define_default_value SQLITE_SOURCE_YEAR "2026"
 define_default_value SQLITE_SOURCE_VERSION "3530200"
 define_default_value SQLITE_SOURCE_SHA256 588ad51949419a56ebe81fe56193d510c559eb94c9a57748387860b5d3069316
 
-define_default_value SQLCIPHER_SOURCE_VERSION "4.4.3"
-define_default_value SQLCIPHER_SOURCE_SHA256 b8df69b998c042ce7f8a99f07cf11f45dfebe51110ef92de95f1728358853133
+define_default_value SQLCIPHER_SOURCE_VERSION "4.20.0"
+define_default_value SQLCIPHER_SOURCE_SHA256 38705f51b61ac0636a5fd064f9a77fafabc7227b2aa2513f1b14c8bb1102affc
 
 define_default_value LIBUPNP_SOURCE_VERSION "1.8.4"
 define_default_value LIBUPNP_SOURCE_SHA256 976c3e4555604cdd8391ed2f359c08c9dead3b6bf131c24ce78e64d6669af2ed
@@ -489,7 +489,7 @@ build_sqlite()
 task_register build_sqlcipher
 build_sqlcipher()
 {
-	#task_run build_sqlite || return $?
+	task_run build_openssl || return $?
 
 	B_dir="sqlcipher-${SQLCIPHER_SOURCE_VERSION}"
 	rm -rf $B_dir
@@ -501,25 +501,39 @@ build_sqlcipher()
 		|| return $?
 
 	tar -xf $T_file || return $?
-	pushd $B_dir
-#	case "${ANDROID_NDK_ARCH}" in
-#	"arm64")
-#	# SQLCipher config.sub is outdated and doesn't recognize newer architectures
-#		rm config.sub
-#		autoreconf --verbose --install --force
-#		automake --add-missing --copy --force-missing
-#	;;
-#	esac
-	./configure --with-pic --build=$(sh ./config.guess) \
-		--host=${cArch}-linux \
-		--prefix="${PREFIX}" --with-sysroot="${SYSROOT}" \
-		--enable-tempstore=yes \
-		--disable-tcl --disable-shared \
-		CFLAGS="-DSQLITE_HAS_CODEC" LDFLAGS="${PREFIX}/lib/libcrypto.a" \
-		|| return $?
-	make -j${HOST_NUM_CPU} || return $?
-	make install || return $?
+	pushd $B_dir || return $?
+
+## SQLCipher's own tools turn its source tree into the single file sqlite3.c.
+## They run on the build machine, so that step uses the host compiler, without
+## the Android one this script exports. Only sqlite3.c is compiled for Android.
+	env -u CC -u CXX -u AR -u RANLIB ./configure || return $?
+	env -u CC -u CXX -u AR -u RANLIB make sqlite3.c || return $?
+
+## SQLITE_HAS_CODEC, SQLITE_TEMP_STORE and the two SQLITE_EXTRA_* are what
+## SQLCipher requires, with OpenSSL as its cryptographic provider.
+## FTS4 as in the SQLite build it replaces. No run time loadable extensions.
+	"${CC}" -c -O2 -fPIC -DNDEBUG \
+		-DSQLITE_HAS_CODEC -DSQLITE_TEMP_STORE=2 \
+		-DSQLITE_EXTRA_INIT=sqlcipher_extra_init \
+		-DSQLITE_EXTRA_SHUTDOWN=sqlcipher_extra_shutdown \
+		-DSQLCIPHER_CRYPTO_OPENSSL \
+		-DSQLITE_THREADSAFE=1 -DHAVE_USLEEP=1 \
+		-DSQLITE_ENABLE_FTS4 -DSQLITE_ENABLE_FTS3_PARENTHESIS \
+		-DSQLITE_OMIT_LOAD_EXTENSION \
+		-I"${PREFIX}/include" \
+		-o sqlite3.o sqlite3.c || return $?
+	rm -f libsqlcipher.a
+	"${AR}" rcs libsqlcipher.a sqlite3.o || return $?
+
+## Installed the way libretroshare looks for it: libsqlcipher.a and
+## sqlcipher/sqlite3.h, apart from a plain SQLite in the same prefix.
+	mkdir -p "${PREFIX}/lib" "${PREFIX}/include/sqlcipher" || return $?
+	cp libsqlcipher.a "${PREFIX}/lib/" || return $?
+	cp sqlite3.h "${PREFIX}/include/sqlcipher/" || return $?
 	popd
+
+	ls -al "${PREFIX}/include/sqlcipher/sqlite3.h" || return $?
+	ls -al "${PREFIX}/lib/libsqlcipher.a"          || return $?
 }
 
 task_register build_libupnp
@@ -961,8 +975,7 @@ build_libretroshare()
 	task_run build_bzlib     || return $?
 	task_run build_openssl   || return $?
 	task_run build_librnp    || return $?
-	task_run build_sqlite    || return $?
-#	task_run build_sqlcipher || return $?
+	task_run build_sqlcipher || return $?
 	task_run build_rapidjson || return $?
 	task_run build_restbed   || return $?
 	task_run build_xapian    || return $?
@@ -979,7 +992,7 @@ build_libretroshare()
 		-D RS_ANDROID=ON -D RS_WARN_DEPRECATED=OFF -D RS_WARN_LESS=ON \
 		-D RS_LIBRETROSHARE_STATIC=OFF -D RS_LIBRETROSHARE_SHARED=ON \
 		-D RS_BRODCAST_DISCOVERY=ON -D RS_EXPORT_JNI_ONLOAD=ON \
-		-D RS_SQLCIPHER=OFF -D RS_DH_PRIME_INIT_CHECK=OFF \
+		-D RS_SQLCIPHER=ON -D RS_DH_PRIME_INIT_CHECK=OFF \
 		-D RS_FORUM_DEEP_INDEX=ON -D RS_JSON_API=ON \
 		-D RS_LIBRETROSHARE_STANDALONE_INSTALL=ON \
 		$RS_EXTRA_CMAKE_OPTS || return $?
