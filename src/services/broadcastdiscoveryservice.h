@@ -63,7 +63,7 @@ public:
 
 	void threadTick() override; /// @see RsTickingThread
 
-	/// A phone in background neither announces itself nor listens (MobileLink).
+	/// A node in phone mode neither announces itself nor listens (MobileLink).
 	void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
 
 protected:
@@ -82,12 +82,12 @@ protected:
 
 	p3MobileLink *mMobileLink = nullptr;
 
-	/// False while the announces are stopped for a phone in background.
-	bool mAnnouncing = true;
+	/// True while the node announces itself and listens.
+	bool mAnnouncing = false;
 
-	/// Stops or resumes the announces and the listening, as the phone goes
-	/// to background or comes back. @return true while announcing.
-	bool followPhoneQuiet();
+	/// Starts the announces and the listening, or stops them when the node
+	/// is set to phone mode. @return true while announcing.
+	bool followPhoneMode();
 
 	/**
 	 * @brief Create result object from data

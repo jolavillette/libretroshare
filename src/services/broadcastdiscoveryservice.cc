@@ -121,15 +121,13 @@ BroadcastDiscoveryService::BroadcastDiscoveryService(
 	createAndroidMulticastLock();
 #endif // def __ANDROID__
 
-	enableMulticastListening();
-
 	mUdcParameters.set_can_discover(true);
 	mUdcParameters.set_can_be_discovered(true);
 	mUdcParameters.set_port(port);
 	mUdcParameters.set_application_id(appId);
 
-	mUdcPeer.Start(mUdcParameters, "");
-	updatePublishedData();
+	/* The announces start at the first tick, once it is known whether the
+	 * node is in phone mode: see followPhoneMode(). */
 }
 
 BroadcastDiscoveryService::~BroadcastDiscoveryService()
@@ -162,37 +160,37 @@ void BroadcastDiscoveryService::updatePublishedData()
 	            BroadcastDiscoveryPack::fromPeerDetails(od).serializeToString());
 }
 
-bool BroadcastDiscoveryService::followPhoneQuiet()
+bool BroadcastDiscoveryService::followPhoneMode()
 {
-	if(mRsPeers.isHiddenNode(mRsPeers.getOwnId())) return mAnnouncing;
+	if(mRsPeers.isHiddenNode(mRsPeers.getOwnId())) return false;
 
-	const bool quiet = mMobileLink && mMobileLink->localQuiet();
-	if(quiet == !mAnnouncing) return mAnnouncing;
+	/* A broadcast every few seconds, a listening thread and, on Android, the
+	 * Wi-Fi multicast lock keep a phone's radio and processor awake around
+	 * the clock; a phone reaches its homes at the addresses it knows. */
+	const bool wanted = !(mMobileLink && mMobileLink->getPhoneMode());
+	if(wanted == mAnnouncing) return mAnnouncing;
 
-	if(quiet)
-	{
-		/* A broadcast every few seconds, and the multicast lock, keep the
-		 * phone's radio and processor awake for nothing: nobody adds a
-		 * nearby node while the application is in background. */
-		mUdcPeer.Stop(true);
-		disableMulticastListening();
-		RS_STACK_MUTEX(mDiscoveredDataMutex);
-		mDiscoveredData.clear();
-	}
-	else
+	if(wanted)
 	{
 		enableMulticastListening();
 		mUdcPeer.Start(mUdcParameters, "");
 		updatePublishedData();
 	}
+	else
+	{
+		mUdcPeer.Stop(true);
+		disableMulticastListening();
+		RS_STACK_MUTEX(mDiscoveredDataMutex);
+		mDiscoveredData.clear();
+	}
 
-	mAnnouncing = !quiet;
+	mAnnouncing = wanted;
 	return mAnnouncing;
 }
 
 void BroadcastDiscoveryService::threadTick()
 {
-	if(!followPhoneQuiet())
+	if(!followPhoneMode())
 	{
 		for(uint32_t i=0;i<10;++i)
 		{
