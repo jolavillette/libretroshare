@@ -1528,6 +1528,9 @@ void DistributedChatService::sendConnectionChallenge(ChatLobbyId lobby_id)
 
 	for(std::set<RsPeerId>::const_iterator it(ids.begin());it!=ids.end();++it)
 	{
+		// Each challenge would wake a phone in background; it gets them again once back (MobileLink).
+		if(mMobileLink && mMobileLink->isQuietPhone(*it)) continue;
+
 		RsChatLobbyConnectChallengeItem *item = new RsChatLobbyConnectChallengeItem ;
 
 		uint64_t code = makeConnexionChallengeCode(*it,lobby_id,msg_id) ;

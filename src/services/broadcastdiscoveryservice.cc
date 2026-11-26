@@ -32,6 +32,7 @@
 #include "serialiser/rsserializer.h"
 #include "retroshare/rsevents.h"
 #include "util/rserrorbubbleorexit.h"
+#include "services/p3mobilelink.h"
 
 #ifdef __ANDROID__
 #	include "rs_android/retroshareserviceandroid.hpp"
@@ -161,8 +162,46 @@ void BroadcastDiscoveryService::updatePublishedData()
 	            BroadcastDiscoveryPack::fromPeerDetails(od).serializeToString());
 }
 
+bool BroadcastDiscoveryService::followPhoneQuiet()
+{
+	if(mRsPeers.isHiddenNode(mRsPeers.getOwnId())) return mAnnouncing;
+
+	const bool quiet = mMobileLink && mMobileLink->localQuiet();
+	if(quiet == !mAnnouncing) return mAnnouncing;
+
+	if(quiet)
+	{
+		/* A broadcast every few seconds, and the multicast lock, keep the
+		 * phone's radio and processor awake for nothing: nobody adds a
+		 * nearby node while the application is in background. */
+		mUdcPeer.Stop(true);
+		disableMulticastListening();
+		RS_STACK_MUTEX(mDiscoveredDataMutex);
+		mDiscoveredData.clear();
+	}
+	else
+	{
+		enableMulticastListening();
+		mUdcPeer.Start(mUdcParameters, "");
+		updatePublishedData();
+	}
+
+	mAnnouncing = !quiet;
+	return mAnnouncing;
+}
+
 void BroadcastDiscoveryService::threadTick()
 {
+	if(!followPhoneQuiet())
+	{
+		for(uint32_t i=0;i<10;++i)
+		{
+			if(shouldStop()) return;
+			rstime::rs_usleep(500*1000);
+		}
+		return;
+	}
+
 	if( mUdcParameters.can_discover() &&
 	        !mRsPeers.isHiddenNode(mRsPeers.getOwnId()) )
 	{
