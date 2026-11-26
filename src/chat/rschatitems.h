@@ -251,6 +251,7 @@ class RsChatLobbyRoleItem: public RsChatItem
 		static const uint32_t ADMIN                  = 0x0002 ;	// the destination is an admin
 		static const uint32_t MEMBERS_SEE_EACH_OTHER = 0x0004 ;
 		static const uint32_t MEMBERS_TALK           = 0x0008 ;
+		static const uint32_t EXCLUDED               = 0x0010 ;	// the destination was removed from the lobby
 
 		uint64_t lobby_id ;
 		uint32_t role_flags ;
