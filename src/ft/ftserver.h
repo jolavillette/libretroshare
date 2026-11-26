@@ -349,6 +349,11 @@ public:
 
     static bool encryptHash(const RsFileHash& hash, RsFileHash& hash_of_hash);
 
+    /// The hashes a tunnel request may carry for the files offered outside
+    /// the shared directories (attachments): each file's hash and the hash
+    /// of it, used by encrypted tunnels.
+    void getExtraFileTunnelHashes(std::set<RsFileHash>& hashes) const;
+
     /***************************************************************/
     /*************** Data Transfer Interface ***********************/
     /***************************************************************/

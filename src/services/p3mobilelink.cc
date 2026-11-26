@@ -30,6 +30,7 @@
 
 #include "chat/distributedchat.h"
 #include "chat/rschatitems.h"
+#include "ft/ftserver.h"
 #include "grouter/groutertypes.h"
 #include "grouter/p3grouter.h"
 #include "gxstunnel/p3gxstunnel.h"
@@ -90,6 +91,11 @@ static const rstime_t BACK_FROM_QUIET_GRACE = 120;
 /// delay at each failure up to the maximum. The link manager alone tries
 /// every 140 s at best, which leaves a phone with a single home cut off for
 /// minutes after each change of network or restart of the home.
+/// How often a phone reads the list of the files it offers, in seconds, and
+/// the most hashes a home keeps for one phone.
+static const rstime_t OFFERED_FILES_CHECK_PERIOD = 5;
+static const size_t MAX_PHONE_FILE_HASHES = 2000;
+
 static const rstime_t HOME_DIAL_FIRST_DELAY = 5;
 static const rstime_t HOME_DIAL_MAX_DELAY = 120;
 
@@ -343,6 +349,9 @@ bool p3MobileLink::wantsTunnelRequest( const RsPeerId& peer,
 	// Distant messages: the hash is computed from the destination identity.
 	if(phone.mGRouterHashes.count(hash)) return true;
 
+	// A file the phone offers: an attachment it posted.
+	if(phone.mFileHashes.count(hash)) return true;
+
 	// Distant chat: the destination identity is in clear in the hash.
 	return phone.mOwnIds.count(
 	            p3GxsTunnelService::destinationGxsIdFromHash(hash) ) > 0;
@@ -488,7 +497,73 @@ int p3MobileLink::tick()
 		sendItem(ack);
 	}
 
+	sendOfferedFiles();
+
 	return 0;
+}
+
+void p3MobileLink::sendOfferedFiles()
+{
+	if(!mFiles) return;
+
+	bool read;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		rstime_t now = time(nullptr);
+		read = now >= mLastOfferedFilesCheck + OFFERED_FILES_CHECK_PERIOD;
+		if(read) mLastOfferedFilesCheck = now;
+	}
+
+	// Outside the lock: the file service has its own.
+	std::set<RsFileHash> offered;
+	if(read) mFiles->getExtraFileTunnelHashes(offered);
+
+	std::vector<RsPeerId> homes;
+	std::vector<RsFileHash> hashes;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		if(read && offered != mOfferedFiles)
+		{
+			mOfferedFiles = offered;
+			for(auto& home: mHomes) home.second.mFilesSent = false;
+		}
+
+		// A home that was told nothing has nothing to forget.
+		for(auto& home: mHomes)
+			if(home.second.mHelloSent && !home.second.mFilesSent)
+			{
+				home.second.mFilesSent = true;
+				homes.push_back(home.first);
+			}
+		if(homes.empty()) return;
+
+		hashes.assign(mOfferedFiles.begin(), mOfferedFiles.end());
+	}
+
+	for(const RsPeerId& home: homes)
+	{
+		auto files = new RsMobileLinkFilesItem();
+		files->PeerId(home);
+		files->mHashes = hashes;
+		sendItem(files);
+	}
+}
+
+void p3MobileLink::handleFiles(const RsMobileLinkFilesItem& item)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto it = mPhones.find(item.PeerId());
+	if(it == mPhones.end()) return;
+
+	it->second.mFileHashes.clear();
+	for(const RsFileHash& hash: item.mHashes)
+	{
+		if(it->second.mFileHashes.size() >= MAX_PHONE_FILE_HASHES) break;
+		it->second.mFileHashes.insert(hash);
+	}
 }
 
 void p3MobileLink::dialMissingHomes()
@@ -770,6 +845,10 @@ bool p3MobileLink::recvItem(RsItem* item)
 	case RS_PKT_SUBTYPE_MOBILE_LINK_HELD_ACK:
 		if(auto ack = dynamic_cast<RsMobileLinkHeldAckItem*>(item))
 			handleHeldAck(*ack);
+		break;
+	case RS_PKT_SUBTYPE_MOBILE_LINK_FILES:
+		if(auto files = dynamic_cast<RsMobileLinkFilesItem*>(item))
+			handleFiles(*files);
 		break;
 	default:
 		break;

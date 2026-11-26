@@ -44,6 +44,7 @@ const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_PONG  = 0x05;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_KEEP_ALIVE_STOCK = 0x06;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_HELD_END = 0x07;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_HELD_ACK = 0x08;
+const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_FILES = 0x09;
 
 class RsMobileLinkItem: public RsItem
 {
@@ -208,6 +209,23 @@ public:
 	{ RS_SERIAL_PROCESS(mBatch); }
 
 	uint32_t mBatch = 0;
+};
+
+/// Phone to home: the tunnel hashes of the files the phone offers, the
+/// attachments it posted. Its home lets the tunnel requests for them reach
+/// it. Sent after each HELLO and when the list changes.
+class RsMobileLinkFilesItem: public RsMobileLinkItem
+{
+public:
+	RsMobileLinkFilesItem(): RsMobileLinkItem(RS_PKT_SUBTYPE_MOBILE_LINK_FILES) {}
+
+	void serial_process( RsGenericSerializer::SerializeJob j,
+	                     RsGenericSerializer::SerializeContext& ctx ) override
+	{ RS_SERIAL_PROCESS(mHashes); }
+
+	void clear() override { mHashes.clear(); }
+
+	std::vector<RsFileHash> mHashes;
 };
 
 class RsMobileLinkSerialiser: public RsServiceSerializer
