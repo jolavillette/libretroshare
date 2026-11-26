@@ -210,6 +210,10 @@ class DistributedChatService
 			/// lobby: enough for the phone's participant lists.
 			std::map<std::pair<ChatLobbyId,RsGxsId>,RsChatLobbyEventItem*> presence ;
 
+			/// When the last line of each lobby came, since the phone went
+			/// to background: a lobby that was silent lets one line through.
+			std::map<ChatLobbyId,rstime_t> lastLine ;
+
 			/// The first sentLines lines were sent as batch sentBatch at
 			/// sentAt and wait for the phone's acknowledgement; 0 when
 			/// nothing is waiting.
