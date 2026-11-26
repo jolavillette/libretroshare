@@ -196,7 +196,7 @@ class DistributedChatService
 
 		/// Tells the friend that holds the rules of the lobby, if any,
 		/// which identity this node signs with in it.
-		void sendLobbyIdentityToHome(const ChatLobbyId& lobby_id) ;
+		void sendLobbyIdentityToHost(const ChatLobbyId& lobby_id) ;
 
 		void postLobbyPolicyChanged(const ChatLobbyId& lobby_id) ;
 

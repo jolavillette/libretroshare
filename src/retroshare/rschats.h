@@ -405,8 +405,8 @@ struct ChatLobbyParticipant : RsSerializable
     }
 };
 
-/// The relay rules a node applies to a lobby: what it passes on between the
-/// participants. A lobby without rules is relayed to every participating
+/// The relay rules a node, the host, applies to a lobby: what it passes on
+/// between the participants. A lobby with such rules is a hosted room. A lobby without rules is relayed to every participating
 /// friend. The node that holds the rules is always an admin.
 struct ChatLobbyPolicy : RsSerializable
 {
@@ -435,14 +435,14 @@ struct ChatLobbyRole : RsSerializable
     bool admin ;                // this node is an admin of the lobby
     bool membersSeeEachOther ;
     bool membersTalk ;
-    RsPeerId home ;             // the friend that holds the rules
+    RsPeerId host ;             // the friend that holds the rules
 
     void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) override {
         RS_SERIAL_PROCESS(ruled);
         RS_SERIAL_PROCESS(admin);
         RS_SERIAL_PROCESS(membersSeeEachOther);
         RS_SERIAL_PROCESS(membersTalk);
-        RS_SERIAL_PROCESS(home);
+        RS_SERIAL_PROCESS(host);
     }
 };
 

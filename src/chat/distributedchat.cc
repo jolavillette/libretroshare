@@ -1461,13 +1461,13 @@ void DistributedChatService::handleRecvLobbyRole(RsChatLobbyRoleItem *item)
 			role.admin = item->role_flags & RsChatLobbyRoleItem::ADMIN ;
 			role.membersSeeEachOther = item->role_flags & RsChatLobbyRoleItem::MEMBERS_SEE_EACH_OTHER ;
 			role.membersTalk = item->role_flags & RsChatLobbyRoleItem::MEMBERS_TALK ;
-			role.home = item->PeerId() ;
+			role.host = item->PeerId() ;
 		}
 		else
 		{
 			std::map<ChatLobbyId,ChatLobbyRole>::iterator rit = mLobbyRoles.find(item->lobby_id) ;
 
-			if(rit == mLobbyRoles.end() || rit->second.home != item->PeerId())
+			if(rit == mLobbyRoles.end() || rit->second.host != item->PeerId())
 				return ;
 
 			mLobbyRoles.erase(rit) ;
@@ -1475,12 +1475,12 @@ void DistributedChatService::handleRecvLobbyRole(RsChatLobbyRoleItem *item)
 		}
 	}
 	if(subscribed)
-		sendLobbyIdentityToHome(item->lobby_id) ;
+		sendLobbyIdentityToHost(item->lobby_id) ;
 
 	postLobbyPolicyChanged(item->lobby_id) ;
 }
 
-void DistributedChatService::sendLobbyIdentityToHome(const ChatLobbyId& lobby_id)
+void DistributedChatService::sendLobbyIdentityToHost(const ChatLobbyId& lobby_id)
 {
 	RS_STACK_MUTEX(mDistributedChatMtx);
 
@@ -1494,7 +1494,7 @@ void DistributedChatService::sendLobbyIdentityToHome(const ChatLobbyId& lobby_id
 
 	item->lobby_id = lobby_id ;
 	item->identity = it->second.gxs_id ;
-	item->PeerId(rit->second.home) ;
+	item->PeerId(rit->second.host) ;
 
 	sendChatItem(item) ;
 }
@@ -2390,7 +2390,7 @@ bool DistributedChatService::acceptLobbyInvite(const ChatLobbyId& lobby_id,const
     // send AKN item
 	sendLobbyStatusNewPeer(lobby_id) ;
 
-	sendLobbyIdentityToHome(lobby_id) ;
+	sendLobbyIdentityToHost(lobby_id) ;
 
 	return true ;
 }
@@ -2771,7 +2771,7 @@ bool DistributedChatService::setIdentityForChatLobby(const ChatLobbyId& lobby_id
 
     triggerConfigSave() ;
 
-    sendLobbyIdentityToHome(lobby_id) ;
+    sendLobbyIdentityToHost(lobby_id) ;
 
     return true ;
 }
