@@ -427,16 +427,18 @@ public:
 /// rules, and the identity that node took in it.
 struct ChatLobbyParticipant : RsSerializable
 {
-    ChatLobbyParticipant() : admin(false) {}
+    ChatLobbyParticipant() : admin(false), excluded(false) {}
 
     RsPeerId node ;      // the friend that was invited
     RsGxsId  identity ;  // the identity it signs with in the lobby; null until it is known
     bool     admin ;     // its packets go to everyone, and it receives the packets of everyone
+    bool     excluded ;  // removed from the room: nothing is passed on to it nor accepted from it
 
     void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) override {
         RS_SERIAL_PROCESS(node);
         RS_SERIAL_PROCESS(identity);
         RS_SERIAL_PROCESS(admin);
+        RS_SERIAL_PROCESS(excluded);
     }
 };
 
@@ -464,10 +466,11 @@ struct ChatLobbyPolicy : RsSerializable
 /// relay rules. It is informative: the rules are applied by that friend.
 struct ChatLobbyRole : RsSerializable
 {
-    ChatLobbyRole() : ruled(false), admin(false), membersSeeEachOther(false), membersTalk(false) {}
+    ChatLobbyRole() : ruled(false), admin(false), excluded(false), membersSeeEachOther(false), membersTalk(false) {}
 
     bool ruled ;                // false: nobody told this node of rules for the lobby
     bool admin ;                // this node is an admin of the lobby
+    bool excluded ;             // the host removed this node from the lobby
     bool membersSeeEachOther ;
     bool membersTalk ;
     RsPeerId host ;             // the friend that holds the rules
@@ -475,6 +478,7 @@ struct ChatLobbyRole : RsSerializable
     void serial_process(RsGenericSerializer::SerializeJob j, RsGenericSerializer::SerializeContext &ctx) override {
         RS_SERIAL_PROCESS(ruled);
         RS_SERIAL_PROCESS(admin);
+        RS_SERIAL_PROCESS(excluded);
         RS_SERIAL_PROCESS(membersSeeEachOther);
         RS_SERIAL_PROCESS(membersTalk);
         RS_SERIAL_PROCESS(host);
@@ -652,11 +656,11 @@ public:
     virtual bool setChatLobbyParticipant(const ChatLobbyId &lobby_id, const RsPeerId &node, const RsGxsId &identity, bool admin) = 0 ;
 
     /**
-     * @brief removeChatLobbyParticipant remove a node from the participant table of a lobby; it is then treated as a member
+     * @brief removeChatLobbyParticipant remove a node from a lobby this node holds rules for: nothing of the lobby is passed on to it nor accepted from it any more, and it is told so. Inviting it again takes it back.
      * @jsonapi{development}
-     * @param[in] lobby_id lobby the table belongs to
+     * @param[in] lobby_id lobby to remove the node from
      * @param[in] node friend to remove
-     * @return false if the node has no row in the table
+     * @return false if this node holds no rules for the lobby
      */
     virtual bool removeChatLobbyParticipant(const ChatLobbyId &lobby_id, const RsPeerId &node) = 0 ;
 

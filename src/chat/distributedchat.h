@@ -201,6 +201,13 @@ class DistributedChatService
 		RsGxsId locked_participantIdentity(const ChatLobbyId& lobby_id, const ChatLobbyParticipant& participant) ;
 
 		static bool isAdminNode(const ChatLobbyPolicy& policy, const RsPeerId& node) ;
+
+		/// Whether the rules of the lobby remove node from it.
+		bool locked_excludedNode(const ChatLobbyId& lobby_id, const RsPeerId& node) const ;
+
+		/// Whether the rules of the lobby remove the participant that signs
+		/// with identity from it.
+		bool locked_excludedIdentity(const ChatLobbyId& lobby_id, const RsGxsId& identity) ;
 		static ChatLobbyParticipant *findParticipant(ChatLobbyPolicy& policy, const RsPeerId& node) ;
 
 		/// Whether the number of participants of the lobby is kept from peer.

@@ -539,6 +539,9 @@ void DistributedChatService::handleRecvChatLobbyListRequest(RsChatLobbyListReque
 		{
 			const ChatLobbyEntry& lobby(it->second) ;
 
+            if(locked_excludedNode(it->first, clr->PeerId()))
+                continue ;
+
             if(IS_PUBLIC_LOBBY(lobby.lobby_flags) ||
                              (lobby.previously_known_peers.find(clr->PeerId()) != lobby.previously_known_peers.end()
                             ||lobby.participating_friends.find(clr->PeerId()) != lobby.participating_friends.end()) )
@@ -1061,6 +1064,11 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 
 	ChatLobbyEntry& lobby(it->second) ;
 
+	// A node the rules of the lobby removed from it is not listened to, and
+	// neither is what the removed participant wrote, whoever passes it on.
+	if(locked_excludedNode(item->lobby_id, peer_id) || locked_excludedIdentity(item->lobby_id, item->signature.keyId))
+		return false ;
+
 	// Adds the peer id to the list of friend participants, even if it's not original msg source
 
 	if(peer_id != mServControl->getOwnId())
@@ -1112,6 +1120,9 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 		if((*it)!=peer_id)
 		{
 			if(adminsOnly && !isAdminNode(*adminsOnly, *it))
+				continue ;
+
+			if(locked_excludedNode(item->lobby_id, *it))
 				continue ;
 
 			const bool connected = mServControl->isPeerConnected(mServType, *it) ;
@@ -1269,7 +1280,7 @@ const ChatLobbyPolicy *DistributedChatService::locked_restrictedToAdmins(const R
 	// could sign as an admin.
 	if(authorVerified)
 		for(const ChatLobbyParticipant& participant : policy.participants)
-			if(participant.admin && locked_participantIdentity(obj.lobby_id, participant) == obj.signature.keyId)
+			if(participant.admin && !participant.excluded && locked_participantIdentity(obj.lobby_id, participant) == obj.signature.keyId)
 				return nullptr ;
 
 	const bool line = dynamic_cast<const RsChatLobbyMsgItem*>(&obj) != nullptr ;
@@ -1291,7 +1302,35 @@ bool DistributedChatService::isAdminNode(const ChatLobbyPolicy& policy, const Rs
 {
 	for(const ChatLobbyParticipant& participant : policy.participants)
 		if(participant.node == node)
-			return participant.admin ;
+			return participant.admin && !participant.excluded ;
+
+	return false ;
+}
+
+bool DistributedChatService::locked_excludedNode(const ChatLobbyId& lobby_id, const RsPeerId& node) const
+{
+	std::map<ChatLobbyId,ChatLobbyPolicy>::const_iterator pit = mLobbyPolicies.find(lobby_id) ;
+
+	if(pit == mLobbyPolicies.end() || !pit->second.enabled)
+		return false ;
+
+	for(const ChatLobbyParticipant& participant : pit->second.participants)
+		if(participant.node == node)
+			return participant.excluded ;
+
+	return false ;
+}
+
+bool DistributedChatService::locked_excludedIdentity(const ChatLobbyId& lobby_id, const RsGxsId& identity)
+{
+	std::map<ChatLobbyId,ChatLobbyPolicy>::const_iterator pit = mLobbyPolicies.find(lobby_id) ;
+
+	if(pit == mLobbyPolicies.end() || !pit->second.enabled)
+		return false ;
+
+	for(const ChatLobbyParticipant& participant : pit->second.participants)
+		if(participant.excluded && locked_participantIdentity(lobby_id, participant) == identity)
+			return true ;
 
 	return false ;
 }
@@ -1324,6 +1363,10 @@ void DistributedChatService::locked_sendLobbyRole(const ChatLobbyId& lobby_id, c
 	if(policy.enabled)
 	{
 		item->role_flags |= RsChatLobbyRoleItem::RULED ;
+
+		for(const ChatLobbyParticipant& participant : policy.participants)
+			if(participant.node == node && participant.excluded)
+				item->role_flags |= RsChatLobbyRoleItem::EXCLUDED ;
 
 		if(isAdminNode(policy, node))     item->role_flags |= RsChatLobbyRoleItem::ADMIN ;
 		if(policy.membersSeeEachOther)    item->role_flags |= RsChatLobbyRoleItem::MEMBERS_SEE_EACH_OTHER ;
@@ -1443,18 +1486,37 @@ bool DistributedChatService::removeChatLobbyParticipant(const ChatLobbyId& lobby
 		if(pit == mLobbyPolicies.end())
 			return false ;
 
-		std::vector<ChatLobbyParticipant>& participants(pit->second.participants) ;
-		std::vector<ChatLobbyParticipant>::iterator it = participants.begin() ;
+		// The row is kept, marked: a node without a row would be a member
+		// again as soon as it sends something.
+		ChatLobbyParticipant *participant = findParticipant(pit->second, node) ;
 
-		while(it != participants.end() && it->node != node)
-			++it ;
+		if(participant == nullptr)
+		{
+			pit->second.participants.push_back(ChatLobbyParticipant()) ;
+			participant = &pit->second.participants.back() ;
+			participant->node = node ;
+		}
+		participant->excluded = true ;
+		participant->admin = false ;
 
-		if(it == participants.end())
-			return false ;
+		locked_sendLobbyRole(lobby_id, pit->second, node) ;
 
-		participants.erase(it) ;
+		// This node leaves the lobby as far as the removed node can tell: it
+		// stops sending its lobby objects here.
+		std::map<ChatLobbyId,ChatLobbyEntry>::iterator it = _chat_lobbys.find(lobby_id) ;
 
-		locked_sendLobbyRole(lobby_id, pit->second, node) ;	// it is a member from now on
+		if(it != _chat_lobbys.end())
+		{
+			it->second.participating_friends.erase(node) ;
+			it->second.previously_known_peers.erase(node) ;
+		}
+		if(mServControl->isPeerConnected(mServType, node))
+		{
+			RsChatLobbyUnsubscribeItem *item = new RsChatLobbyUnsubscribeItem ;
+			item->lobby_id = lobby_id ;
+			item->PeerId(node) ;
+			sendChatItem(item) ;
+		}
 	}
 	triggerConfigSave() ;
 	postLobbyPolicyChanged(lobby_id) ;
@@ -1501,6 +1563,10 @@ void DistributedChatService::handleRecvLobbyRole(RsChatLobbyRoleItem *item)
 
 			role.ruled = true ;
 			role.admin = item->role_flags & RsChatLobbyRoleItem::ADMIN ;
+			role.excluded = item->role_flags & RsChatLobbyRoleItem::EXCLUDED ;
+
+			if(role.excluded)
+				subscribed = false ;	// the host does not want this node's identity any more
 			role.membersSeeEachOther = item->role_flags & RsChatLobbyRoleItem::MEMBERS_SEE_EACH_OTHER ;
 			role.membersTalk = item->role_flags & RsChatLobbyRoleItem::MEMBERS_TALK ;
 			role.host = item->PeerId() ;
@@ -1559,7 +1625,17 @@ void DistributedChatService::handleRecvLobbyIdentity(RsChatLobbyIdentityItem *it
 		// stays out of the table, and so is a member.
 		ChatLobbyParticipant *participant = findParticipant(pit->second, item->PeerId()) ;
 
-		if(participant == nullptr || participant->identity == item->identity)
+		if(participant == nullptr || participant->excluded)
+			return ;
+
+		// A participant that tells its identity is in the lobby: it gets the
+		// lobby's objects from now on, without waiting for its first one.
+		std::map<ChatLobbyId,ChatLobbyEntry>::iterator it = _chat_lobbys.find(item->lobby_id) ;
+
+		if(it != _chat_lobbys.end())
+			it->second.participating_friends.insert(item->PeerId()) ;
+
+		if(participant->identity == item->identity)
 			return ;
 
 		participant->identity = item->identity ;
@@ -2214,6 +2290,12 @@ void DistributedChatService::invitePeerToLobby(const ChatLobbyId& lobby_id, cons
 			pit->second.participants.push_back(participant) ;
 			newParticipant = true ;
 		}
+		else if(findParticipant(pit->second, peer_id)->excluded)
+		{
+			// Inviting a node that was removed takes it back.
+			findParticipant(pit->second, peer_id)->excluded = false ;
+			newParticipant = true ;
+		}
 		locked_sendLobbyRole(lobby_id, pit->second, peer_id) ;
 	}
 
@@ -2289,6 +2371,9 @@ void DistributedChatService::handleRecvLobbyInvite(RsChatLobbyInviteItem *item)
 				if(it->second.lobby_topic.empty() && !item->lobby_topic.empty())
 					it->second.lobby_topic = item->lobby_topic;
 			}
+
+			if(locked_excludedNode(item->lobby_id, item->PeerId()))
+				return ;
 
 			it->second.participating_friends.insert(item->PeerId()) ;
 			return ;
