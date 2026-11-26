@@ -40,6 +40,7 @@
 #include "gxs/rsgixs.h"
 #include "services/p3idservice.h"
 #include "services/p3mobilelink.h"
+#include "services/p3mobilepush.h"
 
 //#define DEBUG_CHAT_LOBBIES 1
 //#define DEBUG_TIME_SHIFT 1		// dedicated switch for the chat time-shift statistics traces
@@ -1162,6 +1163,12 @@ bool DistributedChatService::locked_holdForQuietPhone(const RsPeerId& phone, RsC
 
 		HeldForPhone& held(mHeldForPhones[phone]) ;
 		held.lines.push_back(dynamic_cast<RsChatLobbyMsgItem*>(line->duplicate())) ;
+
+		if(mMobilePush)
+		{
+			auto lobby = _chat_lobbys.find(line->lobby_id) ;
+			mMobilePush->lineHeldForPhone(phone, line->lobby_id, lobby != _chat_lobbys.end() ? lobby->second.lobby_name : std::string(), *line) ;
+		}
 
 		while(held.lines.size() > MAX_HELD_LINES_PER_PHONE)
 		{

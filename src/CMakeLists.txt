@@ -27,6 +27,7 @@ list(
 	retroshare/rstokenservice.h
 	retroshare/rsturtle.h	
 	retroshare/rsmobilelink.h
+	retroshare/rsmobilepush.h
 	retroshare/rsgossipdiscovery.h
 	retroshare/rsgxscommon.h
 	retroshare/rsposted.h
@@ -370,6 +371,7 @@ list(
 	rsitems/rshistoryitems.cc
 	rsitems/rsrttitems.cc
 	rsitems/rsmobilelinkitems.cc
+	rsitems/rsmobilepushitems.cc
 	rsitems/rsserviceinfoitems.cc )
 
 list(
@@ -412,6 +414,7 @@ list(
 	rsitems/rsposteditems.h
 	rsitems/rsrttitems.h
 	rsitems/rsmobilelinkitems.h
+	rsitems/rsmobilepushitems.h
 	rsitems/rsserviceids.h
 	rsitems/rsserviceinfoitems.h
 	rsitems/rsstatusitems.h )
@@ -503,6 +506,7 @@ list(
 	services/p3banlist.cc
 	services/p3rtt.cc
 	services/p3mobilelink.cc
+	services/p3mobilepush.cc
 	services/rseventsservice.cc
 	services/p3gxscircles.cc
 	services/p3gxscommon.cc
@@ -523,6 +527,7 @@ list(
 	services/p3gxsreputation.h
 	services/p3heartbeat.h
 	services/p3mobilelink.h
+	services/p3mobilepush.h
 	services/p3idservice.h
 	services/p3msgservice.h
 	services/p3postbase.h
