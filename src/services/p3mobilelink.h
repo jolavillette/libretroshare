@@ -89,6 +89,14 @@ public:
 	/// Phone side: whether this node is a phone in background.
 	bool localQuiet();
 
+	/// Home side: whether phone acknowledges the lobby lines kept for it.
+	/// The home then keeps them until the acknowledgement comes.
+	bool acknowledgesHeld(const RsPeerId& phone);
+
+	/// Home side: tells phone that the kept lines of batch are all sent.
+	/// To call right after sending them.
+	void sendHeldEnd(const RsPeerId& phone, uint32_t batch);
+
 	/// How long the connection to peer may stay silent before it is taken
 	/// for dead, in seconds; 0 for the usual timeouts. A phone in background
 	/// and its home send each other only the phone's keep-alive and its
@@ -177,6 +185,9 @@ private:
 
 		bool mQuiet = false;
 		rstime_t mQuietEndedAt = 0;
+
+		/// Whether the phone acknowledges the lobby lines kept for it.
+		bool mAcksHeld = false;
 		uint32_t mKeepAliveInterval = 0;
 		rstime_t mLastHello = 0;
 		rstime_t mLastPing = 0;
@@ -189,6 +200,8 @@ private:
 	void handleHome(const RsMobileLinkHomeItem& item);
 	void handleState(const RsMobileLinkStateItem& item);
 	void handlePing(const RsMobileLinkPingItem& item);
+	void handleHeldEnd(const RsMobileLinkHeldEndItem& item);
+	void handleHeldAck(const RsMobileLinkHeldAckItem& item);
 	void handlePong(const RsMobileLinkPongItem& item);
 	void handleKeepAliveStock(const RsMobileLinkKeepAliveStockItem& item);
 

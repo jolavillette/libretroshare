@@ -51,6 +51,7 @@ static const int 		LOBBY_CACHE_CLEANING_PERIOD         =   10 ; // clean lobby c
 static const rstime_t		MAX_KEEP_MSG_RECORD                 = 1200 ; // keep msg record for 1200 secs max.
 static const size_t		MAX_HELD_LINES_PER_PHONE            = 1000 ; // lobby lines a home keeps for a phone in background
 static const rstime_t		MAX_HELD_LINE_AGE                   = 86400; // and for at most one day
+static const rstime_t		HELD_ACK_TIMEOUT                    =   60 ; // kept lines not acknowledged after this are sent again
 static const rstime_t	 	MAX_KEEP_INACTIVE_NICKNAME          =  180 ; // keep inactive nicknames for 3 mn max.
 static const rstime_t  		MAX_DELAY_BETWEEN_LOBBY_KEEP_ALIVE  =  120 ; // send keep alive packet every 2 minutes.
 static const rstime_t 		MAX_KEEP_PUBLIC_LOBBY_RECORD        =   60 ; // keep inactive lobbies records for 60 secs max.
@@ -1070,11 +1071,18 @@ bool DistributedChatService::bounceLobbyObject(RsChatLobbyBouncingObject *item,c
 	// Forward to allparticipating friends, except this peer.
 
 	for(std::set<RsPeerId>::const_iterator it(lobby.participating_friends.begin());it!=lobby.participating_friends.end();++it)
-		if((*it)!=peer_id && mServControl->isPeerConnected(mServType, *it)) 
+		if((*it)!=peer_id)
 		{
+			const bool connected = mServControl->isPeerConnected(mServType, *it) ;
+
 			// A phone in background gets now only the lines that mention it;
-			// the rest waits for its return (MobileLink).
-			if(mMobileLink && mMobileLink->isQuietPhone(*it) && locked_holdForQuietPhone(*it, item))
+			// the rest waits for its return. A phone in background whose
+			// link is down, as happens at each change of network, gets
+			// nothing now: everything waits (MobileLink).
+			if(mMobileLink && mMobileLink->isQuietPhone(*it) && locked_holdForQuietPhone(*it, item, connected))
+				continue ;
+
+			if(!connected)
 				continue ;
 
 			RsChatLobbyBouncingObject *obj2 = item->duplicate() ; // makes a copy
@@ -1127,20 +1135,22 @@ DistributedChatService::~DistributedChatService()
 	}
 }
 
-bool DistributedChatService::locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item)
+bool DistributedChatService::locked_holdForQuietPhone(const RsPeerId& phone, RsChatLobbyBouncingObject *item, bool connected)
 {
 	if(RsChatLobbyMsgItem *line = dynamic_cast<RsChatLobbyMsgItem*>(item))
 	{
-		if(locked_mentionsPhone(phone, *line))
+		// A line that mentions the phone goes at once, when there is a link.
+		if(connected && locked_mentionsPhone(phone, *line))
 			return false ;
 
-		std::list<RsChatLobbyMsgItem*>& lines(mHeldForPhones[phone].lines) ;
-		lines.push_back(dynamic_cast<RsChatLobbyMsgItem*>(line->duplicate())) ;
+		HeldForPhone& held(mHeldForPhones[phone]) ;
+		held.lines.push_back(dynamic_cast<RsChatLobbyMsgItem*>(line->duplicate())) ;
 
-		while(lines.size() > MAX_HELD_LINES_PER_PHONE)
+		while(held.lines.size() > MAX_HELD_LINES_PER_PHONE)
 		{
-			delete lines.front() ;
-			lines.pop_front() ;
+			delete held.lines.front() ;
+			held.lines.pop_front() ;
+			if(held.sentLines > 0) --held.sentLines ;
 		}
 		return true ;
 	}
@@ -1191,6 +1201,7 @@ void DistributedChatService::sendHeldItemsToReturnedPhones()
 		return ;
 
 	std::list<RsChatItem*> to_send ;
+	std::list<std::pair<RsPeerId,uint32_t> > batches ;
 	{
 		RsStackMutex stack(mDistributedChatMtx); /********** STACK LOCKED MTX ******/
 
@@ -1199,41 +1210,124 @@ void DistributedChatService::sendHeldItemsToReturnedPhones()
 		for(auto it = mHeldForPhones.begin(); it != mHeldForPhones.end();)
 		{
 			const RsPeerId& phone(it->first) ;
+			HeldForPhone& held(it->second) ;
 
-			if(mMobileLink->isQuietPhone(phone) || !mServControl->isPeerConnected(mServType, phone))
+			// What became too old goes, also for a phone that never comes
+			// back. The phone takes no event older than
+			// MAX_KEEP_MSG_RECORD - 100.
+
+			while(!held.lines.empty() && (rstime_t)held.lines.front()->sendTime + MAX_HELD_LINE_AGE <= now)
+			{
+				delete held.lines.front() ;
+				held.lines.pop_front() ;
+				if(held.sentLines > 0) --held.sentLines ;
+			}
+
+			for(auto pit = held.presence.begin(); pit != held.presence.end();)
+				if((rstime_t)pit->second->sendTime + MAX_KEEP_MSG_RECORD - 100 <= now)
+				{
+					delete pit->second ;
+					pit = held.presence.erase(pit) ;
+				}
+				else
+					++pit ;
+
+			if(held.lines.empty() && held.presence.empty())
+			{
+				it = mHeldForPhones.erase(it) ;
+				continue ;
+			}
+
+			const bool connected = mServControl->isPeerConnected(mServType, phone) ;
+
+			if(!connected || (held.sentBatch != 0 && now >= held.sentAt + HELD_ACK_TIMEOUT))
+			{
+				// Lines sent and not acknowledged are sent again at the
+				// phone's next return.
+				held.sentBatch = 0 ;
+				held.sentLines = 0 ;
+			}
+
+			if(!connected || mMobileLink->isQuietPhone(phone) || held.sentBatch != 0)
 			{
 				++it ;
 				continue ;
 			}
 
 			// The presence first, so that the participant lists are right
-			// before the lines come. The phone takes no event older than
-			// MAX_KEEP_MSG_RECORD - 100.
+			// before the lines come.
 
-			for(auto& presence: it->second.presence)
-				if((rstime_t)presence.second->sendTime + MAX_KEEP_MSG_RECORD - 100 > now)
-				{
-					presence.second->PeerId(phone) ;
-					to_send.push_back(presence.second) ;
-				}
-				else
-					delete presence.second ;
+			for(auto& presence: held.presence)
+			{
+				presence.second->PeerId(phone) ;
+				to_send.push_back(presence.second) ;
+			}
+			held.presence.clear() ;
 
-			for(RsChatLobbyMsgItem *line: it->second.lines)
-				if((rstime_t)line->sendTime + MAX_HELD_LINE_AGE > now)
+			if(held.lines.empty())
+			{
+				it = mHeldForPhones.erase(it) ;
+				continue ;
+			}
+
+			if(!mMobileLink->acknowledgesHeld(phone))
+			{
+				for(RsChatLobbyMsgItem *line: held.lines)
 				{
 					line->PeerId(phone) ;
 					to_send.push_back(line) ;
 				}
-				else
-					delete line ;
+				it = mHeldForPhones.erase(it) ;
+				continue ;
+			}
 
-			it = mHeldForPhones.erase(it) ;
+			// The lines stay here until the phone says it has them: a link
+			// that dies while they travel must not lose them.
+
+			for(RsChatLobbyMsgItem *line: held.lines)
+			{
+				RsChatLobbyMsgItem *copy = dynamic_cast<RsChatLobbyMsgItem*>(line->duplicate()) ;
+				copy->PeerId(phone) ;
+				to_send.push_back(copy) ;
+			}
+
+			if(++mLastHeldBatch == 0) ++mLastHeldBatch ;
+
+			held.sentBatch = mLastHeldBatch ;
+			held.sentLines = held.lines.size() ;
+			held.sentAt = now ;
+			batches.push_back(std::make_pair(phone, held.sentBatch)) ;
+			++it ;
 		}
 	}
 
 	for(RsChatItem *item: to_send)
 		checkSizeAndSendLobbyMessage(item) ;
+
+	for(const auto& batch: batches)
+		mMobileLink->sendHeldEnd(batch.first, batch.second) ;
+}
+
+void DistributedChatService::heldLinesAcknowledged(const RsPeerId& phone, uint32_t batch)
+{
+	RsStackMutex stack(mDistributedChatMtx); /********** STACK LOCKED MTX ******/
+
+	auto it = mHeldForPhones.find(phone) ;
+	if(it == mHeldForPhones.end() || batch == 0 || it->second.sentBatch != batch)
+		return ;
+
+	HeldForPhone& held(it->second) ;
+
+	for(; held.sentLines > 0 && !held.lines.empty(); --held.sentLines)
+	{
+		delete held.lines.front() ;
+		held.lines.pop_front() ;
+	}
+	held.sentBatch = 0 ;
+	held.sentLines = 0 ;
+
+	if(held.lines.empty() && held.presence.empty())
+		mHeldForPhones.erase(it) ;
 }
 
 void DistributedChatService::sendLobbyStatusString(const ChatLobbyId& lobby_id,const std::string& status_string)

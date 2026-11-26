@@ -42,6 +42,8 @@ const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_STATE = 0x03;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_PING  = 0x04;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_PONG  = 0x05;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_KEEP_ALIVE_STOCK = 0x06;
+const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_HELD_END = 0x07;
+const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_HELD_ACK = 0x08;
 
 class RsMobileLinkItem: public RsItem
 {
@@ -175,6 +177,37 @@ public:
 	void clear() override { mKeepAlives.clear(); }
 
 	std::vector<RsMobileLinkKeepAlive> mKeepAlives;
+};
+
+/// Home to phone: sent right after the lobby lines the home kept for the
+/// phone, at the priority of chat items so that it leaves after them. The
+/// phone answers with a HELD_ACK of the same batch number.
+class RsMobileLinkHeldEndItem: public RsMobileLinkItem
+{
+public:
+	RsMobileLinkHeldEndItem(): RsMobileLinkItem(RS_PKT_SUBTYPE_MOBILE_LINK_HELD_END)
+	{ setPriorityLevel(QOS_PRIORITY_RS_CHAT_ITEM); }
+
+	void serial_process( RsGenericSerializer::SerializeJob j,
+	                     RsGenericSerializer::SerializeContext& ctx ) override
+	{ RS_SERIAL_PROCESS(mBatch); }
+
+	uint32_t mBatch = 0;
+};
+
+/// Phone to home: the lines of batch mBatch arrived, the home may forget
+/// them. With batch 0, sent after each HELLO: the phone acknowledges the
+/// lines kept for it, so the home keeps them until it does.
+class RsMobileLinkHeldAckItem: public RsMobileLinkItem
+{
+public:
+	RsMobileLinkHeldAckItem(): RsMobileLinkItem(RS_PKT_SUBTYPE_MOBILE_LINK_HELD_ACK) {}
+
+	void serial_process( RsGenericSerializer::SerializeJob j,
+	                     RsGenericSerializer::SerializeContext& ctx ) override
+	{ RS_SERIAL_PROCESS(mBatch); }
+
+	uint32_t mBatch = 0;
 };
 
 class RsMobileLinkSerialiser: public RsServiceSerializer

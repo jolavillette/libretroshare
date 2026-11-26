@@ -455,6 +455,11 @@ int p3MobileLink::tick()
 	{
 		sendHello(home);
 		sendState(home);
+
+		// This phone acknowledges the lobby lines its home keeps for it.
+		auto ack = new RsMobileLinkHeldAckItem();
+		ack->PeerId(home);
+		sendItem(ack);
 	}
 
 	return 0;
@@ -690,6 +695,14 @@ bool p3MobileLink::recvItem(RsItem* item)
 		if(auto stock = dynamic_cast<RsMobileLinkKeepAliveStockItem*>(item))
 			handleKeepAliveStock(*stock);
 		break;
+	case RS_PKT_SUBTYPE_MOBILE_LINK_HELD_END:
+		if(auto end = dynamic_cast<RsMobileLinkHeldEndItem*>(item))
+			handleHeldEnd(*end);
+		break;
+	case RS_PKT_SUBTYPE_MOBILE_LINK_HELD_ACK:
+		if(auto ack = dynamic_cast<RsMobileLinkHeldAckItem*>(item))
+			handleHeldAck(*ack);
+		break;
 	default:
 		break;
 	}
@@ -721,6 +734,7 @@ void p3MobileLink::handleHello(const RsMobileLinkHelloItem& item)
 			phone.mLobbyIds = item.mLobbyIds;
 			phone.mGRouterHashes = grouterHashes;
 			phone.mLastHello = time(nullptr);
+			phone.mAcksHeld = false;	// said again after each HELLO
 		}
 	}
 
@@ -771,6 +785,52 @@ void p3MobileLink::handleState(const RsMobileLinkStateItem& item)
 
 	// Back to active, the phone sends its keep-alives itself again.
 	if(!item.mQuiet) it->second.mKeepAliveStock.clear();
+}
+
+bool p3MobileLink::acknowledgesHeld(const RsPeerId& phone)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto it = mPhones.find(phone);
+	return it != mPhones.end() && it->second.mAcksHeld;
+}
+
+void p3MobileLink::sendHeldEnd(const RsPeerId& phone, uint32_t batch)
+{
+	auto end = new RsMobileLinkHeldEndItem();
+	end->PeerId(phone);
+	end->mBatch = batch;
+	sendItem(end);
+}
+
+void p3MobileLink::handleHeldEnd(const RsMobileLinkHeldEndItem& item)
+{
+	// The item travels behind the lines of its batch, at their priority:
+	// they are all here.
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+		if(!mPhoneMode || !mHomes.count(item.PeerId())) return;
+	}
+
+	auto ack = new RsMobileLinkHeldAckItem();
+	ack->PeerId(item.PeerId());
+	ack->mBatch = item.mBatch;
+	sendItem(ack);
+}
+
+void p3MobileLink::handleHeldAck(const RsMobileLinkHeldAckItem& item)
+{
+	if(item.mBatch == 0)
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		auto it = mPhones.find(item.PeerId());
+		if(it != mPhones.end()) it->second.mAcksHeld = true;
+		return;
+	}
+
+	// Outside the lock: the chat service calls this service back.
+	if(mChat) mChat->heldLinesAcknowledged(item.PeerId(), item.mBatch);
 }
 
 void p3MobileLink::handlePing(const RsMobileLinkPingItem& item)
