@@ -79,6 +79,12 @@ public:
 	void getLobbyPreferences(
 	        std::map<uint64_t, RsMobilePushLobbyMode>& modes ) override;
 
+	/// Home side: whether phone registered for push. Such a phone may be
+	/// frozen by its system while its link still looks alive: what is sent
+	/// to it then is neither read nor shown, so a line meant to alert it
+	/// has to be kept and pushed instead.
+	bool pushesTo(const RsPeerId& phone);
+
 	/// Home side: the chat service kept line of lobby lobbyName for phone.
 	/// Called with the chat service's mutex held: it only seals and queues.
 	void lineHeldForPhone( const RsPeerId& phone, uint64_t lobby,
