@@ -41,6 +41,7 @@
 
 class p3ServiceControl;
 class DistributedChatService;
+class ftServer;
 
 /**
  * The MobileLink service, in both its roles.
@@ -130,6 +131,10 @@ public:
 	/// and sends them for it on its home. Set once at start-up.
 	void setChatService(DistributedChatService* chat) { mChat = chat; }
 
+	/// The file service, which knows the files this node offers outside its
+	/// shared directories. Set once at start-up.
+	void setFileServer(ftServer* files) { mFiles = files; }
+
 	/// Platform hooks, set by the Android service before the first login:
 	/// sleepAllowedChanged(true) when this phone may sleep (in background,
 	/// with a connected home that serves it), false when it must stay
@@ -168,6 +173,7 @@ private:
 	struct HomeState
 	{
 		bool mHelloSent = false;
+		bool mFilesSent = false;
 		bool mServing = false;
 		rstime_t mLastPong = 0;
 		uint32_t mLastPongSeq = 0;
@@ -188,6 +194,9 @@ private:
 
 		/// Whether the phone acknowledges the lobby lines kept for it.
 		bool mAcksHeld = false;
+
+		/// The tunnel hashes of the files the phone offers.
+		std::set<RsFileHash> mFileHashes;
 		uint32_t mKeepAliveInterval = 0;
 		rstime_t mLastHello = 0;
 		rstime_t mLastPing = 0;
@@ -202,6 +211,7 @@ private:
 	void handlePing(const RsMobileLinkPingItem& item);
 	void handleHeldEnd(const RsMobileLinkHeldEndItem& item);
 	void handleHeldAck(const RsMobileLinkHeldAckItem& item);
+	void handleFiles(const RsMobileLinkFilesItem& item);
 	void handlePong(const RsMobileLinkPongItem& item);
 	void handleKeepAliveStock(const RsMobileLinkKeepAliveStockItem& item);
 
@@ -277,6 +287,15 @@ private:
 
 	/// Phone side: dials the known homes that are not connected.
 	void dialMissingHomes();
+
+	/// Phone side: the tunnel hashes of the files this phone offers, as last
+	/// read, and when; sendOfferedFiles() tells the homes that do not have
+	/// the current list.
+	std::set<RsFileHash> mOfferedFiles;
+	rstime_t mLastOfferedFilesCheck = 0;
+	void sendOfferedFiles();
+
+	ftServer* mFiles = nullptr;
 
 	/// Phone side: what the last HELLO said.
 	std::vector<RsGxsId> mOwnIds;

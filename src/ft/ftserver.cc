@@ -1555,6 +1555,22 @@ bool ftServer::decryptItem(const RsTurtleGenericDataItem *encrypted_item,const R
 // This doesn't "encrypt" the hash. It just uses a one way function to make the real hash impossible to
 // figure out from the hash of the hash.
 //
+void ftServer::getExtraFileTunnelHashes(std::set<RsFileHash>& hashes) const
+{
+	hashes.clear();
+
+	std::vector<FileInfo> files;
+	mFtExtra->getExtraFileList(files);
+
+	for(const FileInfo& file: files)
+	{
+		RsFileHash hashOfHash;
+		encryptHash(file.hash, hashOfHash);
+		hashes.insert(file.hash);
+		hashes.insert(hashOfHash);
+	}
+}
+
 bool ftServer::encryptHash(const RsFileHash& hash, RsFileHash& hash_of_hash)
 {
 	hash_of_hash = RsDirUtil::sha1sum(hash.toByteArray(),hash.SIZE_IN_BYTES);

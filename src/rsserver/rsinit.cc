@@ -1953,6 +1953,7 @@ int RsServer::StartupRetroShare()
 #endif
 #ifdef RS_ENABLE_GXS
 	RsGxsNetService::setMobileLink(mMobileLink);
+	mMobileLink->setFileServer(ftserver);
 #endif
 
 #ifdef SERVICES_DSDV
