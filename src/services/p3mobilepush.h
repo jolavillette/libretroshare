@@ -34,6 +34,7 @@
 #include "retroshare/rsmobilepush.h"
 #include "rsitems/rsmobilepushitems.h"
 #include "services/p3service.h"
+#include "turtle/turtletypes.h"
 #include "util/rstime.h"
 
 class p3MobileLink;
@@ -49,7 +50,9 @@ class RsChatLobbyMsgItem;
  * On a home it records the registrations of the phones among its friends.
  * When the chat service keeps a lobby line for a phone, it seals the line
  * with the phone's key and queues it for the sender process, which reads the
- * queue through RsMobilePush.
+ * queue through RsMobilePush. It also queues a notification without any text
+ * when somebody asks for a distant chat with a phone that is not there to
+ * answer.
  */
 class p3MobilePush: public RsMobilePush, public p3FastService,
         public p3Config, public pqiServiceMonitor
@@ -78,6 +81,11 @@ public:
 	                       const std::string& lobbyName,
 	                       const RsChatLobbyMsgItem& line );
 
+	/// Home side: the router got a new tunnel request for hash. Called with
+	/// the router's mutex held, for every request: it only looks the
+	/// destination up and queues.
+	void tunnelRequestSeen(const TurtleFileHash& hash);
+
 	// p3FastService
 	int tick() override;
 	bool recvItem(RsItem* item) override;
@@ -101,10 +109,30 @@ private:
 		/// that was last worked out: see lineHeldForPhone().
 		double mAllowance = 0;
 		rstime_t mAllowanceTime = 0;
+
+		/// The phone's identities, as MobileLink last gave them. Saved: a
+		/// phone that is away is not there to say them again.
+		std::set<RsGxsId> mOwnIds;
+
+		/// Whether the phone is connected and in front, as of the last tick.
+		bool mPresent = false;
+
+		/// When the phone was last told of a distant chat request, 0 once it
+		/// has been present since.
+		rstime_t mDistantChatNotified = 0;
 	};
 
 	void handleRegistration( const RsPeerId& peer,
 	                         const RsMobilePushRegistration& registration );
+
+	/// Home side: reads from MobileLink which phones are present, and their
+	/// identities.
+	void watchPhones();
+
+	/// Home side: seals clear for phone and queues it. False when it cannot
+	/// be sealed.
+	bool locked_queue( const RsPeerId& phone, const PhoneState& state,
+	                   const std::string& clear, rstime_t now );
 
 	/// Phone side: sends the registration to the homes that do not have it.
 	void sendRegistrationToHomes();

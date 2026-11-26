@@ -1764,6 +1764,7 @@ int RsServer::StartupRetroShare()
 	pqih -> addService(mMobilePush, true);
 	rsMobilePush = mMobilePush;
 	chatSrv->setMobilePush(mMobilePush);
+	tr->setMobilePush(mMobilePush);
 
 	mBwCtrl->setMobileLink(mMobileLink);
 	mReputations->setMobileLink(mMobileLink);
