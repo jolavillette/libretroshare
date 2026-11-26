@@ -88,7 +88,9 @@ static const rstime_t QUIET_TRAFFIC_LOG_PERIOD = 600;
 static const rstime_t BACK_FROM_QUIET_GRACE = 120;
 
 /// A phone dials a home it lost after this many seconds, then doubles the
-/// delay at each failure up to the maximum. The link manager alone tries
+/// delay at each failure up to the maximum: a home that restarts takes
+/// about a minute to listen again, and with a longer maximum the phone
+/// waited another minute after that. The link manager alone tries
 /// every 140 s at best, which leaves a phone with a single home cut off for
 /// minutes after each change of network or restart of the home.
 /// How often a phone reads the list of the files it offers, in seconds, and
@@ -97,7 +99,7 @@ static const rstime_t OFFERED_FILES_CHECK_PERIOD = 5;
 static const size_t MAX_PHONE_FILE_HASHES = 2000;
 
 static const rstime_t HOME_DIAL_FIRST_DELAY = 5;
-static const rstime_t HOME_DIAL_MAX_DELAY = 120;
+static const rstime_t HOME_DIAL_MAX_DELAY = 30;
 
 static rstime_t silenceToleranceFor(uint32_t keepAliveInterval)
 {
@@ -262,6 +264,32 @@ uint32_t p3MobileLink::sendPings()
 
 bool p3MobileLink::keepAliveNow(uint32_t timeoutSeconds)
 {
+	// No home is there: this wake is the moment to dial them. The tick does
+	// it within a second; wait here, so that the platform keeps the phone
+	// awake until one answers or the time is up.
+	{
+		std::unique_lock<std::mutex> lock(mMtx);
+
+		auto homeConnected = [this]()
+		{
+			for(const auto& home: mHomes)
+				if(mKnownHomes.count(home.first)) return true;
+			return false;
+		};
+
+		if(mPhoneMode && !mKnownHomes.empty() && !homeConnected())
+		{
+			for(const RsPeerId& home: mKnownHomes)
+			{
+				HomeDial& dial = mHomeDials[home];
+				dial.mDelay = HOME_DIAL_FIRST_DELAY;
+				dial.mNext = 1;
+			}
+			return mPongReceived.wait_for(
+			            lock, std::chrono::seconds(timeoutSeconds), homeConnected );
+		}
+	}
+
 	uint32_t seq = sendPings();
 	if(seq == 0) return false;
 
@@ -716,8 +744,19 @@ void p3MobileLink::updateSleepAllowed()
 	{
 		std::lock_guard<std::mutex> lock(mMtx);
 		if(mPhoneMode && mQuiet)
+		{
+			// With a home that serves it, the phone sleeps between its
+			// keep-alives. When the homes it knows are all away it sleeps
+			// too, and dials them at each wake: staying awake until one
+			// comes back emptied the battery as long as the home was down.
+			bool homesAway = !mKnownHomes.empty();
 			for(const auto& home: mHomes)
-				if(home.second.mServing) { allowed = true; break; }
+			{
+				if(home.second.mServing) allowed = true;
+				if(mKnownHomes.count(home.first)) homesAway = false;
+			}
+			if(homesAway) allowed = true;
+		}
 	}
 
 	if(mSleepAllowed.exchange(allowed) == allowed) return;
@@ -1147,7 +1186,10 @@ void p3MobileLink::statusChangeLocked(const std::list<pqiServicePeer>& plist)
 	for(const pqiServicePeer& peer: plist)
 	{
 		if(peer.actions & RS_SERVICE_PEER_CONNECTED)
+		{
 			mHomes[peer.id] = HomeState();
+			mPongReceived.notify_all();	// keepAliveNow() may wait for a home
+		}
 
 		if(peer.actions & (RS_SERVICE_PEER_DISCONNECTED | RS_SERVICE_PEER_REMOVED))
 			mHomes.erase(peer.id);
