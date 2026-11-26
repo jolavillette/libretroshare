@@ -57,7 +57,10 @@ class RsControl
 public:
 	/// TODO: This should return a reference instead of a pointer!
 	static RsControl* instance();
-	static void earlyInitNotificationSystem() { rsControl = instance(); }
+	/// Creates the control object, and with it the events service. A shutdown
+	/// stops that service: when the same process runs the core again, this
+	/// starts it again, before the login.
+	static void earlyInitNotificationSystem();
 
 	/* Real Startup Fn */
 	virtual int StartupRetroShare() = 0;

@@ -62,6 +62,7 @@ class p3LinkMgrIMPL;
 class p3NetMgrIMPL;
 class p3HistoryMgr;
 class RsPluginManager;
+class RsEventsService;
 
 /* The Main Interface Class - for controlling the server */
 
@@ -119,6 +120,10 @@ public:
 		/* Config */
 
 		virtual void    ConfigFinalSave( );
+
+		/// Starts the events service unless it runs: rsGlobalShutDown()
+		/// stops it with the other service threads.
+		void startEventsService();
         virtual RsConfigMgr *configManager() const override { return mConfigMgr; }
         virtual void	startServiceThread(RsTickingThread *t, const std::string &threadName) ;
 
@@ -168,6 +173,9 @@ public:
         // This list contains all threaded services. It will be used to shut them down properly.
 
         std::list<RsTickingThread*> mRegisteredServiceThreads ;
+
+        // Created with this object, before any login.
+        RsEventsService *mEventsService ;
         std::list<RsGeneralDataService*> mRegisteredDataServices ;
 
         /* GXS */
