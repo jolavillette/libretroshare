@@ -909,6 +909,7 @@ RsGRouter *rsGRouter = NULL ;
 #ifdef RS_RTT
 #include "services/p3rtt.h"
 #include "services/p3mobilelink.h"
+#include "services/p3mobilepush.h"
 #endif
 
 
@@ -1758,6 +1759,12 @@ int RsServer::StartupRetroShare()
 	mHeart->setMobileLink(mMobileLink);
 	chatSrv->setMobileLink(mMobileLink);
 	mMobileLink->setChatService(chatSrv);
+
+	p3MobilePush *mMobilePush = new p3MobilePush(serviceCtrl, mMobileLink);
+	pqih -> addService(mMobilePush, true);
+	rsMobilePush = mMobilePush;
+	chatSrv->setMobilePush(mMobilePush);
+
 	mBwCtrl->setMobileLink(mMobileLink);
 	mReputations->setMobileLink(mMobileLink);
 	if(mBanList) mBanList->setMobileLink(mMobileLink);
@@ -1807,6 +1814,7 @@ int RsServer::StartupRetroShare()
 	serviceCtrl->registerServiceMonitor(chatSrv, chatSrv->getServiceInfo().mServiceType);
 	serviceCtrl->registerServiceMonitor(mBwCtrl, mBwCtrl->getServiceInfo().mServiceType);
 	serviceCtrl->registerServiceMonitor(mMobileLink, mMobileLink->getServiceInfo().mServiceType);
+	serviceCtrl->registerServiceMonitor(mMobilePush, mMobilePush->getServiceInfo().mServiceType);
 
 	/**************************************************************************/
     // Turtle search for GXS services
@@ -1834,6 +1842,7 @@ int RsServer::StartupRetroShare()
 	mConfigMgr->addConfiguration("p3Status.cfg"    , mStatusSrv);
 	mConfigMgr->addConfiguration("turtle.cfg"      , tr);
 	mConfigMgr->addConfiguration("mobilelink.cfg"  , mMobileLink);
+	mConfigMgr->addConfiguration("mobilepush.cfg"  , mMobilePush);
 
     if(mBanList != NULL)
 		mConfigMgr->addConfiguration("banlist.cfg"     , mBanList);

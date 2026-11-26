@@ -55,6 +55,9 @@ enum class RsServiceType : uint16_t
 	/// Between a phone and its home, the friend that spares it (MobileLink)
 	MOBILE_LINK                = 0x0029,
 
+	/// How a home reaches a phone through its platform's push service (MobilePush)
+	MOBILE_PUSH                = 0x002a,
+
 	BANLIST                    = 0x0101,
 	STATUS                     = 0x0102,
     FRIEND_SERVER              = 0x0103,

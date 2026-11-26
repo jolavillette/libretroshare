@@ -49,6 +49,7 @@ class RsChatLobbyEventItem ;
 class RsChatLobbyBouncingObject ;
 class RsGixs ;
 class p3MobileLink ;
+class p3MobilePush ;
 
 class DistributedChatService
 {
@@ -62,6 +63,10 @@ class DistributedChatService
 		/// The service that tells which friends are phones in background,
 		/// and whether this node is one (MobileLink). Set once at start-up.
 		void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink ; }
+
+		/// The service that turns the lines kept for a phone into push
+		/// notifications (MobilePush). Set once at start-up.
+		void setMobilePush(p3MobilePush *mobilePush) { mMobilePush = mobilePush ; }
 
 		/// Phone side (MobileLink): count keep-alives for lobby lobby_id,
 		/// signed now for later, the first one dated from and the next ones
@@ -231,6 +236,7 @@ class DistributedChatService
 		void sendHeldItemsToReturnedPhones() ;
 
 		p3MobileLink *mMobileLink = nullptr ;
+		p3MobilePush *mMobilePush = nullptr ;
 		std::map<RsPeerId,HeldForPhone> mHeldForPhones ;	// locked by mDistributedChatMtx
 		uint32_t mLastHeldBatch = 0 ;						// locked by mDistributedChatMtx
 };
