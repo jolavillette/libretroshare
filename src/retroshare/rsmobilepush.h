@@ -32,6 +32,10 @@
 
 class RsMobilePush;
 
+/**
+ * Pointer to global instance of RsMobilePush service implementation
+ * @jsonapi{development}
+ */
 extern RsMobilePush* rsMobilePush;
 
 /// What a phone gives its homes so that they can reach it through the push
