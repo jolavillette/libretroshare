@@ -310,6 +310,12 @@ void p3MobilePush::getLobbyPreferences(
 /*                                Home side                                   */
 /******************************************************************************/
 
+bool p3MobilePush::pushesTo(const RsPeerId& phone)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+	return mPhones.count(phone) > 0;
+}
+
 void p3MobilePush::lineHeldForPhone( const RsPeerId& phone, uint64_t lobby,
                                      const std::string& lobbyName,
                                      const RsChatLobbyMsgItem& line )
