@@ -344,6 +344,11 @@ bool 	ftDataMultiplex::workQueued()
 		return true;
 	}
 
+	if (!mChunksToVerify.empty())
+	{
+		return true;
+	}
+
 	return false;
 }
 	
@@ -420,6 +425,10 @@ bool 	ftDataMultiplex::doWork()
 				break;
 		}
 	}
+
+	/* One chunk check per pass: each one reads a chunk back from disk, and
+	 * the requests of the friends must not wait for a whole batch. */
+	verifyOneReceivedChunk();
 
 	/* Only Handle One Search Per Period.... 
 	 * Lower Priority
@@ -520,7 +529,6 @@ bool ftDataMultiplex::dispatchReceivedChunkCheckSum()
 			/* error */
 			continue ;
 		}
-		ftFileCreator *client = itc->second.mCreator ;
 
 		for(uint32_t n=0;n<MAX_CHECKSUM_CHECK_PER_FILE && !it->second._received.empty();++n)
 		{
@@ -531,15 +539,53 @@ bool ftDataMultiplex::dispatchReceivedChunkCheckSum()
 			else
 			{
 #ifdef MPLEX_DEBUG
-				std::cerr << "ftDataMultiplex::dispatchReceivedChunkCheckSum(): checking chunk " << chunk_number << " with hash " << it->second._map[chunk_number].toStdString() << std::endl;
+				std::cerr << "ftDataMultiplex::dispatchReceivedChunkCheckSum(): queuing chunk " << chunk_number << " with hash " << it->second._map[chunk_number].toStdString() << std::endl;
 #endif
-				client->verifyChunk(chunk_number,it->second._map[chunk_number]) ;
+				// Read back and checked by the multiplexer thread: the main loop,
+				// which calls this, must not wait for the disk.
+				mChunksToVerify.push_back(ftChunkToVerify{ it->first, (uint32_t)chunk_number, it->second._map[chunk_number] }) ;
 			}
 			it->second._received.pop_back() ;
 		}
 		++it ;
 	}
 	return true ;
+}
+
+/* Multiplexer thread: reads back one downloaded chunk and checks it against
+ * the checksum a source sent. */
+void ftDataMultiplex::verifyOneReceivedChunk()
+{
+	{
+		RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
+		if(mChunksToVerify.empty())
+			return;
+	}
+
+	// The file creator is used without dataMtx: mProviderUseMtx keeps it alive.
+	RS_STACK_MUTEX(mProviderUseMtx);
+
+	ftFileCreator *creator = NULL;
+	ftChunkToVerify chunk;
+
+	{
+		RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
+
+		if(mChunksToVerify.empty())
+			return;
+
+		chunk = mChunksToVerify.front();
+		mChunksToVerify.pop_front();
+
+		std::map<RsFileHash, ftClient>::iterator itc = mClients.find(chunk.hash);
+
+		if(itc == mClients.end())
+			return;	// the download has ended or was cancelled since
+
+		creator = itc->second.mCreator;
+	} // dataMtx released
+
+	creator->verifyChunk(chunk.chunk_number, chunk.checksum);
 }
 
 // A chunk map has arrived. It can be two different situations:
