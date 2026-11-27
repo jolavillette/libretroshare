@@ -689,6 +689,9 @@ void p3MobileLink::updateQuietPeers()
 	mQuietPeers.swap(quietPeers);
 }
 
+/// Debug probe, util/rssocketcensus.cc.
+void rsLogSocketCensus();
+
 void p3MobileLink::logQuietTraffic()
 {
 	rstime_t now = time(nullptr);
@@ -706,6 +709,8 @@ void p3MobileLink::logQuietTraffic()
 		quietPeers = mQuietPeers;
 		traffic.swap(mQuietTraffic);
 	}
+
+	if(getPhoneMode()) rsLogSocketCensus();
 
 	// The peers still quiet, even if nothing passed, and the peers that
 	// were quiet for part of the period.

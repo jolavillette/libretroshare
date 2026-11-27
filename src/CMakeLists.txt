@@ -670,6 +670,7 @@ list(
 	util/dnsresolver.cc
 	util/extaddrfinder.cc
 	util/rsdebug.cc
+	util/rssocketcensus.cc
 	util/rsdnsutils.cc
 	util/rsnet.cc
 	util/rsnet_ss.cc
