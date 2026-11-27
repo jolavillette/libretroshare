@@ -484,6 +484,16 @@ public:
      */
     virtual bool getOwnAvatar(RsGxsImage& avatar) = 0;
 
+    /**
+     * @brief setOwnAvatar set the avatar of our own node
+     * @jsonapi{development}
+     * The image is sent as it is to the friend nodes, which expect a JPEG
+     * or a PNG. An empty image removes the avatar.
+     * @param[in] avatar new avatar, at most 32767 bytes
+     * @return false if the image is too big, true otherwise
+     */
+    virtual bool setOwnAvatar(const RsGxsImage& avatar) = 0;
+
     /****************************************/
     /*            Chat lobbies              */
     /****************************************/

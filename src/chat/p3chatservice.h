@@ -180,6 +180,9 @@ public:
 	/// @see RsChats
 	bool getOwnAvatar(RsGxsImage& avatar) override;
 
+	/// @see RsChats
+	bool setOwnAvatar(const RsGxsImage& avatar) override;
+
 	/*!
 		 * Sets the avatar data and size for client's account
 		 * @param data is copied, so should be destroyed by the caller

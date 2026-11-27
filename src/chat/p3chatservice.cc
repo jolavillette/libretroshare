@@ -1600,6 +1600,18 @@ bool p3ChatService::getOwnAvatar(RsGxsImage& avatar)
 	return true;
 }
 
+bool p3ChatService::setOwnAvatar(const RsGxsImage& avatar)
+{
+	if(avatar.mSize > MAX_AVATAR_JPEG_SIZE)
+	{
+		RsErr() << __PRETTY_FUNCTION__ << " avatar of " << avatar.mSize << " bytes refused, the maximum is " << MAX_AVATAR_JPEG_SIZE << std::endl;
+		return false;
+	}
+
+	setOwnNodeAvatarData(avatar.mData, static_cast<int>(avatar.mSize));
+	return true;
+}
+
 void p3ChatService::sendAvatarRequest(const RsPeerId& peer_id)
 {
 	if(!isOnline(peer_id))
