@@ -639,6 +639,17 @@ private:
     /// Removes the phones in background from peers.
     static void removeQuietPhones(std::set<RsPeerId>& peers);
 
+    /// Removes from peers the phones among phones that a periodic round
+    /// asked for their updates less than PHONE_ASK_PERIOD ago, and notes the
+    /// others as asked now. A phone absent from peers (away, or in
+    /// background) is forgotten, so it is asked at once when it is back.
+    /// To call with mNxsMutex held.
+    void locked_removePhonesAskedRecently( std::set<RsPeerId>& peers,
+                                           const std::set<RsPeerId>& phones );
+
+    /// When a periodic round last asked each phone for its updates.
+    std::map<RsPeerId, rstime_t> mPhoneAskedTs;
+
     uint32_t mSyncTs;
     uint32_t mLastKeyPublishTs;
     uint32_t mLastCleanRejectedMessages;

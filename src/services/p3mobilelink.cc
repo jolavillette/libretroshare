@@ -391,6 +391,12 @@ bool p3MobileLink::wantsSearchRequest(const RsPeerId& peer)
 	return mPhones.find(peer) == mPhones.end();
 }
 
+bool p3MobileLink::isPhone(const RsPeerId& peer)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+	return mPhones.find(peer) != mPhones.end();
+}
+
 bool p3MobileLink::isQuietPhone(const RsPeerId& peer)
 {
 	std::lock_guard<std::mutex> lock(mMtx);

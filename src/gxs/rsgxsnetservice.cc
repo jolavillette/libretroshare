@@ -298,6 +298,7 @@
 //
 //static const uint32_t GIXS_CUT_OFF                            =            0;
 static const uint32_t SYNC_PERIOD                             =           60;
+static const uint32_t PHONE_ASK_PERIOD                        =         1800; // A phone (MobileLink) gets its content from its homes and sends a pull request when it publishes: a home asks it for updates when it appears, then at this period.
 static const uint32_t MAX_REQLIST_SIZE                        =           20; // No more than 20 items per msg request list => creates smaller transactions that are less likely to be cancelled.
 static const uint32_t TRANSAC_TIMEOUT                         =         2000; // In seconds. Has been increased to avoid epidemic transaction cancelling due to overloaded outqueues.
 #ifdef TO_REMOVE
@@ -373,6 +374,28 @@ void RsGxsNetService::removeQuietPhones(std::set<RsPeerId>& peers)
 	for(auto it = peers.begin(); it != peers.end();)
 		if(sMobileLink->isQuietPhone(*it)) it = peers.erase(it);
 		else ++it;
+}
+
+void RsGxsNetService::locked_removePhonesAskedRecently(
+        std::set<RsPeerId>& peers, const std::set<RsPeerId>& phones )
+{
+	const rstime_t now = time(nullptr);
+
+	for(auto it = mPhoneAskedTs.begin(); it != mPhoneAskedTs.end();)
+		if(peers.find(it->first) == peers.end()) it = mPhoneAskedTs.erase(it);
+		else ++it;
+
+	for(const RsPeerId& phone: phones)
+	{
+		auto asked = mPhoneAskedTs.find(phone);
+
+		if(asked == mPhoneAskedTs.end())
+			mPhoneAskedTs[phone] = now;
+		else if(now < asked->second + PHONE_ASK_PERIOD)
+			peers.erase(phone);
+		else
+			asked->second = now;
+	}
 }
 
 RsGxsNetService::RsGxsNetService(uint16_t servType, RsGeneralDataService *gds,
@@ -597,10 +620,17 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 		return std::error_condition();
 
 	/* If specific peers are passed as paramether ask only to them */
-	if(peers.empty())
+	const bool periodicRound = peers.empty();
+	std::set<RsPeerId> phones;
+
+	if(periodicRound)
 	{
 		mNetMgr->getOnlineList(mServiceInfo.mServiceType, peers);
 		removeQuietPhones(peers);
+
+		if(sMobileLink)
+			for(const RsPeerId& peer: peers)
+				if(sMobileLink->isPhone(peer)) phones.insert(peer);
 
         if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != nullptr)
 		{
@@ -620,6 +650,9 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 
 
 	RS_STACK_MUTEX(mNxsMutex);
+
+	if(periodicRound)
+		locked_removePhonesAskedRecently(peers, phones);
 
 	// for now just grps
 	for(auto sit = peers.begin(); sit != peers.end(); ++sit)
@@ -802,6 +835,11 @@ void RsGxsNetService::checkDistantSyncState()
 {
     if((!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) || mGxsNetTunnel==NULL || !(mSyncFlags & RsGxsNetServiceSyncFlags::DISCOVER_NEW_GROUPS))
 		return ;
+
+	// A phone (MobileLink) syncs with its homes only: each tunnel it would
+	// open for a group none of them supplies costs it traffic all the time.
+	if(sMobileLink && sMobileLink->getPhoneMode())
+		return;
 
 	RsGxsGrpMetaTemporaryMap grpMeta;
     mDataStore->retrieveGxsGrpMetaData(grpMeta);

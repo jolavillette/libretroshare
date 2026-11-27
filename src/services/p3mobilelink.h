@@ -84,6 +84,9 @@ public:
 	/// for a phone.
 	bool wantsSearchRequest(const RsPeerId& peer);
 
+	/// Home side: whether friend peer is a phone, in background or not.
+	bool isPhone(const RsPeerId& peer);
+
 	/// Home side: whether friend peer is a phone in background.
 	bool isQuietPhone(const RsPeerId& peer);
 
