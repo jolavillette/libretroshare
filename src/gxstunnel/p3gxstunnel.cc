@@ -1071,6 +1071,11 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
 #endif
     // make a hash of destination and source GXS ids in order to create the tunnel name
     
+    // The contact's direction is set once, when the contact is created: by startClientGxsTunnelConnection() on the side
+    // that asked for the tunnel, here on the other side. When both ends ask, tunnels dug from both sides serve the same
+    // contact, and the tunnel keyed last must not decide which side manages the contact.
+
+    const bool new_contact = (_gxs_tunnel_contacts.find(tunnel_id) == _gxs_tunnel_contacts.end()) ;
     GxsTunnelPeerInfo& pinfo(_gxs_tunnel_contacts[tunnel_id]) ;
 
     // Now hash the key buffer into a 16 bytes key. The key belongs to this tunnel: several tunnels may serve the same
@@ -1084,7 +1089,8 @@ void p3GxsTunnelService::handleRecvDHPublicKey(RsGxsTunnelDHPublicKeyItem *item)
     pinfo.last_contact = time(NULL) ;
     pinfo.last_keep_alive_sent = time(NULL) ;
     pinfo.status = RS_GXS_TUNNEL_STATUS_CAN_TALK ;
-    pinfo.direction = it->second.direction ;
+    if(new_contact)
+        pinfo.direction = it->second.direction ;
     pinfo.own_gxs_id = own_id ;
     pinfo.to_gxs_id = item->signature.keyId;	// this is already set for client side but not for server side.
     
@@ -1712,7 +1718,6 @@ bool p3GxsTunnelService::closeExistingTunnel(const RsGxsTunnelId& tunnel_id, uin
     // 	  if a message arrives.
 
     TurtleFileHash hash ;
-    TurtleVirtualPeerId vpid ;
     bool close_tunnel = false ;
     int direction ;
     {
@@ -1727,14 +1732,10 @@ bool p3GxsTunnelService::closeExistingTunnel(const RsGxsTunnelId& tunnel_id, uin
 
 		    return false ;
 	    }
-	    vpid = it->second.virtual_peer_id ;
+	    // The hash this side asked turtle to monitor when it asked for the tunnel. The tunnel currently used may have
+	    // been dug by the peer, under the peer's hash, which this side never monitored.
 
-	    std::map<TurtleVirtualPeerId, GxsTunnelDHInfo>::const_iterator it2 = _gxs_tunnel_virtual_peer_ids.find(vpid) ;
-
-	    if(it2 != _gxs_tunnel_virtual_peer_ids.end())
-		    hash = it2->second.hash ;
-	else
-		hash = it->second.hash ;
+	    hash = it->second.hash ;
 
 	    // check how many clients are used. If empty, close the tunnel
 
