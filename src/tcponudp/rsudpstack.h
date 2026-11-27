@@ -50,6 +50,10 @@ virtual bool resetAddress(struct sockaddr_in &local) { return false; }
 
 #include <iostream>
 
+/// Debug probe, util/rssocketcensus.cc: counts one UDP packet sent to or
+/// received from an address; the socket census logs the totals.
+void rsCountUdpPacket(bool sent, const struct sockaddr_in& remote, int size);
+
 class rsUdpStack: public UdpStack, public pqiNetListener
 {
 public:
@@ -57,6 +61,14 @@ public:
 
 	rsUdpStack(int testmode, struct sockaddr_in &local) :
 	    UdpStack(testmode, local) {}
+
+#ifdef RS_USE_BITDHT
+	int sendPkt( const void *data, int size, const struct sockaddr_in &to,
+	             int ttl ) override
+	{ rsCountUdpPacket(true, to, size); return UdpStack::sendPkt(data, size, to, ttl); }
+	int recvPkt(void *data, int size, struct sockaddr_in &from) override
+	{ rsCountUdpPacket(false, from, size); return UdpStack::recvPkt(data, size, from); }
+#endif
 
 	/// @see pqiNetListener
 	virtual bool resetListener(const sockaddr_storage& local)
@@ -86,6 +98,14 @@ class rsFixedUdpStack: public UdpStack, public pqiNetListener
 
         rsFixedUdpStack(int testmode, struct sockaddr_in &local)
 	:UdpStack(testmode, local) { return; }
+
+#ifdef RS_USE_BITDHT
+	int sendPkt( const void *data, int size, const struct sockaddr_in &to,
+	             int ttl ) override
+	{ rsCountUdpPacket(true, to, size); return UdpStack::sendPkt(data, size, to, ttl); }
+	int recvPkt(void *data, int size, struct sockaddr_in &from) override
+	{ rsCountUdpPacket(false, from, size); return UdpStack::recvPkt(data, size, from); }
+#endif
 
 	/* from pqiNetListener */
 virtual bool resetListener(const struct sockaddr_storage & /* local */)

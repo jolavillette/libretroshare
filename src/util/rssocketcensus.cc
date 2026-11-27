@@ -27,6 +27,39 @@
 
 #include "util/rsdebug.h"
 
+#include <cstdint>
+#include <map>
+#include <mutex>
+#include <utility>
+
+#ifdef WINDOWS_SYS
+#	include <winsock2.h>
+#else
+#	include <netinet/in.h>
+#endif
+
+namespace
+{
+struct UdpCount
+{
+	uint32_t mPackets[2] = { 0, 0 };
+	uint64_t mBytes[2] = { 0, 0 };
+};
+std::mutex udpCountMtx;
+/// By remote address and port, both in network byte order.
+std::map<std::pair<uint32_t, uint16_t>, UdpCount> udpCounts;
+}
+
+void rsCountUdpPacket(bool sent, const struct sockaddr_in& remote, int size)
+{
+	std::lock_guard<std::mutex> lock(udpCountMtx);
+	if(udpCounts.size() > 5000) return;
+	UdpCount& count(udpCounts[std::make_pair(
+	                    remote.sin_addr.s_addr, remote.sin_port )]);
+	++count.mPackets[sent ? 1 : 0];
+	count.mBytes[sent ? 1 : 0] += size > 0 ? size : 0;
+}
+
 #ifdef __linux__
 
 #include <arpa/inet.h>
@@ -64,8 +97,54 @@ static std::string addressToString(const sockaddr_storage& addr)
 	return out.str();
 }
 
+/// Logs the UDP packets counted since the last call: the totals, then the
+/// addresses that exchanged the most.
+static void logUdpCounts()
+{
+	std::map<std::pair<uint32_t, uint16_t>, UdpCount> counts;
+	{
+		std::lock_guard<std::mutex> lock(udpCountMtx);
+		counts.swap(udpCounts);
+	}
+
+	UdpCount total;
+	std::multimap<uint32_t, std::string> byPackets;
+	for(const auto& count: counts)
+	{
+		for(int i = 0; i < 2; ++i)
+		{
+			total.mPackets[i] += count.second.mPackets[i];
+			total.mBytes[i] += count.second.mBytes[i];
+		}
+		char text[INET_ADDRSTRLEN] = "";
+		in_addr addr;
+		addr.s_addr = count.first.first;
+		inet_ntop(AF_INET, &addr, text, sizeof(text));
+		std::ostringstream line;
+		line << text << ":" << ntohs(count.first.second)
+		     << " sent " << count.second.mPackets[1] << "x"
+		     << count.second.mBytes[1] << "B received "
+		     << count.second.mPackets[0] << "x" << count.second.mBytes[0]
+		     << "B";
+		byPackets.insert(std::make_pair(
+		        count.second.mPackets[0] + count.second.mPackets[1],
+		        line.str() ));
+	}
+
+	RsInfo() << "Socket census: UDP since the last census, "
+	         << counts.size() << " addresses: sent " << total.mPackets[1]
+	         << " packets " << total.mBytes[1] << " B, received "
+	         << total.mPackets[0] << " packets " << total.mBytes[0] << " B";
+	int shown = 0;
+	for(auto it = byPackets.rbegin(); it != byPackets.rend() && shown < 15;
+	    ++it, ++shown)
+		RsInfo() << "Socket census: UDP " << it->second;
+}
+
 void rsLogSocketCensus()
 {
+	logUdpCounts();
+
 	DIR* dir = opendir("/proc/self/fd");
 	if(!dir) return;
 
