@@ -181,6 +181,7 @@ public:
     void    modifyNodesPerBucket(uint16_t count);
 
     void	start(); /* starts up the bitdht thread */
+    void	stop(); /* ends the bitdht thread and waits for it */
 
     /* pqiNetAssist - external interface functions */
     virtual int     tick();
