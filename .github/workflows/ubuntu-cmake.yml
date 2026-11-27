@@ -47,6 +47,15 @@ jobs:
       with:
         persist-credentials: false
 
+    # The combo needs the BitDHT combo of the fork: libretroshare takes BitDHT
+    # from ../libbitdht when it is there, and from the official repository
+    # otherwise.
+    - name: Fetch the BitDHT combo next to the checkout
+      shell: bash
+      run: |
+        git clone --depth 1 --branch combo https://github.com/jolavillette/BitDHT.git ../libbitdht
+        git -C ../libbitdht log --max-count 1 --oneline
+
     - name: Install dependencies
       run: >
         sudo apt-get update &&

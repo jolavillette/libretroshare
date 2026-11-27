@@ -60,6 +60,15 @@ jobs:
         with:
           persist-credentials: false
 
+      # The combo needs the BitDHT combo of the fork: libretroshare takes BitDHT
+      # from ../libbitdht when it is there, and from the official repository
+      # otherwise.
+      - name: Fetch the BitDHT combo next to the checkout
+        shell: bash
+        run: |
+          git clone --depth 1 --branch combo https://github.com/jolavillette/BitDHT.git ../libbitdht
+          git -C ../libbitdht log --max-count 1 --oneline
+
       - name: Setup MSYS2 (UCRT64)
         uses: msys2/setup-msys2@40677d36a502eb2cf0fb808cc9dec31bf6152638 # v2.28.0
         with:
