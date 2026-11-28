@@ -107,6 +107,7 @@
 #include "gxs/rsgixs.h"
 
 class p3ServiceControl;
+class p3MobileLink;
 
 struct DiscSslInfo
 {
@@ -137,6 +138,7 @@ class p3discovery2 :
         //public AuthGPGService
 {
 public:
+	void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
 
 	p3discovery2( p3PeerMgr* peerMgr, p3LinkMgr* linkMgr, p3NetMgr* netMgr,
 	              p3ServiceControl* sc, RsGixs* gixs );
@@ -205,6 +207,13 @@ private:
 	RsMutex mDiscMtx;
 
 	void updatePeers_locked(const RsPeerId &aboutId);
+
+	/// What tells a phone in background from its friends (MobileLink).
+	p3MobileLink *mMobileLink = nullptr;
+
+	/// Per phone in background and per node, the contact information last
+	/// sent to it: the same is not sent again at each reconnection.
+	std::map<RsPeerId, std::map<RsPeerId, std::string>> mSentToPhones;
 	void sendContactInfo_locked(const RsPgpId &aboutId, const RsPeerId &toId);
 
 	rstime_t mLastPgpUpdate;

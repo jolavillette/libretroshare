@@ -92,11 +92,6 @@ option(
 	OFF )
 
 option(
-	RS_FORUM_DEEP_INDEX
-	"Xapian based full text index and search of GXS forums"
-	OFF )
-
-option(
 	RS_BRODCAST_DISCOVERY
 	"Local area network peer discovery via udp-discovery-cpp"
 	ON )
@@ -198,6 +193,13 @@ option(
 	OFF )
 
 cmake_dependent_option(
+	RS_FORUM_CONTENT_SEARCH
+	"Full text search of the content of the forum posts (SQLite FTS4 index)"
+	ON
+	"NOT RS_ANDROID"
+	OFF )
+
+cmake_dependent_option(
 	RS_WEBUI
 	"Enable RetroShare Web UI support"
 	OFF
@@ -246,8 +248,8 @@ set(
 
 ################################################################################
 
-# Git is optional: it is only used to stamp versions (git describe, with a
-# Source_Version file fallback for source tarballs) and by the FetchContent
+# Git is optional: it is only used to stamp versions (git describe; a source
+# tarball carries a Source_Version file instead) and by the FetchContent
 # network fallbacks, which are guarded by RS_FETCH_MISSING_DEPS.
 find_package(Git)
 
@@ -368,6 +370,19 @@ target_link_libraries(${PROJECT_NAME} PRIVATE ${CMAKE_DL_LIBS})
 
 find_package(Threads REQUIRED)
 target_link_libraries(${PROJECT_NAME} PRIVATE Threads::Threads)
+
+# The GXS message deserialisation in RsGenExchange::getMsgData() is an OpenMP
+# loop. Without the compiler flag the pragma is ignored and the loop runs
+# serially, so link OpenMP when the toolchain provides it. Not on Android: the
+# NDK's libomp would have to be shipped in the APK. RS_ANDROID, not ANDROID:
+# the Android toolchain script configures without the NDK toolchain file, so
+# CMake never sets ANDROID there.
+if(NOT RS_ANDROID)
+	find_package(OpenMP)
+	if(OpenMP_CXX_FOUND)
+		target_link_libraries(${PROJECT_NAME} PRIVATE OpenMP::OpenMP_CXX)
+	endif(OpenMP_CXX_FOUND)
+endif(NOT RS_ANDROID)
 
 find_package(OpenSSL REQUIRED)
 target_include_directories(${PROJECT_NAME} PRIVATE ${OPENSSL_INCLUDE_DIR})
@@ -735,12 +750,9 @@ endif(RS_JSON_API)
 
 ################################################################################
 
-if(RS_FORUM_DEEP_INDEX)
-	find_package(Xapian REQUIRED)
-	target_link_libraries(${PROJECT_NAME} PRIVATE ${XAPIAN_LIBRARIES})
-
-	target_compile_definitions(${PROJECT_NAME} PUBLIC RS_DEEP_FORUMS_INDEX)
-endif(RS_FORUM_DEEP_INDEX)
+if(RS_FORUM_CONTENT_SEARCH)
+	target_compile_definitions(${PROJECT_NAME} PUBLIC RS_FORUM_CONTENT_SEARCH)
+endif(RS_FORUM_CONTENT_SEARCH)
 
 ################################################################################
 
@@ -930,56 +942,48 @@ if( NOT RS_MAJOR_VERSION STREQUAL "" AND
 	message(STATUS "libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} defined in command line")
 	set(V_VERSION_SET ON)
 else()
-	set(V_GIT_DESCRIBE_OUTPUT "")
 	set(V_GIT_DESCRIBE_REGEXP "^v([0-9]+).([0-9]+).([0-9]+)(.*)\n$")
 
-	execute_process(
-		COMMAND ${GIT_EXECUTABLE} describe --tags --long --match v*.*.*
-		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-		OUTPUT_VARIABLE V_GIT_DESCRIBE_OUTPUT
-		RESULT_VARIABLE V_GIT_RESULT ) # Avoid CMake failure if git fails
+	# A source tarball made from the RetroShare super-project stores the output
+	# of `git describe --tags --long --match v*.*.*` in a Source_Version file
+	# next to this CMakeLists.txt. When the file exists it is the truth: read it
+	# before asking git, because the tarball may be unpacked inside another git
+	# repository (git-buildpackage, or any other checkout) whose tags do not
+	# describe libretroshare. The trailing newline is re-appended so the same
+	# regexp as the git output applies.
+	set(V_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
+	set(V_DESCRIBE_OUTPUT "")
+	if(EXISTS "${V_VERSION_FILE}")
+		file(READ "${V_VERSION_FILE}" V_DESCRIBE_OUTPUT)
+		string(STRIP "${V_DESCRIBE_OUTPUT}" V_DESCRIBE_OUTPUT)
+		set(V_DESCRIBE_OUTPUT "${V_DESCRIBE_OUTPUT}\n")
+		set(V_DESCRIBE_SOURCE "Source_Version file")
+	else()
+		execute_process(
+			COMMAND ${GIT_EXECUTABLE} describe --tags --long --match v*.*.*
+			WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+			OUTPUT_VARIABLE V_DESCRIBE_OUTPUT
+			RESULT_VARIABLE V_GIT_RESULT ) # Avoid CMake failure if git fails
+		if(NOT V_GIT_RESULT EQUAL 0)
+			set(V_DESCRIBE_OUTPUT "")
+		endif()
+		set(V_DESCRIBE_SOURCE "git")
+	endif()
 
-	if( V_GIT_RESULT EQUAL 0 AND
-	    V_GIT_DESCRIBE_OUTPUT MATCHES "${V_GIT_DESCRIBE_REGEXP}" )
+	if(V_DESCRIBE_OUTPUT MATCHES "${V_GIT_DESCRIBE_REGEXP}")
 		string(
 			REGEX REPLACE
 			"${V_GIT_DESCRIBE_REGEXP}" "\\1;\\2;\\3;\\4"
-			V_GIT_DESCRIBE_LIST ${V_GIT_DESCRIBE_OUTPUT} )
+			V_GIT_DESCRIBE_LIST ${V_DESCRIBE_OUTPUT} )
 		list(GET V_GIT_DESCRIBE_LIST 0 RS_MAJOR_VERSION)
 		list(GET V_GIT_DESCRIBE_LIST 1 RS_MINOR_VERSION)
 		list(GET V_GIT_DESCRIBE_LIST 2 RS_MINI_VERSION)
 		list(GET V_GIT_DESCRIBE_LIST 3 RS_EXTRA_VERSION)
 
-		message("libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} determined via git")
+		message("libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} determined via ${V_DESCRIBE_SOURCE}")
 		set(V_VERSION_SET ON)
 	else()
-		# Source tarball fallback: an unpacked source tarball carries no git
-		# metadata, so the tarball preparation script stores the output of
-		# `git describe --tags --long --match v*.*.*` in a Source_Version file
-		# next to this CMakeLists.txt. The trailing newline is re-appended so
-		# the same regexp as the git path applies.
-		set(V_VERSION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
-		set(V_FILE_DESCRIBE_OUTPUT "")
-		if(EXISTS "${V_VERSION_FILE}")
-			file(READ "${V_VERSION_FILE}" V_FILE_DESCRIBE_OUTPUT)
-			string(STRIP "${V_FILE_DESCRIBE_OUTPUT}" V_FILE_DESCRIBE_OUTPUT)
-			set(V_FILE_DESCRIBE_OUTPUT "${V_FILE_DESCRIBE_OUTPUT}\n")
-		endif()
-		if(V_FILE_DESCRIBE_OUTPUT MATCHES "${V_GIT_DESCRIBE_REGEXP}")
-			string(
-				REGEX REPLACE
-				"${V_GIT_DESCRIBE_REGEXP}" "\\1;\\2;\\3;\\4"
-				V_GIT_DESCRIBE_LIST ${V_FILE_DESCRIBE_OUTPUT} )
-			list(GET V_GIT_DESCRIBE_LIST 0 RS_MAJOR_VERSION)
-			list(GET V_GIT_DESCRIBE_LIST 1 RS_MINOR_VERSION)
-			list(GET V_GIT_DESCRIBE_LIST 2 RS_MINI_VERSION)
-			list(GET V_GIT_DESCRIBE_LIST 3 RS_EXTRA_VERSION)
-
-			message("libRetroShare version ${RS_MAJOR_VERSION}.${RS_MINOR_VERSION}.${RS_MINI_VERSION}${RS_EXTRA_VERSION} determined via Source_Version file")
-			set(V_VERSION_SET ON)
-		else()
-			message(WARNING "Determining libRetroShare version via git or Source_Version failed please specify it through CMake command line arguments!")
-		endif()
+		message(WARNING "Determining libRetroShare version via ${V_DESCRIBE_SOURCE} failed please specify it through CMake command line arguments!")
 	endif()
 endif()
 
@@ -998,21 +1002,19 @@ endif(V_VERSION_SET)
 # Ported from the qmake build (libretroshare.pro RS_LIB_VERSION_HASH block):
 # describe the libretroshare submodule itself and drop the leading 'v' to
 # match the GUI version style. Used only inside libretroshare, hence PRIVATE.
-execute_process(
-	COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
-	WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
-	OUTPUT_VARIABLE RS_LIB_VERSION_HASH
-	OUTPUT_STRIP_TRAILING_WHITESPACE
-	RESULT_VARIABLE V_GIT_HASH_RESULT ) # Avoid CMake failure if git fails
-
-# Source tarball fallback: reuse the Source_Version file (see the version
-# detection above) when git metadata is absent.
-if(NOT V_GIT_HASH_RESULT EQUAL 0 OR RS_LIB_VERSION_HASH STREQUAL "")
-	if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
-		file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version" RS_LIB_VERSION_HASH)
-		string(STRIP "${RS_LIB_VERSION_HASH}" RS_LIB_VERSION_HASH)
-		set(V_GIT_HASH_RESULT 0)
-	endif()
+# A source tarball carries a Source_Version file (see the version detection
+# above): read it first, for the same reason as there.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version")
+	file(READ "${CMAKE_CURRENT_SOURCE_DIR}/Source_Version" RS_LIB_VERSION_HASH)
+	string(STRIP "${RS_LIB_VERSION_HASH}" RS_LIB_VERSION_HASH)
+	set(V_GIT_HASH_RESULT 0)
+else()
+	execute_process(
+		COMMAND ${GIT_EXECUTABLE} describe --tags --always --dirty
+		WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+		OUTPUT_VARIABLE RS_LIB_VERSION_HASH
+		OUTPUT_STRIP_TRAILING_WHITESPACE
+		RESULT_VARIABLE V_GIT_HASH_RESULT ) # Avoid CMake failure if git fails
 endif()
 
 if(V_GIT_HASH_RESULT EQUAL 0 AND NOT RS_LIB_VERSION_HASH STREQUAL "")
@@ -1022,7 +1024,7 @@ if(V_GIT_HASH_RESULT EQUAL 0 AND NOT RS_LIB_VERSION_HASH STREQUAL "")
 		${PROJECT_NAME}
 		PRIVATE RS_LIB_VERSION_HASH="${RS_LIB_VERSION_HASH}" )
 else()
-	message(WARNING "Determining libRetroShare engine hash via git failed")
+	message(WARNING "Determining libRetroShare engine hash via git or Source_Version failed")
 endif()
 
 ################################################################################
@@ -1062,7 +1064,15 @@ if(RS_CPPTRACE_STACKTRACE)
       GIT_PROGRESS TRUE
       TIMEOUT 10
     )
+    # Always link cpptrace (and the libdwarf it fetches) statically into
+    # libretroshare. Both default to BUILD_SHARED_LIBS, which is ON when
+    # libretroshare itself is shared (Windows): they then come out as DLLs
+    # that nothing deploys next to the executable, and it refuses to start.
+    set(SAVED_BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS})
+    set(BUILD_SHARED_LIBS OFF)
+    set(CPPTRACE_BUILD_SHARED OFF CACHE BOOL "cpptrace as a static library" FORCE)
     FetchContent_MakeAvailable(cpptrace)
+    set(BUILD_SHARED_LIBS ${SAVED_BUILD_SHARED_LIBS})
     target_link_libraries(${PROJECT_NAME} PRIVATE cpptrace::cpptrace)
     target_compile_definitions(
         ${PROJECT_NAME} PRIVATE RS_JEREMY_RIFKIN_CPPTRACE )

@@ -152,6 +152,9 @@ public:
 								 std::list<RSTrafficClue>& inqueue_lst);
 
 private:
+	/// Hands i to the active connection, or deletes it when there is none.
+	int sendToActive(RsItem *i, uint32_t& serialized_size);
+
 	void processNotifyEvents();
 	int handleNotifyEvent_locked(NetInterface *ni, int event,
 								 const sockaddr_storage &addr);

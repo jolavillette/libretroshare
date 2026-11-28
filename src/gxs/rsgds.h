@@ -138,6 +138,9 @@ public:
     RsGeneralDataService(){}
 	virtual ~RsGeneralDataService(){}
 
+	/// Name of the underlying store, for log lines; empty when unknown.
+	virtual std::string dbName() const { return std::string(); }
+
     /*!
      * Retrieves all msgs
      * @param reqIds requested msg ids (grpId,msgId), leave msg list empty to get all msgs for the grp
@@ -171,7 +174,8 @@ public:
     /*!
      * Retrieves meta data of all groups stored (most current versions only)
      * @param grpIds grpIds for which to retrieve meta data
-     * @param msgMeta meta data result as map of grpIds to array of metadata for that grpId
+     * @param msgMeta meta data result as map of grpIds to array of metadata for that grpId.
+     *        It is not cleared: results are added to what it already holds.
      * @return error code
      */
     virtual int retrieveGxsMsgMetaData(const GxsMsgReq& msgIds, GxsMsgMetaResult& msgMeta) = 0;
@@ -300,5 +304,10 @@ public:
      * @return whether the size of grp is valid for storage
      */
     virtual bool validSize(RsNxsGrp* grp) const = 0 ;
+    
+    /*!
+     * @return the encryption key used for current data service
+     */
+    virtual std::string getEncryptionKey() const = 0;
 
 };

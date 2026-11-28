@@ -81,10 +81,111 @@ static double getCurrentTS()
         return cts;
 }
 
+/* On Windows, with the winpthreads of MSYS2, every detached thread leaves one
+ * handle open for the rest of the process, whichever side detaches it
+ * (measured: 500 detached threads, 500 handles more; 500 joined threads, none).
+ * A node starts hundreds of short-lived threads an hour, and reached 180 000
+ * handles after a few days. So on Windows the threads are not detached: a
+ * thread that ends puts itself in a list, and the next call that creates a
+ * thread joins the threads of that list first. Joining a thread that is
+ * returning takes no time, and the list never holds more than the threads that
+ * ended since the last creation.
+ *
+ * WORKAROUND, TO BE REMOVED: this is a defect of winpthreads, not of our code:
+ * one Event handle (the spin_keys of the thread) is lost for every detached
+ * thread that exits. Reported as mingw-w64 issue 190,
+ * https://github.com/mingw-w64/mingw-w64/issues/190, seen with winpthreads
+ * 14.0.0.r598.ge3d18511f. Once the MSYS2 package used for the builds carries
+ * the fix, remove RS_THREAD_JOIN_FINISHED and everything under it: the threads
+ * are detached again as on the other platforms.
+ * How to check after an MSYS2 update: a program that starts 500 threads which
+ * call pthread_detach(pthread_self()) and return, with GetProcessHandleCount()
+ * before and two seconds after: +500 handles = still needed, about +0 = this
+ * can go. The same leak, one handle per thread, remains in the few places that
+ * still detach on Windows: util/dnsresolver.cc and the two rs_upnp handlers. */
+#ifdef WINDOWS_SYS
+#	define RS_THREAD_JOIN_FINISHED 1
+#endif
+
+#ifdef RS_THREAD_JOIN_FINISHED
+#include <mutex>
+#include <vector>
+
+namespace
+{
+	std::mutex& finishedThreadsMutex()
+	{
+		static std::mutex m;
+		return m;
+	}
+	std::vector<pthread_t>& finishedThreads()
+	{
+		static std::vector<pthread_t> v;
+		return v;
+	}
+
+	/* Last thing a thread does. Nothing that may be deleted by someone else
+	 * can be touched after this call. */
+	void registerFinishedThread()
+	{
+		std::lock_guard<std::mutex> lock(finishedThreadsMutex());
+		finishedThreads().push_back(pthread_self());
+	}
+
+	void joinFinishedThreads()
+	{
+		std::vector<pthread_t> to_join;
+		{
+			std::lock_guard<std::mutex> lock(finishedThreadsMutex());
+			to_join.swap(finishedThreads());
+		}
+
+		for(const pthread_t& tid: to_join)
+			pthread_join(tid, nullptr);
+	}
+
+	void* rsthread_async_init(void* p)
+	{
+		std::function<void()>* fn = static_cast<std::function<void()>*>(p);
+
+		(*fn)();
+		delete fn;
+
+		registerFinishedThread();
+		return nullptr;
+	}
+}
+#endif // def RS_THREAD_JOIN_FINISHED
+
+/*static*/ void RsThread::async(const std::function<void()>& fn)
+{
+#ifdef RS_THREAD_JOIN_FINISHED
+	joinFinishedThreads();
+
+	std::function<void()>* fn_copy = new std::function<void()>(fn);
+	pthread_t tid;
+
+	if(0 == pthread_create(&tid, nullptr, &rsthread_async_init, fn_copy))
+		return;
+
+	delete fn_copy;	// could not be created that way: do as before
+#endif
+	std::thread(fn).detach();
+}
+
 /*static*/ void* RsThread::rsthread_init(void* p)
 {
 	RsThread* thread = reinterpret_cast<RsThread *>(p);
 	if(!thread) return nullptr;
+
+#ifdef RS_THREAD_JOIN_FINISHED
+	thread->wrapRun();
+
+	/* The RsThread object may be deleted from now on (mHasStopped is true):
+	 * do not touch it any more. */
+	registerFinishedThread();
+	return nullptr;
+#endif
 
 	/* Using pthread_detach(...) the thread resources will be automatically
 	 * freed when this function return, so there is no need for pthread_join()
@@ -130,6 +231,14 @@ void RsThread::askForStop()
 void RsThread::wrapRun()
 {
 	{RS_STACK_MUTEX(mInitMtx);} // Waiting Init done.
+
+	/* The thread names itself: on macOS pthread_setname_np() only names the
+	 * calling thread, so naming it from start() renamed the thread that
+	 * started it. The name is cut to 15 characters plus the terminating null
+	 * byte, the Linux limit. */
+	if(pthread_setname_np && !mFullName.empty())
+		RS_pthread_setname_np(pthread_self(), mFullName.substr(0, 15).c_str());
+
 	run();
 	resetTid();
 	mHasStopped = true;
@@ -201,6 +310,10 @@ void RsThread::waitWhileStopping()
 
 bool RsThread::start(const std::string& threadName)
 {
+#ifdef RS_THREAD_JOIN_FINISHED
+	joinFinishedThreads();
+#endif
+
 	// Atomically check if the thread was already started and set it as running
 	if(mHasStopped.exchange(false))
 	{
@@ -221,13 +334,10 @@ bool RsThread::start(const std::string& threadName)
 		/* Store an extra copy of thread id for debugging */
 		mLastTid = mTid;
 
-		/* Store thread full name as PThread is not able to keep it entirely */
+		/* Store thread full name as PThread is not able to keep it entirely.
+		 * The new thread names itself with it in wrapRun(), once mInitMtx is
+		 * released. */
 		mFullName = threadName;
-
-		/* Set PThread thread name which is restricted to 16 characters
-		 * including the terminating null byte */
-		if(pthread_setname_np && !threadName.empty())
-			RS_pthread_setname_np(mTid, threadName.substr(0, 15).c_str());
 
 		return true;
 	}

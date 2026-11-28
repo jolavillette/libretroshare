@@ -179,6 +179,15 @@ public:
 	  bool isDistantPeer(const RsGxsNetTunnelVirtualPeerId& virtual_peer,RsGxsGroupId& group_id) ;
 
 	  /*!
+	   * \brief isVirtualPeerOnline
+	   *                 isDistantPeer() keeps answering true after the tunnel to a virtual peer was closed. This one tells
+	   *                 whether a tunnel to that virtual peer exists right now.
+	   * \return    true if data can currently be exchanged with this virtual peer.
+	   */
+
+	  bool isVirtualPeerOnline(const RsGxsNetTunnelVirtualPeerId& virtual_peer) ;
+
+	  /*!
 	   * \brief dumps all information about monitored groups.
 	   */
 	  void dump() const;

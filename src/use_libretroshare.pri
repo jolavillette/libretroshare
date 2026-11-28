@@ -115,23 +115,8 @@ rs_jsonapi {
 
 linux-* {
     mLibs += dl
-}
-
-rs_deep_channels_index | rs_deep_files_index | rs_deep_forums_index {
-    mLibs += xapian
-    win32-g++|win32-clang-g++:mLibs += rpcrt4
-}
-
-rs_deep_files_index_ogg {
-    mLibs += vorbisfile
-}
-
-rs_deep_files_index_flac {
-    mLibs += FLAC++
-}
-
-rs_deep_files_index_taglib {
-    mLibs += tag
+    # OpenMP runtime needed for parallel deserialization in rsgenexchange.cc
+    LIBS += -fopenmp
 }
 
 rs_broadcast_discovery {

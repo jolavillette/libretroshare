@@ -172,6 +172,7 @@ public:
     /***************************************************************/
 
     void StartupThreads();
+    /** Stop every thread started by StartupThreads(); called once at shutdown. */
     void StopThreads();
 
     // member access
@@ -251,6 +252,8 @@ public:
     virtual void setQueueSize(uint32_t s) ;
     virtual bool changeQueuePosition(const RsFileHash& hash, QueueMove queue_mv);
     virtual bool changeDownloadSpeed(const RsFileHash& hash, int speed);
+    virtual void setDefaultDownloadSpeed(DwlSpeed speed) override;
+    virtual DwlSpeed defaultDownloadSpeed() override;
     virtual bool getDownloadSpeed(const RsFileHash& hash, int & speed);
     virtual bool clearDownload(const RsFileHash& hash);
     //virtual void getDwlDetails(std::list<DwlDetails> & details);
@@ -348,6 +351,11 @@ public:
     virtual void setIgnoreDuplicates(bool ignore)  override;
 
     static bool encryptHash(const RsFileHash& hash, RsFileHash& hash_of_hash);
+
+    /// The hashes a tunnel request may carry for the files offered outside
+    /// the shared directories (attachments): each file's hash and the hash
+    /// of it, used by encrypted tunnels.
+    void getExtraFileTunnelHashes(std::set<RsFileHash>& hashes) const;
 
     /***************************************************************/
     /*************** Data Transfer Interface ***********************/

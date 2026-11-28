@@ -57,7 +57,10 @@ class RsControl
 public:
 	/// TODO: This should return a reference instead of a pointer!
 	static RsControl* instance();
-	static void earlyInitNotificationSystem() { rsControl = instance(); }
+	/// Creates the control object, and with it the events service. A shutdown
+	/// stops that service: when the same process runs the core again, this
+	/// starts it again, before the login.
+	static void earlyInitNotificationSystem();
 
 	/* Real Startup Fn */
 	virtual int StartupRetroShare() = 0;
@@ -81,6 +84,12 @@ public:
 
 	virtual bool getPeerCryptoDetails(
 	        const RsPeerId& ssl_id,RsPeerCryptoParams& params ) = 0;
+	/**
+	 * @brief Get the name and version of the libraries libretroshare is built
+	 *	with (OpenSSL, SQLite, zlib...)
+	 * @jsonapi{development}
+	 * @param[out] libraries storage for the name and version of each library
+	 */
 	virtual void getLibraries(std::list<RsLibraryInfo> &libraries) = 0;
 
 	/**

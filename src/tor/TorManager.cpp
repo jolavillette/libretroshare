@@ -632,7 +632,22 @@ void TorManagerPrivate::processStateChanged(int state)
 void TorManagerPrivate::processErrorChanged(const std::string &errorMessage)
 {
     RsErr() << "tor error:" << errorMessage ;
-    setError(errorMessage);
+
+    // When tor itself gave up, its last error (or warning) line is the useful
+    // part, e.g. "...not supported by this version of Tor. You should upgrade."
+    std::string last_err, last_warn;
+    for(const auto& m: logMessages)
+        if(m.find("[err]") != std::string::npos)
+            last_err = m;
+        else if(m.find("[warn]") != std::string::npos)
+            last_warn = m;
+
+    const std::string& tor_said = last_err.empty() ? last_warn : last_err;
+
+    if(tor_said.empty())
+        setError(errorMessage);
+    else
+        setError(errorMessage + "\n\nTor said: " + tor_said);
 }
 
 void TorManagerPrivate::processLogMessage(const std::string &message)
@@ -920,6 +935,16 @@ bool RsTor::hasError()
 std::string RsTor::errorMessage()
 {
     return instance()->errorMessage();
+}
+
+std::string RsTor::torVersion()
+{
+    return instance()->control()->torVersion();
+}
+
+std::string RsTor::torVersionWarning()
+{
+    return instance()->control()->torVersionWarning();
 }
 
 void RsTor::getProxyServerInfo(std::string& server_address,  uint16_t& server_port)

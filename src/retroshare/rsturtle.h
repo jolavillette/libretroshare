@@ -248,4 +248,42 @@ public:
 		 * @param[out] high higher limit
 		 */
         virtual void getMaxTRForwardRateLimits(int& low,int& high) const = 0 ;
+
+		/**
+		 * @brief Set whether the search requests received from friends are
+		 *  passed on to the other friends. Own searches are always sent and
+		 *  received requests always answered: a node that stops forwarding
+		 *  them only stops relaying the other nodes' searches. Saved.
+		 * @jsonapi{development}
+		 * @param[in] forward false to stop relaying them
+		 */
+		virtual void setSearchRequestForwarding(bool forward) = 0 ;
+
+		/**
+		 * @brief Whether the search requests received from friends are passed
+		 *  on to the other friends
+		 * @jsonapi{development}
+		 * @return true when they are, the default
+		 */
+		virtual bool searchRequestForwarding() const = 0 ;
+
+		/**
+		 * @brief Set whether the tunnel requests received from friends are
+		 *  passed on to the other friends. Own tunnel requests are always
+		 *  sent and received ones always answered: a node that stops
+		 *  forwarding them only stops relaying the other nodes' tunnels, and
+		 *  so carries no tunnel data for them. It overrides
+		 *  setMaxTRForwardRate(). Saved.
+		 * @jsonapi{development}
+		 * @param[in] forward false to stop relaying them
+		 */
+		virtual void setTunnelRequestForwarding(bool forward) = 0 ;
+
+		/**
+		 * @brief Whether the tunnel requests received from friends are passed
+		 *  on to the other friends
+		 * @jsonapi{development}
+		 * @return true when they are, the default
+		 */
+		virtual bool tunnelRequestForwarding() const = 0 ;
 };

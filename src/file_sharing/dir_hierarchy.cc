@@ -22,21 +22,23 @@
  ******************************************************************************/
 #include <sstream>
 #include <algorithm>
+#include <functional>
 
 #include "util/rstime.h"
 #include "util/rsdir.h"
 #include "util/rsprint.h"
+#include "util/rsstring.h"
 #include "retroshare/rsexpr.h"
 #include "dir_hierarchy.h"
 #include "filelist_io.h"
 #include "file_sharing_defaults.h"
 #include "util/cxx17retrocompat.h"
 
-#ifdef RS_DEEP_FILES_INDEX
-#	include "deep_search/filesindex.hpp"
-#endif // def RS_DEEP_FILES_INDEX
 
 //#define DEBUG_DIRECTORY_STORAGE 1
+
+// Past this number of hashes removed from mFileHashes between two checks, check() looks at every file.
+static const uint32_t MAX_FILE_HASHES_TO_RESTORE = 1000 ;
 
 typedef FileListIO::read_error read_error;
 
@@ -56,7 +58,7 @@ template<class T> typename std::set<T>::iterator erase_from_set(typename std::se
 // A Mutex is used to ensure total coherence at this level. So only abstracted operations are allowed,
 // so that the hierarchy stays completely coherent between calls.
 
-InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0)
+InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0), mRestoreAllFileHashes(false)
 {
     DirEntry *de = new DirEntry("") ;
 
@@ -70,6 +72,13 @@ InternalFileHierarchyStorage::InternalFileHierarchyStorage() : mRoot(0)
 
     mTotalSize = 0 ;
     mTotalFiles = 0 ;
+}
+
+InternalFileHierarchyStorage::~InternalFileHierarchyStorage()
+{
+    // The nodes are owned here (load() already deletes them before re-filling the vector).
+    for(auto *n : mNodes)
+        delete n ;
 }
 
 bool InternalFileHierarchyStorage::getDirHashFromIndex(
@@ -121,6 +130,7 @@ bool InternalFileHierarchyStorage::getIndexFromFileHash(
 	{
 		RS_INFO("removing non existing file hash: ", hash, " from file hash list");
 		mFileHashes.erase(it);
+		fileHashEntryRemoved(hash);
 		return false;
 	}
 
@@ -353,6 +363,7 @@ bool InternalFileHierarchyStorage::updateSubFilesList(
 		if(it->second.modtime != f.file_modtime || it->second.size != f.file_size)
         {
 			// hash needs recomputing
+			forgetFileHash(f.file_hash,d.subfiles[i]);
 			f.file_hash.clear();
             f.file_modtime = it->second.modtime;
             f.file_size = it->second.size;
@@ -399,6 +410,10 @@ bool InternalFileHierarchyStorage::updateHash(
 #endif
 
     RsFileHash& old_hash (static_cast<FileEntry*>(mNodes[file_index])->file_hash) ;
+
+    if(old_hash != hash)
+        forgetFileHash(old_hash,file_index) ;
+
     mFileHashes[hash] = file_index ;
 
     old_hash = hash ;
@@ -423,6 +438,9 @@ bool InternalFileHierarchyStorage::updateFile(const DirectoryStorage::EntryIndex
 
 	mTotalSize += size ;
 
+    if(fe.file_hash != hash)
+        forgetFileHash(fe.file_hash,file_index) ;
+
     fe.file_hash = hash;
     fe.file_size = size;
     fe.file_modtime = modf_time;
@@ -440,10 +458,6 @@ void InternalFileHierarchyStorage::deleteFileNode(uint32_t index)
 	{
 		FileEntry& fe(*static_cast<FileEntry*>(mNodes[index])) ;
 
-#ifdef RS_DEEP_FILES_INDEX
-		DeepFilesIndex tfi(DeepFilesIndex::dbDefaultPath());
-		tfi.removeFileFromIndex(fe.file_hash);
-#endif
 
         if(mTotalSize >= fe.file_size)
 			mTotalSize -= fe.file_size ;
@@ -451,9 +465,34 @@ void InternalFileHierarchyStorage::deleteFileNode(uint32_t index)
         if(mTotalFiles > 0)
 			mTotalFiles -= 1;
 
+		forgetFileHash(fe.file_hash,index) ;
+
 		delete mNodes[index] ;
 		mFreeNodes.push_back(index) ;
 		mNodes[index] = NULL ;
+	}
+}
+void InternalFileHierarchyStorage::forgetFileHash(const RsFileHash& hash,DirectoryStorage::EntryIndex file_index)
+{
+	auto it = mFileHashes.find(hash) ;
+
+	if(it != mFileHashes.end() && it->second == file_index)
+	{
+		mFileHashes.erase(it) ;
+		fileHashEntryRemoved(hash) ;
+	}
+}
+void InternalFileHierarchyStorage::fileHashEntryRemoved(const RsFileHash& hash)
+{
+	if(hash.isNull() || mRestoreAllFileHashes)	// files that are not hashed yet are not looked up by hash
+		return ;
+
+	mFileHashesToRestore.insert(hash) ;
+
+	if(mFileHashesToRestore.size() > MAX_FILE_HASHES_TO_RESTORE)
+	{
+		mFileHashesToRestore.clear() ;
+		mRestoreAllFileHashes = true ;
 	}
 }
 void InternalFileHierarchyStorage::deleteNode(uint32_t index)
@@ -688,26 +727,34 @@ bool InternalFileHierarchyStorage::setTS(const DirectoryStorage::EntryIndex& ind
 
 // Do a complete recursive sweep of directory hierarchy and update cumulative size of directories
 
-uint64_t InternalFileHierarchyStorage::recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index)
+uint64_t InternalFileHierarchyStorage::recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index, std::function<uint64_t(const RsFileHash&)> get_uploads)
 {
     DirEntry& d(*static_cast<DirEntry*>(mNodes[dir_index])) ;
 
     uint64_t local_cumulative_size = 0;
     uint32_t local_cumulative_files = 0;
+    uint64_t local_cumulative_uploads = 0;
 
     for(uint32_t i=0;i<d.subfiles.size();++i)
         if(mNodes[d.subfiles[i]]) {		// normally not needed, but an extra-security
-            local_cumulative_size += static_cast<FileEntry*>(mNodes[d.subfiles[i]])->file_size;
+            FileEntry *f = static_cast<FileEntry*>(mNodes[d.subfiles[i]]);
+            local_cumulative_size += f->file_size;
             local_cumulative_files++;
+
+            if(get_uploads)
+                local_cumulative_uploads += get_uploads(f->file_hash);
         }
 
     for(uint32_t i=0;i<d.subdirs.size();++i) {
-        local_cumulative_size += recursUpdateCumulatedSize(d.subdirs[i]);
+        local_cumulative_size += recursUpdateCumulatedSize(d.subdirs[i], get_uploads);
         local_cumulative_files += static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_cumulated_files;
+        local_cumulative_uploads += static_cast<DirEntry*>(mNodes[d.subdirs[i]])->dir_cumulated_uploads;
     }
 
     d.dir_cumulated_size = local_cumulative_size;
     d.dir_cumulated_files = local_cumulative_files;
+    d.dir_cumulated_uploads = local_cumulative_uploads;
+
     return local_cumulative_size;
 }
 // Do a complete recursive sweep over sub-directories and files, and update the lst modf TS. This could be also performed by a cleanup method.
@@ -716,7 +763,7 @@ rstime_t InternalFileHierarchyStorage::recursUpdateLastModfTime(const DirectoryS
 {
     DirEntry& d(*static_cast<DirEntry*>(mNodes[dir_index])) ;
 
-    rstime_t largest_modf_time = d.dir_modtime ;
+    rstime_t largest_modf_time = std::max(d.dir_modtime, d.dir_update_time) ;
     unfinished_files_present = false ;
 
     for(uint32_t i=0;i<d.subfiles.size();++i)
@@ -825,63 +872,87 @@ private:
     const InternalFileHierarchyStorage::DirEntry& mDe ;
 };
 
-int InternalFileHierarchyStorage::searchBoolExp(
-        RsRegularExpression::Expression* exp,
-        std::list<DirectoryStorage::EntryIndex>& results ) const
-{
-	for(auto& it: std::as_const(mFileHashes))
-		if(mNodes[it.second])
-			if(exp->eval(
-			            DirectoryStorageExprFileEntry(
-			                *static_cast<const FileEntry*>(mNodes[it.second]),
-			                *static_cast<const DirEntry*>(mNodes[mNodes[it.second]->parent_index])
-			                                      ) ))
-			results.push_back(it.second);
+// Walks the hash table from where 'cursor' stopped, calling 'match' on each file index, for about 'budget_ms'.
+// Resuming by key (upper_bound) rather than with an iterator stays valid when the table was changed while the
+// caller had released the storage mutex: entries added or removed meanwhile are simply seen or not.
 
-    return 0;
+template<class Match>
+static bool scanFileHashes(
+        const std::map<RsFileHash,DirectoryStorage::EntryIndex>& hashes,
+        InternalFileHierarchyStorage::SearchCursor& cursor, uint32_t budget_ms, Match match )
+{
+	auto it = cursor.started ? hashes.upper_bound(cursor.last) : hashes.begin();
+	cursor.started = true;
+
+	const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(budget_ms);
+
+	for(uint32_t n=1; it != hashes.end(); ++it, ++n)
+	{
+		match(it->second);
+
+		if(n % 256 == 0 && std::chrono::steady_clock::now() > deadline)
+		{
+			cursor.last = it->first;
+			return false;
+		}
+	}
+	return true;
 }
 
-int InternalFileHierarchyStorage::searchTerms(
+bool InternalFileHierarchyStorage::searchBoolExp(
+        RsRegularExpression::Expression* exp,
+        std::list<DirectoryStorage::EntryIndex>& results,
+        SearchCursor& cursor, uint32_t budget_ms ) const
+{
+	return scanFileHashes(mFileHashes, cursor, budget_ms, [&](DirectoryStorage::EntryIndex i)
+	{
+		if(mNodes[i])
+			if(exp->eval(
+			            DirectoryStorageExprFileEntry(
+			                *static_cast<const FileEntry*>(mNodes[i]),
+			                *static_cast<const DirEntry*>(mNodes[mNodes[i]->parent_index])
+			                                      ) ))
+				results.push_back(i);
+	});
+}
+
+bool InternalFileHierarchyStorage::searchTerms(
         const std::list<std::string>& terms,
-        std::list<DirectoryStorage::EntryIndex>& results ) const
+        std::list<DirectoryStorage::EntryIndex>& results,
+        SearchCursor& cursor, uint32_t budget_ms ) const
 {
 	/* most entries are likely to be files, so we could do a linear search over
 	 * the entries tab. Instead we go through the table of hashes.*/
 
-	for(auto& it : std::as_const(mFileHashes))
+	return scanFileHashes(mFileHashes, cursor, budget_ms, [&](DirectoryStorage::EntryIndex i)
 	{
 		// node may be null for some hash waiting to be deleted
-		if(mNodes[it.second])
+		if(!mNodes[i])
+			return;
+
+		rs_view_ptr<FileEntry> tFileEntry = static_cast<FileEntry*>(mNodes[i]);
+
+		/* Most file will just have file name stored, but single file shared
+		 * without a shared dir will contain full path instead of just the
+		 * name, so purify it to perform the search */
+		std::string tFilename = tFileEntry->file_name;
+		if(tFileEntry->file_name.find("/") != std::string::npos)
 		{
-			rs_view_ptr<FileEntry> tFileEntry =
-			        static_cast<FileEntry*>(mNodes[it.second]);
+			std::string _tParentDir;
+			RsDirUtil::splitDirFromFile(
+			            tFileEntry->file_name, _tParentDir, tFilename );
+		}
 
-			/* Most file will just have file name stored, but single file shared
-			 * without a shared dir will contain full path instead of just the
-			 * name, so purify it to perform the search */
-			std::string tFilename = tFileEntry->file_name;
-			if(tFileEntry->file_name.find("/") != std::string::npos)
+		for(auto& termIt : std::as_const(terms))
+		{
+			/* always ignore case */
+			if(utf8ContainsIgnoreCase(tFilename, termIt))
 			{
-				std::string _tParentDir;
-				RsDirUtil::splitDirFromFile(
-				            tFileEntry->file_name, _tParentDir, tFilename );
-			}
-
-			for(auto& termIt : std::as_const(terms))
-			{
-				/* always ignore case */
-				if(tFilename.end() != std::search(
-				            tFilename.begin(), tFilename.end(),
-				            termIt.begin(), termIt.end(),
-				            RsRegularExpression::CompareCharIC() ))
-				{
-					results.push_back(it.second);
-					break;
-				}
+				results.push_back(i);
+				break;
 			}
 		}
-	}
-	return 0;
+	});
 }
 
 bool InternalFileHierarchyStorage::check(std::string& error_string) // checks consistency of storage.
@@ -955,8 +1026,44 @@ bool InternalFileHierarchyStorage::check(std::string& error_string) // checks co
         {
             if(!bOrphean){ error_string += " - Orphean node!"; bOrphean = true;}
 
+            if(mNodes[i]->type() == FileStorageNode::TYPE_FILE)
+                forgetFileHash(static_cast<FileEntry*>(mNodes[i])->file_hash,i) ;
+
             deleteNode(i) ;	// we don't care if it's a file or a dir.
         }
+
+    // mFileHashes keeps a single file per hash. When that file went away, or got another hash, its entry was
+    // removed. Files with the same content that are still here get the entry back, so that they can be found.
+    // Only the hashes that lost their entry are looked up in mFileHashes: looking up every file of a large
+    // list takes long (0.8 s for a million files), and this runs each time a file leaves the list.
+
+    if(mRestoreAllFileHashes || !mFileHashesToRestore.empty())
+    {
+        for(uint32_t i=0;i<mNodes.size();++i)
+            if(mNodes[i] != NULL && mNodes[i]->type() == FileStorageNode::TYPE_FILE)
+            {
+                const RsFileHash& hash(static_cast<FileEntry*>(mNodes[i])->file_hash) ;
+
+                if(hash.isNull())
+                    continue ;
+
+                if(!mRestoreAllFileHashes && mFileHashesToRestore.find(hash) == mFileHashesToRestore.end())
+                    continue ;
+
+                auto res = mFileHashes.insert(std::make_pair(hash,i)) ;
+
+                if(!res.second)		// keep an existing entry, unless it points to a deleted node, or to a node with another hash.
+                {
+                    uint32_t j = res.first->second ;
+
+                    if(j >= mNodes.size() || mNodes[j] == NULL || mNodes[j]->type() != FileStorageNode::TYPE_FILE || static_cast<FileEntry*>(mNodes[j])->file_hash != hash)
+                        res.first->second = i ;
+                }
+            }
+
+        mFileHashesToRestore.clear() ;
+        mRestoreAllFileHashes = false ;
+    }
 
     return error_string.empty();;
 }
@@ -1063,6 +1170,20 @@ bool InternalFileHierarchyStorage::recursRemoveDirectory(DirectoryStorage::Entry
 
 bool InternalFileHierarchyStorage::save(const std::string& fname)
 {
+    unsigned char *data = NULL ;
+    uint32_t size = 0 ;
+
+    if(!serialise(data,size))
+        return false ;
+
+    bool res = FileListIO::saveEncryptedDataToFile(fname,data,size) ;
+    free(data) ;
+
+    return res ;
+}
+
+bool InternalFileHierarchyStorage::serialise(unsigned char *& data,uint32_t& size)
+{
     unsigned char *buffer = NULL ;
     uint32_t buffer_size = 0 ;
     uint32_t buffer_offset = 0 ;
@@ -1129,12 +1250,12 @@ bool InternalFileHierarchyStorage::save(const std::string& fname)
                 if(!FileListIO::writeField(buffer,buffer_size,buffer_offset,FILE_LIST_IO_TAG_LOCAL_DIR_ENTRY,tmp_section_data,dir_section_offset)) throw std::runtime_error("Write error") ;
             }
 
-        bool res = FileListIO::saveEncryptedDataToFile(fname,buffer,buffer_offset) ;
-
-        free(buffer) ;
         free(tmp_section_data) ;
 
-        return res ;
+        data = buffer ;
+        size = buffer_offset ;
+
+        return true ;
     }
     catch(std::exception& e)
     {

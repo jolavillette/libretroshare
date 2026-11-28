@@ -26,6 +26,7 @@
  * #define RS_DATA_SERVICE_DEBUG_CACHE 1
  ****/
 
+#include <chrono>
 #include <fstream>
 #include <util/rsdir.h>
 #include <algorithm>
@@ -37,6 +38,17 @@
 #include "rsdataservice.h"
 #include "retroshare/rsgxsflags.h"
 #include "util/rsstring.h"
+
+#include <chrono>
+#include <filesystem>
+#include <vector>
+
+#ifdef WINDOWS_SYS
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 
 #define MSG_TABLE_NAME std::string("MESSAGES")
 #define GRP_TABLE_NAME std::string("GROUPS")
@@ -51,6 +63,17 @@
 // the generated SQL and sqlite's expression tree to a sane size while making
 // the per-statement preparation cost negligible.
 static const uint32_t MAX_MSG_IDS_PER_QUERY = 500;
+
+// Group ids of retrieveNxsGrps(). Much smaller: mDbMutex is held for a whole
+// batch, and a group row with its meta was measured at 4 to 8 ms (identities),
+// so 50 groups keep each hold to a few tenths of a second.
+static const uint32_t MAX_GRP_IDS_PER_QUERY = 50;
+
+// Pause between two batches of retrieveNxsGrps(), mDbMutex released. Without
+// it the loop takes the mutex again at once and, the mutex not being fair,
+// a waiting reader can lose the race several batches in a row (measured: a
+// one-group read waited 9.7 s behind a 2413-group read).
+static const uint32_t GRP_BATCH_PAUSE_MICROSEC = 2000;
 
 // generic
 #define KEY_NXS_DATA        std::string("nxsData")
@@ -125,12 +148,19 @@ static int addColumn(std::list<std::string> &list, const std::string &attribute)
 
 RsDataService::RsDataService(const std::string &serviceDir, const std::string &dbName, uint16_t serviceType,
                              RsGxsSearchModule * /* mod */, const std::string& key)
-    : RsGeneralDataService(), mDbMutex("RsDataService"), mServiceDir(serviceDir), mDbName(dbName), mDbPath(mServiceDir + "/" + dbName), mServType(serviceType), mDb(NULL)
+    : RsGeneralDataService(), mDbMutex("RsDataService"), mServiceDir(serviceDir), mDbName(dbName), mDbPath(mServiceDir + "/" + dbName), mServType(serviceType), mDb(NULL), mPreReadStop(false)
 {
     bool isNewDatabase = !RsDirUtil::fileExists(mDbPath);
 
+    if(!isNewDatabase)
+        mPreReadThread = std::thread(&RsDataService::preReadDatabaseFile, this);
+
     mDb = new RetroDb(mDbPath, RetroDb::OPEN_READWRITE_CREATE, key);
     mUseCache = true;
+    mMsgMetaDataCache_ContainsAllDatabase = false;
+    mMsgMetaDataCache_ColdFullReads = 0;
+    mMsgMetaWarmupStarted = false;
+    mMsgMetaWarmupStop = false;
 
     initialise(isNewDatabase);
 
@@ -207,15 +237,127 @@ RsDataService::RsDataService(const std::string &serviceDir, const std::string &d
     mColMsgId_MsgId = addColumn(mMsgIdColumn, KEY_MSG_ID);
 }
 
+#include "util/rsdebug.h"
+#include "util/rsshutdownprobe.h" // shutdown diagnostics, see the end of the destructor
+
 RsDataService::~RsDataService(){
+
+    mPreReadStop = true;
+    if(mPreReadThread.joinable())
+        mPreReadThread.join();
 
 #ifdef RS_DATA_SERVICE_DEBUG
     std::cerr << "RsDataService::~RsDataService()";
     std::cerr << std::endl;
 #endif
 
+    // Stop the cache warm-up thread before closing the DB it reads from. It
+    // checks the flag between two slices, so this waits one slice at most.
+    mMsgMetaWarmupStop = true;
+    if(mMsgMetaWarmupThread.joinable())
+        mMsgMetaWarmupThread.join();
+
     mDb->closeDb();
     delete mDb;
+
+    /* Shutdown diagnostics (debug/shutdown-step-timings): the database is
+     * closed here; what the caller's "close database" step measures after
+     * this line is the destruction of the members, the meta caches above all. */
+    RsInfo() << "shutdown: " << mDbName << " closed after " << RsShutdownStepStart::current().elapsed()
+             << ", now freeing its caches";
+}
+
+void RsDataService::preReadDatabaseFile()
+{
+    // At startup every service reads the metadata of its groups and messages.
+    // Even served by the covering index, these reads land on pages scattered
+    // all over the file, one disk seek each: on rotating disks, with a cold page
+    // cache, they were measured at 20-50 s per database (2026-11-07: 9659 forum
+    // metas in 21 s, the boards 40 s), while reading the same files sequentially
+    // takes 3-4 s (~85 MB/s). Read the file once, front to back, so that the
+    // random reads that follow are served from the page cache. On an SSD or a
+    // warm cache this costs little. Skipped when the file is large compared to
+    // the available memory, where it would only evict other useful pages.
+    //
+    // Each database runs its own pre-read and they all start together. This is
+    // on purpose: measured on 2026-11-13 on a RAID1 of two rotating disks, the
+    // forums, boards and channels files (1.27 GB) took 8-9 s read in parallel
+    // and 14-19 s one after the other, because md serves concurrent streams
+    // from both disks. An SSD loses nothing either. On a single rotating disk
+    // the heads move between files, once per 4 MB chunk at most.
+
+    static const size_t CHUNK_SIZE = 4 * 1024 * 1024;
+
+    // mDbPath is UTF-8. On Windows a narrow path is read in the ANSI code page,
+    // so a profile under a non-ASCII user name would not open: go through a
+    // filesystem::path, which libstdc++ opens with the wide API there.
+    std::ifstream f(std::filesystem::u8path(mDbPath), std::ios::binary | std::ios::ate);
+
+    if(!f)
+        return;
+
+    const uint64_t file_size = (uint64_t)f.tellg();
+    f.seekg(0);
+
+    uint64_t limit = 1024ull * 1024 * 1024;
+#ifdef __linux__
+    {
+        // MemAvailable is in kB. A quarter of it, at most, for one database.
+        std::ifstream mi("/proc/meminfo");
+        std::string key;
+        uint64_t value;
+
+        while(mi >> key >> value)
+        {
+            if(key == "MemAvailable:")
+            {
+                limit = value * 1024 / 4;
+                break;
+            }
+            mi.ignore(1024, '\n');
+        }
+    }
+#elif defined(WINDOWS_SYS)
+    {
+        // Same rule as on Linux: a quarter of the memory that can be given to
+        // the file cache (free + standby). The fixed 1 GB above left a 1358 MB
+        // boards database un-read on a machine with plenty of memory: its first
+        // group took 95 s to load (3249 metas, 29 ms each), where reading the
+        // whole file front to back takes about 10 s on the same disk.
+        MEMORYSTATUSEX ms;
+        ms.dwLength = sizeof(ms);
+
+        if(GlobalMemoryStatusEx(&ms))
+            limit = ms.ullAvailPhys / 4;
+    }
+#endif
+
+    if(file_size > limit)
+    {
+        RsInfo() << mDbName << ": not pre-reading the database file (" << file_size / (1024 * 1024)
+                 << " MB, over the " << limit / (1024 * 1024) << " MB limit)";
+        return;
+    }
+
+    auto t0 = std::chrono::steady_clock::now();
+    std::vector<char> buffer(CHUNK_SIZE);
+    uint64_t total = 0;
+
+    while(!mPreReadStop)
+    {
+        f.read(buffer.data(), buffer.size());
+        std::streamsize n = f.gcount();
+
+        if(n <= 0)
+            break;
+
+        total += n;
+    }
+
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count();
+
+    RsInfo() << mDbName << ": pre-read " << total / (1024 * 1024) << " MB of the database file in "
+             << ms << " ms" << (mPreReadStop? " (interrupted)" : "");
 }
 
 static bool moveDataFromFileToDatabase(RetroDb *db, const std::string serviceDir, const std::string &tableName, const std::string &keyId, std::list<std::string> &files)
@@ -1134,42 +1276,75 @@ int RsDataService::retrieveNxsGrps(std::map<RsGxsGroupId, RsNxsGrp *> &grp, bool
     }
     else
     {
-        RsStackMutex stack(mDbMutex);
-        std::map<RsGxsGroupId, RsNxsGrp *>::iterator mit = grp.begin();
+        // Read the requested groups in batches, one "grpId IN (...)" query per
+        // batch, like retrieveNxsMsgs() does for messages. One query per group
+        // was measured at 4 ms per group: 10.3 s for a list of 2534 identities,
+        // mDbMutex held all along, with the other readers of the database
+        // queued behind it. The mutex is now taken per batch, with a short
+        // pause between two batches, so that they get in.
 
+        std::vector<RsGxsGroupId> ids;
+        ids.reserve(grp.size());
+
+        for(auto it = grp.begin(); it != grp.end(); ++it)
+            ids.push_back(it->first);
+
+        std::set<RsGxsGroupId> found;
         std::list<RsGxsGroupId> toRemove;
 
-        for(; mit != grp.end(); ++mit)
+        for(size_t start = 0; start < ids.size(); start += MAX_GRP_IDS_PER_QUERY)
         {
-            const RsGxsGroupId& grpId = mit->first;
-            RetroCursor* c = mDb->sqlQuery(GRP_TABLE_NAME, withMeta ? mGrpColumnsWithMeta : mGrpColumns, "grpId='" + grpId.toStdString() + "'", "");
+            const size_t end = std::min(ids.size(), start + (size_t)MAX_GRP_IDS_PER_QUERY);
+
+            // Let the readers waiting for mDbMutex in before the next batch.
+            if(start > 0)
+                rstime::rs_usleep(GRP_BATCH_PAUSE_MICROSEC);
+
+            std::string selection = KEY_GRP_ID + " IN (";
+
+            for(size_t i = start; i < end; ++i)
+            {
+                if(i > start) selection += ",";
+                selection += "'" + ids[i].toStdString() + "'";
+            }
+
+            selection += ")";
+
+            RsStackMutex stack(mDbMutex);
+            RetroCursor* c = mDb->sqlQuery(GRP_TABLE_NAME, withMeta ? mGrpColumnsWithMeta : mGrpColumns, selection, "");
 
             if(c)
             {
                 std::vector<RsNxsGrp*> grps;
                 locked_retrieveGroups(c, grps, withMeta ? mColGrp_WithMetaOffset : 0);
 
-                if(!grps.empty())
+                for(RsNxsGrp* ng : grps)
                 {
-                        RsNxsGrp* ng = grps.front();
-                        grp[ng->grpId] = ng;
+                    auto it = grp.find(ng->grpId);
 
+                    if(it == grp.end() || !found.insert(ng->grpId).second)
+                    {
+                        delete ng;	// not asked for, or already there: cannot happen, grpId is the primary key
+                        continue;
+                    }
+
+                    it->second = ng;
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
-                        ++resultCount;
+                    ++resultCount;
 #endif
-                }else{
-                        toRemove.push_back(grpId);
                 }
+
+                // The groups of this batch that the database does not have.
+                for(size_t i = start; i < end; ++i)
+                    if(found.find(ids[i]) == found.end())
+                        toRemove.push_back(ids[i]);
 
                 delete c;
             }
         }
 
-        std::list<RsGxsGroupId>::iterator grpIdIt;
-        for (grpIdIt = toRemove.begin(); grpIdIt != toRemove.end(); ++grpIdIt)
-        {
+        for(auto grpIdIt = toRemove.begin(); grpIdIt != toRemove.end(); ++grpIdIt)
             grp.erase(*grpIdIt);
-        }
     }
 
 #ifdef RS_DATA_SERVICE_DEBUG_TIME
@@ -1320,6 +1495,252 @@ void RsDataService::locked_retrieveMessages(RetroCursor *c, std::vector<RsNxsMsg
     return;
 }
 
+// Bytes the calling thread actually read from storage (page cache hits are not
+// counted), from /proc/thread-self/io. 0 where not available.
+static uint64_t threadStorageReadBytes()
+{
+#ifdef __linux__
+    std::ifstream f("/proc/thread-self/io");
+    std::string key;
+    uint64_t value;
+
+    while(f >> key >> value)
+        if(key == "read_bytes:")
+            return value;
+#endif
+    return 0;
+}
+
+void RsDataService::msgMetaWarmupThreadBody()
+{
+    // Read the meta of every message of the database in a single sequential
+    // scan, and fill the per-group caches with the result.
+    //
+    // The per-group query "WHERE grpId=?" is served through
+    // INDEX_MESSAGES_GRPID, which means one row lookup -- one disk seek -- per
+    // message, scattered across the whole file. Doing that once per group makes
+    // the cost of warming up the caches proportional to the number of groups
+    // times the size of the file. A single scan reads the file in physical
+    // order instead, so warming up every group costs one pass whatever the
+    // number of groups.
+    //
+    // Measured on a synthetic database of the same shape and size as a real
+    // gxsforums_db (235 MB, 23 KB rows), cold cache: 20 per-group queries took
+    // 29.4 s where the single scan took 2.1 s, and the scan does not get more
+    // expensive as groups are added.
+    //
+    // Cold, that same scan was measured at up to 57 s on a real forums db, so
+    // it cannot run under mDbMutex in one go: it proceeds in slices by
+    // increasing rowid, taking the mutex only for the duration of one slice
+    // so that readers interleave between slices.
+    // Messages stored while the scan runs are put into the caches by
+    // storeMessage() itself, so rows the slices could miss (rowid reuse after
+    // a deletion) are covered; until the scan completes, cold groups keep
+    // being served by the indexed per-group query.
+
+    // The slice size adapts so that one slice -- hence one mDbMutex hold --
+    // stays around WARMUP_SLICE_TARGET_MS. With a fixed row count, a cold
+    // slice of a large-row database was measured at ~10 s, which is exactly
+    // the reader stall this thread exists to avoid.
+    static const int64_t WARMUP_SLICE_TARGET_MS = 250;
+    static const uint32_t WARMUP_SLICE_MIN_ROWS = 64;
+    static const uint32_t WARMUP_SLICE_MAX_ROWS = 4096;
+
+    uint32_t slice_rows = 256;
+
+    std::list<std::string> columns(mMsgMetaColumns);
+    columns.push_front("rowid");
+
+    int64_t last_rowid = 0;
+    bool done = false;
+    uint64_t total_rows = 0;
+    uint32_t n_slices = 0;
+    auto t0 = std::chrono::steady_clock::now();
+    const uint64_t io0 = threadStorageReadBytes();
+
+    // Once the covering index INDEX_MESSAGES_META exists (grpId + every meta
+    // column), the rowid scan below is the expensive way: the meta columns sit
+    // after the nxsData blob in each row, so the scan reads and decrypts every
+    // post, i.e. the whole database file (measured cold on 2026-11-07: 89 s for
+    // the forums db, 50 s for the boards db, competing on the disk with the
+    // per-group reads the GUI waits for). The index holds the metas alone, a
+    // few percent of the file: read it group by group instead, in index order.
+    // One group per mDbMutex hold, so that readers interleave between groups.
+
+    bool by_index = false;
+    {
+        RsStackMutex stack(mDbMutex);
+
+        if(mMsgMetaDataCache_ContainsAllDatabase)
+            return;
+
+        RetroCursor* c = mDb->sqlQuery("sqlite_master", std::list<std::string>{ "name" },
+                                       "type='index' AND name='INDEX_MESSAGES_META'", "");
+        if(c)
+        {
+            by_index = c->moveToFirst();
+            delete c;
+        }
+    }
+
+    std::string last_grp;
+
+    while(by_index && !done && !mMsgMetaWarmupStop)
+    {
+        {
+            RsStackMutex stack(mDbMutex);
+
+            if(mMsgMetaDataCache_ContainsAllDatabase)
+                return;
+
+            // Next group holding messages, one index lookup.
+            RetroCursor* c = mDb->sqlQuery(MSG_TABLE_NAME, std::list<std::string>{ KEY_GRP_ID },
+                                           KEY_GRP_ID + " > '" + last_grp + "'", KEY_GRP_ID + " LIMIT 1");
+            if(!c)
+            {
+                RsErr() << __PRETTY_FUNCTION__ << ": failed to query message groups. Giving up cache warm-up." << std::endl;
+                return;
+            }
+
+            bool found = c->moveToFirst();
+            std::string grp;
+
+            if(found)
+                c->getString(0, grp);
+
+            delete c;
+
+            if(!found)
+            {
+                // Every group holding messages has been read. Mark the others
+                // too, so that they are not re-queried forever.
+                for(auto& it: mMsgMetaDataCache)
+                    it.second.setCacheUpToDate(true);
+
+                mMsgMetaDataCache_ContainsAllDatabase = true;
+                done = true;
+            }
+            else
+            {
+                last_grp = grp;
+
+                auto& cache(mMsgMetaDataCache[RsGxsGroupId(grp)]);
+
+                // A per-group read may have filled it already.
+                if(!cache.isCacheUpToDate())
+                {
+                    RetroCursor* gc = mDb->sqlQuery(MSG_TABLE_NAME, mMsgMetaColumns, KEY_GRP_ID + "='" + grp + "'", "");
+
+                    if(gc)
+                    {
+                        bool valid = gc->moveToFirst();
+
+                        while(valid)
+                        {
+                            auto m = locked_getMsgMeta(*gc, 0);
+
+                            if(m != nullptr)
+                                cache.updateMeta(m->mMsgId, m);
+
+                            ++total_rows;
+                            valid = gc->moveToNext();
+                        }
+
+                        delete gc;
+                        cache.setCacheUpToDate(true);
+                    }
+                }
+
+                ++n_slices;
+            }
+        }
+
+        if(!done)
+            std::this_thread::sleep_for(std::chrono::milliseconds(2));	// let waiting readers in
+    }
+
+    while(!by_index && !done && !mMsgMetaWarmupStop)
+    {
+        auto slice_t0 = std::chrono::steady_clock::now();
+
+        {
+            RsStackMutex stack(mDbMutex);
+
+            if(mMsgMetaDataCache_ContainsAllDatabase)
+                return;
+
+            RetroCursor* c = mDb->sqlQuery(MSG_TABLE_NAME, columns,
+                        "rowid > " + std::to_string(last_rowid),
+                        "rowid LIMIT " + std::to_string(slice_rows));
+
+            if(!c)
+            {
+                RsErr() << __PRETTY_FUNCTION__ << ": failed to query message meta data. Giving up cache warm-up." << std::endl;
+                return;
+            }
+
+            uint32_t n_rows = 0;
+            bool valid = c->moveToFirst();
+
+            while(valid)
+            {
+                last_rowid = c->getInt64(0);
+
+                auto m = locked_getMsgMeta(*c, 1);
+
+                if(m != nullptr)
+                    mMsgMetaDataCache[m->mGroupId].updateMeta(m->mMsgId, m);
+
+                ++n_rows;
+                valid = c->moveToNext();
+            }
+
+            delete c;
+
+            total_rows += n_rows;
+            ++n_slices;
+
+            if(n_rows < slice_rows)
+            {
+                // Last slice. Every group of this database now holds all its
+                // metas, including the ones that have no message at all and
+                // would otherwise be re-queried forever.
+                for(auto& it: mMsgMetaDataCache)
+                    it.second.setCacheUpToDate(true);
+
+                mMsgMetaDataCache_ContainsAllDatabase = true;
+                done = true;
+            }
+        }
+
+        if(!done)
+        {
+            // Rescale the next slice towards the per-slice time target.
+            int64_t slice_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - slice_t0).count();
+
+            if(slice_ms > 0)
+            {
+                uint64_t next = (uint64_t)slice_rows * WARMUP_SLICE_TARGET_MS / slice_ms;
+                slice_rows = (uint32_t)std::min<uint64_t>(WARMUP_SLICE_MAX_ROWS,
+                                        std::max<uint64_t>(WARMUP_SLICE_MIN_ROWS, next));
+            }
+            else
+                slice_rows = WARMUP_SLICE_MAX_ROWS;
+
+            // Let the readers waiting on mDbMutex in between two slices.
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+
+    if(done)
+        RsInfo() << mDbName << ": message meta cache warm-up completed: "
+                 << total_rows << " metas in " << n_slices << (by_index? " groups (covering index), ":" slices (rowid scan), ")
+                 << std::chrono::duration_cast<std::chrono::milliseconds>(
+                        std::chrono::steady_clock::now() - t0).count()
+                 << " ms, " << (threadStorageReadBytes() - io0)/(1024*1024) << " MB read from disk" << std::endl;
+}
+
 int RsDataService::retrieveGxsMsgMetaData(const GxsMsgReq& reqIds, GxsMsgMetaResult& msgMeta)
 {
     RsStackMutex stack(mDbMutex);
@@ -1328,6 +1749,30 @@ int RsDataService::retrieveGxsMsgMetaData(const GxsMsgReq& reqIds, GxsMsgMetaRes
     rstime::RsScopeTimer timer("");
     int resultCount = 0;
 #endif
+
+    // Whole-group requests that the cache cannot serve are the expensive ones:
+    // one row lookup per message, scattered over the whole file. Counting them
+    // across calls matters, because callers ask for one group at a time -- the
+    // GUI computes the statistics of each group with its own request. As soon as
+    // a second group needs such a read, sweeping the database is what is
+    // happening, and one sequential scan is cheaper than continuing group by
+    // group. The scan runs on its own thread in mutex-released slices -- cold,
+    // it takes tens of seconds, and the caller possibly only needs a handful of
+    // metas from one group. See msgMetaWarmupThreadBody().
+    if(mUseCache && !mMsgMetaDataCache_ContainsAllDatabase && !mMsgMetaWarmupStarted)
+    {
+        uint32_t cold_groups = 0;
+
+        for(auto mit(reqIds.begin()); mit != reqIds.end(); ++mit)
+            if(mit->second.empty() && !mMsgMetaDataCache[mit->first].isCacheUpToDate())
+                ++cold_groups;
+
+        if(cold_groups + mMsgMetaDataCache_ColdFullReads > 1)
+        {
+            mMsgMetaWarmupStarted = true;
+            mMsgMetaWarmupThread = std::thread(&RsDataService::msgMetaWarmupThreadBody, this);
+        }
+    }
 
     for(auto mit(reqIds.begin()); mit != reqIds.end(); ++mit)
     {
@@ -1346,6 +1791,8 @@ int RsDataService::retrieveGxsMsgMetaData(const GxsMsgReq& reqIds, GxsMsgMetaRes
                 cache->getFullMetaList(msgMeta[grpId]);
             else
 			{
+                ++mMsgMetaDataCache_ColdFullReads;
+
 				RetroCursor* c = mDb->sqlQuery(MSG_TABLE_NAME, mMsgMetaColumns, KEY_GRP_ID+ "='" + grpId.toStdString() + "'", "");
 
 				if (c)
@@ -1503,6 +1950,13 @@ int RsDataService::retrieveGxsGrpMetaData(std::map<RsGxsGroupId,std::shared_ptr<
 
 			if(meta)
 				mit->second = meta;
+			else if(mUseCache && mGrpMetaDataCache.isCacheUpToDate())
+			{
+				// The cache holds every group of the database: this one does not exist, no need
+				// to ask the database. Lists made mostly of unknown groups come from the network:
+				// 14483 identities asked for, 222 to 1482 of them known, cost 2 to 3.5 s of
+				// queries under mDbMutex.
+			}
 			else
 			{
 #ifdef RS_DATA_SERVICE_DEBUG_CACHE
@@ -1947,3 +2401,8 @@ void RsDataService::debug_printCacheSize()
 
 
 
+
+std::string RsDataService::getEncryptionKey() const
+{
+	return mDb ? mDb->getKey() : "";
+}

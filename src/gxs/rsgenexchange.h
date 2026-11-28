@@ -702,6 +702,17 @@ public:
 	 */
     void setGroupServiceString(uint32_t& token, const RsGxsGroupId& grpId, const std::string& servString);
 
+    /*!
+     * Lets the changes of the service string of groups wait up to delay_secs before they
+     * are written, so that several of them go into one database transaction: each
+     * transaction costs a commit, which takes seconds on a busy rotating disk, with the
+     * database mutex held. 0, the default, writes them at the next tick. Only for services
+     * that do not read the string back from the database right after setting it. Changes
+     * still waiting when the service stops are lost.
+     * @param delay_secs longest wait, in seconds
+     */
+    void setServiceStringWriteDelay(uint32_t delay_secs) { mServiceStringWriteDelay = delay_secs; }
+
 	/*!
 	 *
 	 * @param token value set to be redeemed with acknowledgement
@@ -948,7 +959,7 @@ private:
     RsGxsDataAccess* mDataAccess;
     RsGeneralDataService* mDataStore;
     RsNetworkExchangeService *mNetService;
-    RsSerialType *mSerialiser;
+    RsSerialType *mSerialiser; // WARNING: used concurrently via OpenMP in getMsgData() -- must remain stateless/re-entrant
     /// service type
     uint16_t mServType;
     RsGixs* mGixs;
@@ -973,6 +984,9 @@ private:
     std::map<uint32_t, GrpLocMetaData > mGrpLocMetaMap;
     std::map<uint32_t,  MsgLocMetaData> mMsgLocMetaMap;
 
+    uint32_t mServiceStringWriteDelay = 0;	// see setServiceStringWriteDelay()
+    rstime_t mGrpLocMetaHeldSince = 0;		// when the oldest change being held was seen, 0 when none is held
+
     std::vector<RsGxsNotify*> mNotifications;
 
 
@@ -988,12 +1002,23 @@ private:
     bool mCleaning;
     rstime_t mLastClean;
 
+    // groups dropped because their signature does not check, for the periodic report in tick()
+    std::set<RsGxsGroupId> mRejectedGrpsNoAdminSign;
+    std::set<RsGxsGroupId> mRejectedGrpsBadSign;
+    size_t mRejectedGrpsReported;
+    rstime_t mLastRejectedGrpsReport;
+
     bool mChecking, mCheckStarted;
     rstime_t mLastCheck;
     RsGxsIntegrityCheck* mIntegrityCheck;
     RsGxsGroupId mNextGroupToCheck ;
 
 protected:
+	/* RsThread override. The integrity check runs on a one-shot thread of its
+	 * own that reads mDataStore; it is stopped together with the service so
+	 * that it cannot outlive the store at shutdown. */
+	void onStopRequested() override;
+
 	enum CreateStatus { CREATE_FAIL, CREATE_SUCCESS, CREATE_FAIL_TRY_LATER };
 	const uint8_t SIGN_MAX_WAITING_TIME;
 	// TODO: cleanup this should be an enum!

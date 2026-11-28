@@ -25,6 +25,7 @@
 
 #include "pqi/p3peermgr.h"
 #include "pqi/p3netmgr.h"
+#include "pqi/pqinetwork.h"
 
 #include "rsserver/p3face.h"
 #include "pqi/authssl.h"
@@ -45,6 +46,7 @@
 #include "retroshare/rspeers.h"
 #include "retroshare/rsdht.h"
 #include "retroshare/rsbanlist.h"
+#include "services/p3mobilelink.h"
 
 /* Network setup States */
 
@@ -83,6 +85,11 @@ const uint32_t P3CONNMGR_UDP_DEFAULT_PERIOD = 30;  // this represents how long i
 
 #define MAX_RANDOM_ATTEMPT_OFFSET	6 // seconds.
 
+/* The longest attempt (UDP: period + RS_UDP_STD_TIMEOUT_PERIOD, then the SSL
+ * handshake) ends well within this. An attempt still flagged after it has lost
+ * its result, and would otherwise swallow every later connection request. */
+#define MAX_CONNECT_ATTEMPT_DURATION 600 // seconds.
+
 void  printConnectState(std::ostream &out, peerConnectState &peer);
 
 peerConnectAddress::peerConnectAddress()
@@ -111,6 +118,7 @@ peerConnectState::peerConnectState()
       linkType(0),
       source(0),
       inConnAttempt(false),
+      connAttemptTS(0),
       wasDeniedConnection(false),
       deniedTS(0),
       deniedInConnAttempt(false)
@@ -357,6 +365,27 @@ void    p3LinkMgrIMPL::statusTick()
 			it->second.state &= (~RS_PEER_S_ONLINE);
 		}
 
+		/* An attempt whose result never came back (the transport was reset
+		 * before it opened a socket, so nothing reported the failure) keeps
+		 * inConnAttempt set for ever: every later request, periodic retry,
+		 * DHT/UDP or manual, then stops at "already in connect attempt" and
+		 * the friend is never tried again until a restart. */
+		if (it->second.inConnAttempt &&
+		    it->second.connAttemptTS + MAX_CONNECT_ATTEMPT_DURATION < now)
+		{
+			RsWarn() << "p3LinkMgr: connection attempt to " << it->first
+			         << " at " << sockaddr_storage_tostring(it->second.currentConnAddrAttempt.addr)
+			         << " never reported a result in "
+			         << now - it->second.connAttemptTS
+			         << " s, dropping it" << std::endl;
+			it->second.inConnAttempt = false;
+			if (!it->second.connAddrs.empty())
+			{
+				it->second.actions |= RS_PEER_CONNECT_REQ;
+				mStatusChanged = true;
+			}
+		}
+
 		if (it->second.lastattempt < retry)
 		{
 			retryIds.push_back(it->first);
@@ -373,6 +402,9 @@ void    p3LinkMgrIMPL::statusTick()
 		std::cerr << *it2;
 		std::cerr << std::endl;
 #endif
+		// A phone in background dials only its homes (MobileLink).
+		if(mMobileLink && !mMobileLink->wantsDial(*it2)) continue;
+
 		/* retry it! */
 		retryConnect(*it2);
 	}
@@ -646,6 +678,7 @@ bool p3LinkMgrIMPL::connectAttempt(const RsPeerId &id, struct sockaddr_storage &
 
         it->second.lastattempt = time(NULL); 
         it->second.inConnAttempt = true;
+        it->second.connAttemptTS = time(NULL);
         it->second.currentConnAddrAttempt = it->second.connAddrs.front();
 	it->second.connAddrs.pop_front();
 
@@ -1493,6 +1526,8 @@ bool   p3LinkMgrIMPL::tryConnectUDP(const RsPeerId &id, const struct sockaddr_st
 		return false;
 	}
 
+	// A phone in background dials only its homes (MobileLink).
+	if (mMobileLink && !mMobileLink->wantsDial(id)) return false;
 
 	RsStackMutex stack(mLinkMtx); /****** STACK LOCK MUTEX *******/
 
@@ -1573,6 +1608,9 @@ bool p3LinkMgrIMPL::retryConnectTCP(const RsPeerId &id)
 #endif
 
 	if (id == getOwnId()) return false;
+
+	// A phone in background dials only its homes (MobileLink).
+	if (mMobileLink && !mMobileLink->wantsDial(id)) return false;
 
 	{
 		RS_STACK_MUTEX(mLinkMtx);
@@ -1975,8 +2013,82 @@ bool  p3LinkMgrIMPL::addAddressIfUnique(std::list<peerConnectAddress> &addrList,
 
 
 
+/* addr must have gone through sockaddr_storage_ipv6_to_ipv4() */
+static bool privateScopeAddress(const sockaddr_storage& addr)
+{
+	switch (addr.ss_family)
+	{
+	case AF_INET:
+		return sockaddr_storage_isPrivateNet(addr);
+	case AF_INET6:
+	{
+		if (sockaddr_storage_isLinkLocalNet(addr)) return true; // fe80::/10
+		const sockaddr_in6& addr6 = reinterpret_cast<const sockaddr_in6&>(addr);
+		return (addr6.sin6_addr.s6_addr[0] & 0xfe) == 0xfc;     // fc00::/7
+	}
+	default:
+		return false;
+	}
+}
+
+/* Our local address is only one of the addresses of this machine: a second
+ * interface (LAN side of a router, VPN, container bridge) can put us inside
+ * the friend's private network. Ask the routing table: connect() on a UDP
+ * socket sends nothing and gives the socket the source address the kernel
+ * would use towards addr. A private source means such an interface exists. */
+static bool routedFromPrivateSource(const sockaddr_storage& addr)
+{
+	int fd = unix_socket(addr.ss_family, SOCK_DGRAM, 0);
+	if (fd < 0) return false;
+
+	bool res = false;
+	sockaddr_storage src;
+	sockaddr_storage_clear(src);
+	socklen_t len = sizeof(src);
+	if ( unix_connect(fd, addr) == 0 &&
+	     getsockname(fd, reinterpret_cast<sockaddr*>(&src), &len) == 0 )
+	{
+		sockaddr_storage_ipv6_to_ipv4(src);
+		res = privateScopeAddress(src);
+	}
+
+	unix_close(fd);
+	return res;
+}
+
+/* A friend's private (10/8, 172.16/12, 192.168/16, 169.254/16), IPv6
+ * link-local or IPv6 unique-local address is only reachable from inside its
+ * own network. When our own local address is public and no other interface
+ * of ours leads there, a TCP attempt never connects: it costs the connect
+ * delay plus the TCP timeout (~8 s) before the friend's next address is tried.
+ * On a node with a public address these were ~40 % of the pending connects,
+ * and they kept our dial from reaching the friend's working address before
+ * the friend dialed us. Port 0 never connects either. */
+static bool unreachableTcpAddress( const sockaddr_storage& ownLocal,
+                                   const sockaddr_storage& peerAddr )
+{
+	sockaddr_storage addr = peerAddr;
+	sockaddr_storage_ipv6_to_ipv4(addr); // ::ffff:a.b.c.d -> a.b.c.d
+	if (sockaddr_storage_port(addr) == 0) return true;
+
+	sockaddr_storage own = ownLocal;
+	sockaddr_storage_ipv6_to_ipv4(own);
+	if (own.ss_family != AF_INET || !sockaddr_storage_isExternalNet(own))
+		return false; // we may share a private network with the friend
+
+	return privateScopeAddress(addr) && !routedFromPrivateSource(addr);
+}
+
 bool  p3LinkMgrIMPL::locked_ConnectAttempt_Complete(peerConnectState *peer)
 {
+	/* drop the direct TCP addresses we cannot reach from here */
+	for (auto it = peer->connAddrs.begin(); it != peer->connAddrs.end(); )
+	{
+		if ( (it->type & (RS_NET_CONN_TCP_LOCAL | RS_NET_CONN_TCP_EXTERNAL)) &&
+		     unreachableTcpAddress(mLocalAddress, it->addr) )
+			it = peer->connAddrs.erase(it);
+		else ++it;
+	}
 
 	/* flag as last attempt to prevent loop */
 	//add a random perturbation between 0 and 2 sec.

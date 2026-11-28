@@ -63,7 +63,7 @@ public:
     class DirEntry: public FileStorageNode
     {
     public:
-        explicit DirEntry(const std::string& name) : dir_name(name), dir_cumulated_size(0), dir_cumulated_files(0), dir_modtime(0),dir_most_recent_time(0),dir_update_time(0) {}
+        explicit DirEntry(const std::string& name) : dir_name(name), dir_cumulated_size(0), dir_cumulated_files(0), dir_cumulated_uploads(0), dir_modtime(0),dir_most_recent_time(0),dir_update_time(0) {}
         virtual ~DirEntry() {}
 
         virtual uint32_t type() const { return FileStorageNode::TYPE_DIR ; }
@@ -74,20 +74,25 @@ public:
         RsFileHash  dir_hash ;
         uint64_t    dir_cumulated_size;
         uint32_t    dir_cumulated_files;
+        uint64_t    dir_cumulated_uploads;
 
         std::vector<DirectoryStorage::EntryIndex> subdirs ;
         std::vector<DirectoryStorage::EntryIndex> subfiles ;
 
         rstime_t dir_modtime;
         rstime_t dir_most_recent_time;// recursive most recent modification time, including files and subdirs in the entire hierarchy below.
-        rstime_t dir_update_time;		// last time the information was updated for that directory. Includes subdirs indexes and subfile info.
+        rstime_t dir_update_time;		// remote: last time the information was updated for that directory. Local: last change made by RS itself (e.g. virtual name).
     };
 
     // class stuff
     InternalFileHierarchyStorage() ;
+    ~InternalFileHierarchyStorage() ;
 
     bool load(const std::string& fname) ;
     bool save(const std::string& fname) ;
+
+    // Writes the whole hierarchy into a newly allocated memory block, to be released with free(). Nothing goes to the disk.
+    bool serialise(unsigned char *& data,uint32_t& size) ;
 
     int parentRow(DirectoryStorage::EntryIndex e);
     bool isIndexValid(DirectoryStorage::EntryIndex e) const;
@@ -112,7 +117,7 @@ public:
 
     // Do a complete recursive sweep over sub-directories and files, and update the cumulative size.
 
-    uint64_t recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index);
+    uint64_t recursUpdateCumulatedSize(const DirectoryStorage::EntryIndex& dir_index, std::function<uint64_t(const RsFileHash&)> get_uploads = nullptr);
 
     // hash stuff
 
@@ -146,8 +151,14 @@ public:
     // search. SearchHash is logarithmic. The other two are linear.
 
     bool searchHash(const RsFileHash& hash, DirectoryStorage::EntryIndex &result);
-    int searchBoolExp(RsRegularExpression::Expression * exp, std::list<DirectoryStorage::EntryIndex> &results) const ;
-    int searchTerms(const std::list<std::string>& terms, std::list<DirectoryStorage::EntryIndex> &results) const ;		// does a logical OR between items of the list of terms
+    // The two linear searches are resumable, so that the caller can release the storage mutex between
+    // slices: each call goes on through the hash table from where 'cursor' stopped, for about 'budget_ms',
+    // and returns true once the whole table has been scanned.
+
+    struct SearchCursor { bool started = false ; RsFileHash last ; };
+
+    bool searchBoolExp(RsRegularExpression::Expression * exp, std::list<DirectoryStorage::EntryIndex> &results, SearchCursor& cursor, uint32_t budget_ms) const ;
+    bool searchTerms(const std::list<std::string>& terms, std::list<DirectoryStorage::EntryIndex> &results, SearchCursor& cursor, uint32_t budget_ms) const ;		// does a logical OR between items of the list of terms
 
     bool check(std::string& error_string)	;// checks consistency of storage.
 
@@ -171,6 +182,15 @@ private:
     void deleteNode(DirectoryStorage::EntryIndex);
     void deleteFileNode(DirectoryStorage::EntryIndex);
 
+    // Removes the entry of mFileHashes for this hash when it points to the given file, which is going away or
+    // getting another hash. Another file with the same content may remain: check() gives it the entry.
+
+    void forgetFileHash(const RsFileHash& hash,DirectoryStorage::EntryIndex file_index);
+
+    // Records that the entry of this hash was removed from mFileHashes, for check() to restore it.
+
+    void fileHashEntryRemoved(const RsFileHash& hash);
+
     // Recomputes the row of every child of d (sub-directories first, then files). Must be called after
     // any change to d.subdirs or d.subfiles.
 
@@ -187,6 +207,13 @@ private:
     // Unlike directories, multiple files may have the same hash. So this cannot be used for anything else than FT.
 
     std::map<RsFileHash,DirectoryStorage::EntryIndex> mFileHashes ;
+
+    // Hashes whose entry was removed from mFileHashes, while files with the same hash may be left without an
+    // entry. check() restores them. When too many hashes were removed at once the list is dropped, and check()
+    // looks at every file instead (mRestoreAllFileHashes).
+
+    std::set<RsFileHash> mFileHashesToRestore ;
+    bool mRestoreAllFileHashes ;
 
     // The directory hashes are the sha1sum of the
     // full public path to the directory.

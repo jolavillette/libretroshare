@@ -32,6 +32,7 @@
 #include "pqi/pqiservicemonitor.h"
 
 class p3ServiceControl;
+class p3MobileLink;
 
 //! handles standard status messages (busy, away, online, offline) set by user
 /*!
@@ -67,6 +68,10 @@ virtual bool getStatus(const RsPeerId &id, StatusInfo &statusInfo);
 /* id = "", status is sent to all online peers */
 virtual bool sendStatus(const RsPeerId &id, RsStatusValue status);
 
+	/// A phone in background gets no status change: it gets the last one when
+	/// it comes back (MobileLink). Set once at start-up.
+	void setMobileLink(p3MobileLink* mobileLink) { mMobileLink = mobileLink; }
+
 /******************************/
 
 
@@ -91,9 +96,18 @@ virtual bool loadList(std::list<RsItem*>& load);
 
 virtual void receiveStatusQueue();
 
+	/// Sends the phones back from background the status they missed.
+	void sendStatusToReturnedPhones();
+
 p3ServiceControl *mServiceCtrl;
 
 std::map<RsPeerId, StatusInfo> mStatusInfoMap;
+
+	/// The phones in background that missed a status change, and the last
+	/// status they missed.
+	std::map<RsPeerId, RsStatusValue> mMissedByPhones;
+
+	p3MobileLink* mMobileLink = nullptr;
 
 RsMutex mStatusMtx;
 

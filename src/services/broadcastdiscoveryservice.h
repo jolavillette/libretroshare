@@ -40,6 +40,7 @@
 
 namespace UDC = udpdiscovery;
 class RsPeers;
+class p3MobileLink;
 
 class BroadcastDiscoveryService :
         public RsBroadcastDiscovery, public RsTickingThread
@@ -62,6 +63,9 @@ public:
 
 	void threadTick() override; /// @see RsTickingThread
 
+	/// A node in phone mode neither announces itself nor listens (MobileLink).
+	void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
+
 protected:
 	constexpr static uint16_t port = 36405;
 	constexpr static uint32_t appId = 904571;
@@ -75,6 +79,15 @@ protected:
 	RsMutex mDiscoveredDataMutex;
 
 	RsPeers& mRsPeers;
+
+	p3MobileLink *mMobileLink = nullptr;
+
+	/// True while the node announces itself and listens.
+	bool mAnnouncing = false;
+
+	/// Starts the announces and the listening, or stops them when the node
+	/// is set to phone mode. @return true while announcing.
+	bool followPhoneMode();
 
 	/**
 	 * @brief Create result object from data

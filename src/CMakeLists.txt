@@ -26,6 +26,8 @@ list(
 	retroshare/rsservicecontrol.h
 	retroshare/rstokenservice.h
 	retroshare/rsturtle.h	
+	retroshare/rsmobilelink.h
+	retroshare/rsmobilepush.h
 	retroshare/rsgossipdiscovery.h
 	retroshare/rsgxscommon.h
 	retroshare/rsposted.h
@@ -86,6 +88,7 @@ if(RS_BITDHT)
 		dht/connectstatebox.cc
 		dht/p3bitdht.cc
 		dht/p3bitdht_interface.cc
+		dht/p3bitdht_size.cc
 		dht/p3bitdht_peernet.cc
 		dht/p3bitdht_peers.cc
 		dht/p3bitdht_relay.cc )
@@ -93,6 +96,7 @@ if(RS_BITDHT)
 	list(
 		APPEND RS_IMPLEMENTATION_HEADERS
 		dht/connectstatebox.h
+		dht/p3bitdht_size.h
 		dht/p3bitdht.h
 		dht/stunaddrassist.h )
 endif(RS_BITDHT)
@@ -293,6 +297,7 @@ list(
 	pqi/p3linkmgr.cc
 	pqi/pqihandler.cc
 	pqi/pqistreamer.cc
+	pqi/pqiechoprobe.cc
 	pqi/p3netmgr.cc
 	pqi/p3peermgr.cc
 	pqi/pqinetwork.cc
@@ -338,6 +343,7 @@ list(
 	pqi/pqissl.h
 	pqi/pqistore.h
 	pqi/pqistreamer.h
+	pqi/pqiechoprobe.h
 	pqi/pqithreadstreamer.h
 	pqi/sslfns.h )
 if(RS_USE_I2P_SAM3)
@@ -362,6 +368,8 @@ list(
 	rsitems/rsgxsupdateitems.cc
 	rsitems/rshistoryitems.cc
 	rsitems/rsrttitems.cc
+	rsitems/rsmobilelinkitems.cc
+	rsitems/rsmobilepushitems.cc
 	rsitems/rsserviceinfoitems.cc )
 
 list(
@@ -403,6 +411,8 @@ list(
 	rsitems/rspluginitems.h
 	rsitems/rsposteditems.h
 	rsitems/rsrttitems.h
+	rsitems/rsmobilelinkitems.h
+	rsitems/rsmobilepushitems.h
 	rsitems/rsserviceids.h
 	rsitems/rsserviceinfoitems.h
 	rsitems/rsstatusitems.h )
@@ -493,6 +503,8 @@ list(
 	services/p3statusservice.cc
 	services/p3banlist.cc
 	services/p3rtt.cc
+	services/p3mobilelink.cc
+	services/p3mobilepush.cc
 	services/rseventsservice.cc
 	services/p3gxscircles.cc
 	services/p3gxscommon.cc
@@ -512,6 +524,8 @@ list(
 	services/p3gxsforums.h
 	services/p3gxsreputation.h
 	services/p3heartbeat.h
+	services/p3mobilelink.h
+	services/p3mobilepush.h
 	services/p3idservice.h
 	services/p3msgservice.h
 	services/p3postbase.h
@@ -631,12 +645,14 @@ endif(RS_BITDHT_STUNNER)
 list(
 	APPEND RS_SOURCES
 	turtle/rsturtleitem.cc
+	turtle/turtlejournal.cc
 	turtle/p3turtle.cc )
 
 list(
 	APPEND RS_IMPLEMENTATION_HEADERS
 	turtle/p3turtle.h
 	turtle/rsturtleitem.h
+	turtle/turtlejournal.h
 	turtle/turtleclientservice.h
 	turtle/turtlestatistics.h
 	turtle/turtletypes.h )
@@ -665,6 +681,7 @@ list(
 	util/dnsresolver.cc
 	util/extaddrfinder.cc
 	util/rsdebug.cc
+	util/rssocketcensus.cc
 	util/rsdnsutils.cc
 	util/rsnet.cc
 	util/rsnet_ss.cc
@@ -723,26 +740,18 @@ list(
 	util/smallobject.h
 	util/stacktrace.h )
 
-if(RS_FORUM_DEEP_INDEX)
+if(RS_FORUM_CONTENT_SEARCH)
 	list(
 		APPEND RS_SOURCES
-		deep_search/commonutils.cpp
-		deep_search/forumsindex.cpp )
+		content_search/forumcontentindex.cpp
+		content_search/htmltext.cpp )
 
 	list(
 		APPEND RS_IMPLEMENTATION_HEADERS
-		deep_search/commonutils.hpp
-		deep_search/forumsindex.hpp )
-endif(RS_FORUM_DEEP_INDEX)
+		content_search/forumcontentindex.hpp
+		content_search/htmltext.hpp )
+endif(RS_FORUM_CONTENT_SEARCH)
 
-
-#./deep_search/filesflacindexer.hpp
-#./deep_search/filesoggindexer.hpp
-#./deep_search/filestaglibindexer.hpp
-#./deep_search/filesindex.cpp
-#./deep_search/filesindex.hpp
-#./deep_search/channelsindex.cpp
-#./deep_search/channelsindex.hpp
 
 list(
 	APPEND RS_SOURCES
@@ -786,6 +795,11 @@ if(RS_ANDROID)
 		rs_android/retroshareserviceandroid.hpp
 		rs_android/rsjni.hpp
 		rs_android/ScopedFd.h )
+endif()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+	list(APPEND RS_SOURCES rs_ios/rsios.cpp)
+	list(APPEND RS_PUBLIC_HEADERS rs_ios/rsios.h)
 endif()
 
 list(

@@ -172,8 +172,20 @@ void FixedAllocator::deallocate(void *p)
 
 	_chunks[_deallocChunk]->deallocate(p,_blockSize) ;
 
+	// Release a chunk that became empty only if another empty chunk already exists. Freeing it at
+	// once made a workload whose live count oscillates around a chunk boundary allocate and free a
+	// whole chunk on every swing: jemalloc's allocation accounting attributed 59 GB of chunk
+	// allocations to this allocator in 26 minutes on a node with 60 friends.
 	if(_chunks[_deallocChunk]->_blocksAvailable == BLOCKS_PER_CHUNK)
 	{
+		bool another_empty_chunk = false ;
+		for(uint32_t i=0;i<_chunks.size() && !another_empty_chunk;++i)
+			if((int)i != _deallocChunk && _chunks[i]->_blocksAvailable == BLOCKS_PER_CHUNK)
+				another_empty_chunk = true ;
+
+		if(!another_empty_chunk)
+			return ;
+
 		_chunks[_deallocChunk]->free() ;
 		delete _chunks[_deallocChunk] ;
 

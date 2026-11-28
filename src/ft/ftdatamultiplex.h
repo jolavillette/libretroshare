@@ -85,6 +85,14 @@ class Sha1CacheEntry
 		std::map<uint32_t,std::pair<rstime_t,ChunkCheckSumSourceList> > _to_ask ;		// Chunks to ask to sources.
 };
 	
+/* A downloaded chunk whose checksum has arrived: it is read back from disk and checked. */
+struct ftChunkToVerify
+{
+	RsFileHash hash;
+	uint32_t chunk_number;
+	Sha1CheckSum checksum;
+};
+
 class ftDataMultiplex: public ftDataRecv, public RsQueueThread
 {
 
@@ -131,6 +139,8 @@ class ftDataMultiplex: public ftDataRecv, public RsQueueThread
 		/* called from a separate thread */
 		bool sendSingleChunkCRCRequests(const RsFileHash& hash, const std::vector<uint32_t>& to_ask) ;
 
+		/* Called by the main loop: queues the chunks whose checksum has arrived,
+		 * which the multiplexer thread then reads back and checks. */
 		bool dispatchReceivedChunkCheckSum() ;
 
 		/*************** RECV INTERFACE (provides ftDataRecv) ****************/
@@ -168,17 +178,24 @@ class ftDataMultiplex: public ftDataRecv, public RsQueueThread
 		bool handleRecvClientChunkMapRequest(const RsPeerId& peerId, const RsFileHash& hash) ;
 		bool handleRecvServerChunkMapRequest(const RsPeerId& peerId, const RsFileHash& hash) ;
 		bool handleRecvChunkCrcRequest(const RsPeerId& peerId, const RsFileHash& hash,uint32_t chunk_id) ;
+		void verifyOneReceivedChunk() ;
 
 		/* We end up doing the actual server job here */
 		bool    locked_handleServerRequest(ftFileProvider *provider, const RsPeerId& peerId, const RsFileHash& hash, uint64_t size, uint64_t offset, uint32_t chunksize);
 
 		RsMutex dataMtx;
 
+		/* Held while a provider found in mServers / mClients is read from disk
+		 * without dataMtx, and by every function that deletes a provider or
+		 * lets its owner delete it. Always taken before dataMtx. */
+		RsMutex mProviderUseMtx;
+
 		std::map<RsFileHash, ftClient> mClients;
 		std::map<RsFileHash, ftFileProvider *> mServers;
 
 		std::list<ftRequest> mRequestQueue;
 		std::list<ftRequest> mSearchQueue;
+		std::list<ftChunkToVerify> mChunksToVerify;
 
 		std::map<RsFileHash,Sha1CacheEntry> _cached_sha1maps ;						// one cache entry per file hash. Handled dynamically.
 

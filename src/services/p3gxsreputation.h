@@ -72,7 +72,9 @@ public:
         mFriendsNegative(0),
 	    mReputationScore(1.0f),
 	    mIdentityFlags(0),
-        mLastUsedTS(0) {}
+        mLastUsedTS(0),
+        mFlagsRetryTS(0),
+        mFlagsRetryDelay(0) {}
 
 	void updateReputation();
 
@@ -91,14 +93,25 @@ public:
 	uint32_t mIdentityFlags;
 
     rstime_t mLastUsedTS ;			// last time the reputation was asked. Used to keep track of activity and clean up some reputation data.
+
+    // Not saved. When the identity service could not give the details of this identity, the identity flags are asked again
+    // no sooner than mFlagsRetryTS, the delay doubling at each miss. See updateStaticIdentityFlags().
+    rstime_t mFlagsRetryTS ;
+    uint32_t mFlagsRetryDelay ;
 };
 
 
 //!The p3GxsReputation service.
+class p3MobileLink;
+
 class p3GxsReputation: public p3Service, public p3Config, public RsGixsReputation, public RsReputations /* , public pqiMonitor */
 {
 public:
     p3GxsReputation(p3LinkMgr *lm);
+
+    /// The service that tells which links stay silent (MobileLink). Set
+    /// once at start-up.
+    void setMobileLink(p3MobileLink *mobileLink) { mMobileLink = mobileLink; }
     virtual RsServiceInfo getServiceInfo();
 
     /***** Interface for RsReputations *****/
@@ -198,6 +211,7 @@ private:
 
     bool mChanged ; // slow version of IndicateConfigChanged();
     rstime_t mLastReputationConfigSaved ;
+	p3MobileLink *mMobileLink = nullptr;
 };
 
 #endif //SERVICE_RSGXSREPUTATION_HEADER

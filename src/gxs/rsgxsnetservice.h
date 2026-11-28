@@ -89,6 +89,8 @@ struct GroupRequestRecord
  * Incoming transaction are in 3 different states
  *   1. START 2. RECEIVING 3. END
  */
+class p3MobileLink;
+
 class RsGxsNetService :
         public RsNetworkExchangeService, public p3ThreadedService, public p3Config
 {
@@ -114,6 +116,11 @@ public:
 	                uint32_t default_sync_period = RS_GXS_DEFAULT_MSG_REQ_PERIOD);
 
     virtual ~RsGxsNetService();
+
+    /// The service that tells which peers are phones in background, and
+    /// whether this node is one (MobileLink): no periodic sync with them.
+    /// Set once at start-up, for every GXS service.
+    static void setMobileLink(p3MobileLink *mobileLink) { sMobileLink = mobileLink; }
 
     virtual RsServiceInfo getServiceInfo() override { return mServiceInfo; }
 
@@ -407,6 +414,10 @@ private:
      */
     bool locked_checkTransacTimedOut(NxsTransaction* tr);
 
+    // Friends connected for this service, as last asked to the net manager: used to drop the transactions of a peer that went away.
+    std::set<RsPeerId> mOnlineFriendsCache;
+    rstime_t mOnlineFriendsCacheTS = 0;
+
     /** E: Transaction processing **/
 
     /** S: item handlers **/
@@ -627,6 +638,72 @@ private:
     /// for other members save transactions
     RsMutex mNxsMutex;
 
+    static p3MobileLink *sMobileLink;
+
+    /// Removes the phones in background from peers.
+    static void removeQuietPhones(std::set<RsPeerId>& peers);
+
+    /// Removes from peers the phones among phones that a periodic round
+    /// asked for their updates less than PHONE_ASK_PERIOD ago, and those of
+    /// pushPhones it asked already, and notes the others as asked now. A
+    /// phone absent from peers (away, or in background) is forgotten, so it
+    /// is asked at once when it is back. To call with mNxsMutex held.
+    void locked_removePhonesAskedRecently( std::set<RsPeerId>& peers,
+                                           const std::set<RsPeerId>& phones,
+                                           const std::set<RsPeerId>& pushPhones );
+
+    /// When a periodic round last asked each phone for its updates.
+    std::map<RsPeerId, rstime_t> mPhoneAskedTs;
+
+    /// Home side: what this home knows of a phone that waits for it to wake
+    /// it up when its groups get new messages (MobileLink). Kept in memory
+    /// only, while the phone is on screen.
+    struct PhonePush
+    {
+        /// The groups the phone asked this home about.
+        std::set<RsGxsGroupId> mGroups;
+        rstime_t mLastRequest = 0;
+        /// When to wake the phone up; 0 when nothing is due.
+        rstime_t mDue = 0;
+        rstime_t mLastPush = 0;
+    };
+    std::map<RsPeerId, PhonePush> mPhonePushes;
+
+    /// Home side: notes that phone peer, which waits for pushes, asked about
+    /// group grpId. To call with mNxsMutex held.
+    void locked_notePhoneGroup(const RsPeerId& peer, const RsGxsGroupId& grpId);
+
+    /// Home side: wakes up later the phones that asked about grpId, which
+    /// got new messages. To call with mNxsMutex held.
+    void locked_schedulePhonePushes(const RsGxsGroupId& grpId);
+
+    /// Home side: forgets the phones absent from awakePeers (away, or in
+    /// background) that asked nothing since roundStart. To call with
+    /// mNxsMutex held.
+    void locked_forgetAbsentPushPhones( const std::set<RsPeerId>& awakePeers,
+                                        rstime_t roundStart );
+
+    /// Home side: sends a pull request to the phones whose wake-up is due.
+    void sendDuePhonePushes();
+
+    /// Phone side: removes from peers the homes of pushHomes (home, time it
+    /// said it wakes this phone up) that need no periodic round now, and
+    /// notes the others as asked now in mHomeRoundTs. A home is asked when
+    /// it starts waking the phone up (connection, phone back on screen),
+    /// while it still has messages to send for a group, and at
+    /// PHONE_SAFETY_PERIOD. To call with mNxsMutex held.
+    void locked_removeHomesNotDue( std::set<RsPeerId>& peers,
+                                   const std::map<RsPeerId, rstime_t>& pushHomes );
+
+    /// Phone side: the friends of peers that wake this phone up, with the
+    /// time each said it does.
+    static std::map<RsPeerId, rstime_t> pushingHomes(const std::set<RsPeerId>& peers);
+
+    /// Phone side: when this phone last asked each home that wakes it up for
+    /// its updates, and for group statistics.
+    std::map<RsPeerId, rstime_t> mHomeRoundTs;
+    std::map<RsPeerId, rstime_t> mHomeStatsTs;
+
     uint32_t mSyncTs;
     uint32_t mLastKeyPublishTs;
     uint32_t mLastCleanRejectedMessages;
@@ -648,6 +725,8 @@ private:
     std::map<RsGxsGroupId,std::set<RsPeerId> > mPendingPublishKeyRecipients ;
 	std::map<RsPeerId, std::set<RsGxsGroupId> > mExplicitRequest;
     std::map<RsPeerId, std::set<RsGxsGroupId> > mPartialMsgUpdates ;
+    std::map<RsGxsGroupId, rstime_t> mUnloadedCircleMsgSyncTS ; // last msg list request for a circle-restricted group whose circle is not loaded
+    std::set<RsGxsGroupId> mUnreadableCircleGroupsLogged ;       // groups already reported as unreadable, one line per start
 
     // nxs sync optimisation
     // can pull dynamically the latest timestamp for each message

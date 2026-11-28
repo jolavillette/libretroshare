@@ -1042,7 +1042,30 @@ bool p3NetMgrIMPL::checkNetAddress()
 		std::vector<sockaddr_storage> addrs;
 		if (getLocalAddresses(addrs))
 		{
-			for (auto it = addrs.begin(); it != addrs.end(); ++it)
+			/* Besides the LAN interface, virtual adapters (VirtualBox or
+			 * VMware host-only networks, container bridges) carry private
+			 * addresses that no friend can reach, and the operating system
+			 * lists the interfaces in no useful order. Take the address of
+			 * the interface that carries the default route when it is one of
+			 * ours; without such a route the rules below decide. */
+			sockaddr_storage routeAddr;
+			if (getDefaultRouteSourceAddress(routeAddr))
+				for (auto it = addrs.begin(); it != addrs.end(); ++it)
+				{
+					sockaddr_storage addr(*it);
+					if( sockaddr_storage_isValidNet(addr) &&
+					    !sockaddr_storage_isLoopbackNet(addr) &&
+					    !sockaddr_storage_isLinkLocalNet(addr) &&
+					    sockaddr_storage_ipv6_to_ipv4(addr) &&
+					    sockaddr_storage_sameip(addr, routeAddr) )
+					{
+						prefAddr = addr;
+						validAddr = true;
+						break;
+					}
+				}
+
+			if(!validAddr) for (auto it = addrs.begin(); it != addrs.end(); ++it)
 			{
 				sockaddr_storage& addr(*it);
 				if( sockaddr_storage_isValidNet(addr) &&
@@ -1222,12 +1245,25 @@ bool    p3NetMgrIMPL::setExtAddress(const struct sockaddr_storage &addr)
 	bool changed = false;
 	{
 		RS_STACK_MUTEX(mNetMtx); /****** STACK LOCK MUTEX *******/
-		if (!sockaddr_storage_same(mExtAddr, addr))
+
+		/* The address our friends report for us carries no port
+		 * (p3PeerMgrIMPL::addCandidateForOwnExternalAddress() keeps the IP
+		 * only). Compared as is, "IP:0" never equals our "IP:port", so every
+		 * such report reset the whole network, and the next ext address
+		 * check put the port back. A port-less address only tells the IP:
+		 * keep the port we already have. */
+		sockaddr_storage newAddr = addr;
+		if ( sockaddr_storage_port(newAddr) == 0 &&
+		     sockaddr_storage_samefamily(newAddr, mExtAddr) &&
+		     sockaddr_storage_port(mExtAddr) != 0 )
+			sockaddr_storage_setport(newAddr, sockaddr_storage_port(mExtAddr));
+
+		if (!sockaddr_storage_same(mExtAddr, newAddr))
 		{
 			changed = true;
 		}
 
-		mExtAddr = addr;
+		mExtAddr = newAddr;
         mPeerMgr->UpdateOwnAddress(mLocalAddr, mExtAddr);
     }
 

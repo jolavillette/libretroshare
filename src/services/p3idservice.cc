@@ -171,6 +171,12 @@ p3IdService::p3IdService( RsGeneralDataService *gds
 	mLastKeyCleaningTime = time(NULL) - int(MAX_DELAY_BEFORE_CLEANING * 0.9) ;
     mLastPGPHashProcessTime = 0;
 
+    // The service strings of identities (signature checks, tags, scores) are set one
+    // identity at a time, and each one was its own database transaction. Let them wait
+    // a few seconds and be written together. The values are also kept in the identity
+    // cache, and are computed again when lost.
+    setServiceStringWriteDelay(5);
+
 	// Kick off Cache Testing, + Others.
 	RsTickEvent::schedule_now(GXSID_EVENT_CACHEOWNIDS);//First Thing to do
 	RsTickEvent::schedule_in(GXSID_EVENT_PGPHASH, PGPHASH_PERIOD);
@@ -286,16 +292,20 @@ bool p3IdService::setAsRegularContact(const RsGxsId& id,bool b)
     RsStackMutex stack(mIdMtx);
     std::set<RsGxsId>::iterator it = mContacts.find(id) ;
 
+    // Contacts are the user's choice: they are saved at once.
+    // slowIndicateConfigChanged() skips a change made within five minutes of
+    // the previous one, and the default priority only saves on a clean
+    // shutdown.
     if(b && (it == mContacts.end()))
     {
         mContacts.insert(id) ;
-        slowIndicateConfigChanged() ;
+        IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_NOW) ;
     }
 
     if( (!b) &&(it != mContacts.end()))
     {
         mContacts.erase(it) ;
-        slowIndicateConfigChanged() ;
+        IndicateConfigChanged(RsConfigMgr::CheckPriority::SAVE_NOW) ;
     }
 
     return true ;
@@ -556,7 +566,8 @@ void p3IdService::cleanUnusedKeys()
             return ;
         }
 
-        // grab at most 10 identities to delete. No need to send too many requests to the token queue at once.
+        // Collect every expired identity (no cap). They are all removed from the
+        // DB in a single transaction by RsGenExchange::processGroupDelete().
         IdCacheEntryCleaner idcec(mKeysTS,mMaxKeepKeysBanned) ;
 
         mKeyCache.applyToAllCachedEntries(idcec,&IdCacheEntryCleaner::processEntry);
@@ -648,7 +659,16 @@ void p3IdService::notifyChanges(std::vector<RsGxsNotify *> &changes)
                 std::cerr << std::endl;
 #endif
 
-                if(!rsReputations->isIdentityBanned(RsGxsId(gid)))
+                if(groupChange->getType() == RsGxsNotify::TYPE_GROUP_DELETED)
+                {
+                    // Tell the UI that the identity is gone, whatever its reputation: a banned identity is listed too.
+
+                    auto ev = std::make_shared<RsGxsIdentityEvent>();
+                    ev->mIdentityId = gid;
+                    ev->mIdentityEventCode = RsGxsIdentityEventCode::DELETED_IDENTITY;
+                    rsEvents->postEvent(ev);
+                }
+                else if(!rsReputations->isIdentityBanned(RsGxsId(gid)))
                 {
                     // notify that a new identity is received, if needed
 
@@ -674,11 +694,7 @@ void p3IdService::notifyChanges(std::vector<RsGxsNotify *> &changes)
 
                         auto ev = std::make_shared<RsGxsIdentityEvent>();
                         ev->mIdentityId = gid;
-
-                        if(groupChange->getType() == RsGxsNotify::TYPE_GROUP_DELETED)
-                            ev->mIdentityEventCode = RsGxsIdentityEventCode::DELETED_IDENTITY;
-                        else
-                            ev->mIdentityEventCode = RsGxsIdentityEventCode::UPDATED_IDENTITY;
+                        ev->mIdentityEventCode = RsGxsIdentityEventCode::UPDATED_IDENTITY;
 
                         rsEvents->postEvent(ev);
 
@@ -3172,7 +3188,12 @@ bool p3IdService::cache_request_ownids()
 	uint32_t ansType = RS_TOKREQ_ANSTYPE_DATA;
 	RsTokReqOptions opts;
 	opts.mReqType = GXS_REQUEST_TYPE_GROUP_DATA;
-	//opts.mSubscribeFlags = GXS_SERV::GROUP_SUBSCRIBE_ADMIN;
+
+	// Only our own identities are wanted (cache_load_ownids() keeps the groups with the ADMIN flag and drops
+	// the others). Without this filter the request reads the full data of every identity known to the node,
+	// thousands of them with their avatars, at every start: seconds to tens of seconds on a slow disk.
+	opts.mSubscribeMask   = GXS_SERV::GROUP_SUBSCRIBE_ADMIN;
+	opts.mSubscribeFilter = GXS_SERV::GROUP_SUBSCRIBE_ADMIN;
 
 	uint32_t token = 0;
 
@@ -4034,11 +4055,22 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
 #ifdef DEBUG_IDS
         std::cerr << "Bruteforcing PGP hash from GxsId mPgpHash: " << grp.mPgpIdHash << std::endl;
 #endif
+        // The signature carries no readable issuer id, so we cannot tell which
+        // PGP key signed this identity: we try every known key and look for the
+        // one whose fingerprint reproduces the stored hash. Log a single summary
+        // line here; the per-key detail below would otherwise flood the log with
+        // thousands of entries on a single line, so it stays under DEBUG_IDS.
+        RsDbg() << "GXS_SIGCHECK GxsId " << grp.mMeta.mGroupId
+                << ": signature has no issuer id, brute-forcing PGP link against "
+                << mPgpFingerprintMap.size() << " known keys" ;
+
         for(auto mit = mPgpFingerprintMap.begin(); mit != mPgpFingerprintMap.end(); ++mit)
         {
             calcPGPHash(RsGxsId(grp.mMeta.mGroupId), mit->second, hash);
 
+#ifdef DEBUG_IDS
             std::cerr << "   profile key " << mit->first << " (" << mit->second << ") : ";
+#endif
 
             if (grp.mPgpIdHash == hash)
             {
@@ -4053,6 +4085,21 @@ bool p3IdService::checkId(const RsGxsIdGroup &grp, RsPgpId &pgpId,bool& error)
             else
                 std::cerr << "fails" << std::endl;
 #endif
+        }
+
+        // No known PGP key reproduces mPgpIdHash: the signing profile key is
+        // simply not in our keyring. This is the same situation as an issuer id
+        // that is not in mPgpFingerprintMap above, so treat it the same way:
+        // keep the identity as not verified and retry later. Going on would
+        // call VerifySignBin() with a null fingerprint and the hash of the last
+        // key tried, which always fails and deletes a valid identity.
+        if(pgp_fingerprint.isNull())
+        {
+#ifdef DEBUG_IDS
+            std::cerr << "No known PGP key matches. Key will be marked as non verified." << std::endl;
+#endif
+            error = false;
+            return false;
         }
     }
 
@@ -4091,9 +4138,11 @@ void p3IdService::getPgpIdList()
  	std::list<RsPgpId> list;
 	mPgpUtils->getPgpAllList(list);
 
-	RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
+	// The fingerprints are read without mIdMtx: one call into the PGP handler per
+	// key of the keyring (thousands), each taking the PGP mutex, kept mIdMtx for
+	// close to a second, and every getIdDetails() of the GUI waited for it.
 
-	mPgpFingerprintMap.clear();
+	std::map<RsPgpId, RsPgpFingerprint> fingerprints;
 
  	std::list<RsPgpId>::iterator it;
 	for(it = list.begin(); it != list.end(); ++it)
@@ -4107,8 +4156,12 @@ void p3IdService::getPgpIdList()
 		std::cerr << std::endl;
 #endif // DEBUG_IDS
 
-		mPgpFingerprintMap[pgpId] = fp;
+		fingerprints[pgpId] = fp;
 	}
+
+	RsStackMutex stack(mIdMtx); /********** STACK LOCKED MTX ******/
+
+	mPgpFingerprintMap.swap(fingerprints);
 
 #ifdef DEBUG_IDS
 	std::cerr << "p3IdService::getPgpIdList() Items: " << mPgpFingerprintMap.size();

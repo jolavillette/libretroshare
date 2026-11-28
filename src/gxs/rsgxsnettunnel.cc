@@ -425,6 +425,22 @@ bool RsGxsNetTunnelService::isDistantPeer(const RsGxsNetTunnelVirtualPeerId& vir
 		return false ;
 }
 
+bool RsGxsNetTunnelService::isVirtualPeerOnline(const RsGxsNetTunnelVirtualPeerId& virtual_peer)
+{
+	RS_STACK_MUTEX(mGxsNetTunnelMtx);
+
+	auto it = mVirtualPeers.find(virtual_peer) ;
+
+	if(it == mVirtualPeers.end())
+		return false ;
+
+	// removeVirtualPeer() erases the turtle virtual peer from mTurtle2GxsPeer when the tunnel is closed, and leaves mVirtualPeers as it is.
+
+	auto it2 = mTurtle2GxsPeer.find(it->second.turtle_virtual_peer_id) ;
+
+	return it2 != mTurtle2GxsPeer.end() && it2->second == virtual_peer ;
+}
+
 bool RsGxsNetTunnelService::receiveTunnelData(uint16_t service_id, unsigned char *& data, uint32_t& data_len, RsGxsNetTunnelVirtualPeerId& virtual_peer)
 {
 	RS_STACK_MUTEX(mGxsNetTunnelMtx);

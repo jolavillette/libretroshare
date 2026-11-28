@@ -32,6 +32,7 @@
 #include "serialiser/rsserializer.h"
 #include "retroshare/rsevents.h"
 #include "util/rserrorbubbleorexit.h"
+#include "services/p3mobilelink.h"
 
 #ifdef __ANDROID__
 #	include "rs_android/retroshareserviceandroid.hpp"
@@ -120,15 +121,13 @@ BroadcastDiscoveryService::BroadcastDiscoveryService(
 	createAndroidMulticastLock();
 #endif // def __ANDROID__
 
-	enableMulticastListening();
-
 	mUdcParameters.set_can_discover(true);
 	mUdcParameters.set_can_be_discovered(true);
 	mUdcParameters.set_port(port);
 	mUdcParameters.set_application_id(appId);
 
-	mUdcPeer.Start(mUdcParameters, "");
-	updatePublishedData();
+	/* The announces start at the first tick, once it is known whether the
+	 * node is in phone mode: see followPhoneMode(). */
 }
 
 BroadcastDiscoveryService::~BroadcastDiscoveryService()
@@ -161,8 +160,46 @@ void BroadcastDiscoveryService::updatePublishedData()
 	            BroadcastDiscoveryPack::fromPeerDetails(od).serializeToString());
 }
 
+bool BroadcastDiscoveryService::followPhoneMode()
+{
+	if(mRsPeers.isHiddenNode(mRsPeers.getOwnId())) return false;
+
+	/* A broadcast every few seconds, a listening thread and, on Android, the
+	 * Wi-Fi multicast lock keep a phone's radio and processor awake around
+	 * the clock; a phone reaches its homes at the addresses it knows. */
+	const bool wanted = !(mMobileLink && mMobileLink->getPhoneMode());
+	if(wanted == mAnnouncing) return mAnnouncing;
+
+	if(wanted)
+	{
+		enableMulticastListening();
+		mUdcPeer.Start(mUdcParameters, "");
+		updatePublishedData();
+	}
+	else
+	{
+		mUdcPeer.Stop(true);
+		disableMulticastListening();
+		RS_STACK_MUTEX(mDiscoveredDataMutex);
+		mDiscoveredData.clear();
+	}
+
+	mAnnouncing = wanted;
+	return mAnnouncing;
+}
+
 void BroadcastDiscoveryService::threadTick()
 {
+	if(!followPhoneMode())
+	{
+		for(uint32_t i=0;i<10;++i)
+		{
+			if(shouldStop()) return;
+			rstime::rs_usleep(500*1000);
+		}
+		return;
+	}
+
 	if( mUdcParameters.can_discover() &&
 	        !mRsPeers.isHiddenNode(mRsPeers.getOwnId()) )
 	{

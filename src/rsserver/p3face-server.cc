@@ -82,9 +82,9 @@ RsServer::RsServer() :
 	coreReady(false)
 {
 	{
-		RsEventsService* tmpRsEvtPtr = new RsEventsService();
-		rsEvents = tmpRsEvtPtr;
-		startServiceThread(tmpRsEvtPtr, "RsEventsService");
+		mEventsService = new RsEventsService();
+		rsEvents = mEventsService;
+		startServiceThread(mEventsService, "RsEventsService");
 	}
 
 	// This is needed asap.
@@ -98,6 +98,7 @@ RsServer::RsServer() :
 	mHistoryMgr = NULL;
 
 	pqih = NULL;
+	mFtServer = NULL;
 
 	mPluginsManager = NULL;
 
@@ -124,6 +125,12 @@ RsServer::RsServer() :
 	/* config */
 	mConfigMgr = NULL;
 	mGeneralConfig = NULL;
+}
+
+void RsServer::startEventsService()
+{
+	if(!mEventsService->isRunning())
+		startServiceThread(mEventsService, "RsEventsService");
 }
 
 RsServer::~RsServer()

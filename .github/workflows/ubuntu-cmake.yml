@@ -47,12 +47,21 @@ jobs:
       with:
         persist-credentials: false
 
+    # The combo needs the BitDHT combo of the fork: libretroshare takes BitDHT
+    # from ../libbitdht when it is there, and from the official repository
+    # otherwise.
+    - name: Fetch the BitDHT combo next to the checkout
+      shell: bash
+      run: |
+        git clone --depth 1 --branch combo https://github.com/jolavillette/BitDHT.git ../libbitdht
+        git -C ../libbitdht log --max-count 1 --oneline
+
     - name: Install dependencies
       run: >
         sudo apt-get update &&
         sudo apt-get install -y
         build-essential g++ cmake ninja-build pkg-config git
-        libssl-dev zlib1g-dev libbz2-dev libjson-c-dev libbotan-2-dev rapidjson-dev
+        libssl-dev zlib1g-dev libbz2-dev libjson-c-dev libbotan-3-dev rapidjson-dev
         libsqlcipher-dev libminiupnpc-dev
         doxygen python3
 
@@ -64,7 +73,6 @@ jobs:
         -DRS_RNPLIB=ON -DRS_JSON_API=ON -DRS_WEBUI=OFF
         -DRS_SQLCIPHER=ON -DRS_BITDHT=ON
         -DRS_BRODCAST_DISCOVERY=ON -DRS_MINIUPNPC=ON
-        -DRS_FORUM_DEEP_INDEX=OFF
 
     - name: CMake build
       run: cmake --build Build-cmake -j$(nproc)

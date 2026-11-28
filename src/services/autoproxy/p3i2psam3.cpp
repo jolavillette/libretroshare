@@ -1,5 +1,8 @@
 #include "p3i2psam3.h"
 
+#include <cstring>
+#include <memory>
+
 #include <libsam3.h>
 
 #include "pqi/p3peermgr.h"
@@ -29,6 +32,14 @@ static const std::string kConfigKeyBOBAddr     = "BOB_ADDR";
 
 static constexpr bool   kDefaultSAM3Enable = false;
 
+/* At least i2pd doesn't like to instantaniously stop and (re)start a session, so
+ * a new session is never created less than this long after the previous one was
+ * closed. The wait happens in startSession(), where it is actually needed, and
+ * not in stopSession(): a stop is not always followed by a start (RS shutdown,
+ * "stop" button in the settings) and waiting there held back the whole
+ * application exit by 10 seconds. */
+static constexpr auto kSessionRestartDelay = std::chrono::seconds(10);
+
 RS_SET_CONTEXT_DEBUG_LEVEL(2)
 
 static void inline doSleep(std::chrono::duration<long, std::ratio<1,1000>> timeToSleepMS) {
@@ -36,7 +47,9 @@ static void inline doSleep(std::chrono::duration<long, std::ratio<1,1000>> timeT
 }
 
 p3I2pSam3::p3I2pSam3(p3PeerMgr *peerMgr) :
-    mConfigLoaded(false), mPeerMgr(peerMgr), mPending(), mLock("p3i2p-sam3")
+    mConfigLoaded(false), mPeerMgr(peerMgr), mPending(),
+    mLastSessionClosed(std::chrono::steady_clock::time_point::min()),
+    mLock("p3i2p-sam3")
 #ifdef RS_USE_I2P_SAM3_LIBSAM3
   , mLockSam3Access("p3i2p-sam3-access")
 #endif
@@ -498,21 +511,33 @@ bool p3I2pSam3::startSession()
 		stopSession();
 	}
 
+	// Give i2pd time to let go of the previous session. No lock may be held here.
+	std::chrono::steady_clock::time_point sessionReady;
+	{
+		RS_STACK_MUTEX(mLock);
+		sessionReady = mLastSessionClosed + kSessionRestartDelay;
+	}
+	const auto now = std::chrono::steady_clock::now();
+	if (now < sessionReady) {
+		const auto wait = std::chrono::duration_cast<std::chrono::milliseconds>(sessionReady - now);
+		RS_DBG("waiting ", wait.count(), " ms before creating a new SAM session");
+		doSleep(wait);
+	}
+
 	auto session = (Sam3Session*)rs_malloc(sizeof (Sam3Session));
 
 	// add nick
 	paramsStr.append("inbound.nickname=" + nick); // leading space is already there
 
-	{
-		RS_STACK_MUTEX(mLockSam3Access);
-
-		if(!mSetting.address.privateKey.empty()) {
-			RS_DBG3("with destination");
-			ret = sam3CreateSession(session, SAM3_HOST_DEFAULT, SAM3_PORT_DEFAULT, mSetting.address.privateKey.c_str(), Sam3SessionType::SAM3_SESSION_STREAM, Sam3SigType::EdDSA_SHA512_Ed25519, paramsStr.c_str());
-		} else {
-			RS_DBG("without destination");
-			ret = sam3CreateSession(session, SAM3_HOST_DEFAULT, SAM3_PORT_DEFAULT, SAM3_DESTINATION_TRANSIENT, Sam3SessionType::SAM3_SESSION_STREAM, Sam3SigType::EdDSA_SHA512_Ed25519, paramsStr.c_str());
-		}
+	/* No lock here: building the tunnels takes 10-30 s, and the session is
+	 * not published yet, so nothing else can touch it. libsam3 keeps no
+	 * global state besides libsam3_debug. */
+	if(!mSetting.address.privateKey.empty()) {
+		RS_DBG3("with destination");
+		ret = sam3CreateSession(session, SAM3_HOST_DEFAULT, SAM3_PORT_DEFAULT, mSetting.address.privateKey.c_str(), Sam3SessionType::SAM3_SESSION_STREAM, Sam3SigType::EdDSA_SHA512_Ed25519, paramsStr.c_str());
+	} else {
+		RS_DBG("without destination");
+		ret = sam3CreateSession(session, SAM3_HOST_DEFAULT, SAM3_PORT_DEFAULT, SAM3_DESTINATION_TRANSIENT, Sam3SessionType::SAM3_SESSION_STREAM, Sam3SigType::EdDSA_SHA512_Ed25519, paramsStr.c_str());
 	}
 
 	if (ret != 0) {
@@ -600,12 +625,10 @@ void p3I2pSam3::stopSession()
 
 		mSetting.session = nullptr;
 		mState = samStatus::samState::offline;
-	}
 
-	// At least i2pd doesn't like to instantaniously stop and (re)start a session, wait here just a little bit.
-	// Not ideal but does the trick.
-	// (This happens when using the "restart" button in the settings.)
-	doSleep(std::chrono::seconds(10));
+		// startSession() waits out kSessionRestartDelay counted from here
+		mLastSessionClosed = std::chrono::steady_clock::now();
+	}
 }
 
 void p3I2pSam3::stopForwarding()
@@ -693,23 +716,65 @@ void p3I2pSam3::establishConnection(taskTicket *ticket)
 	RsThread::async([ticket, this]() {
 		auto wrapper = static_cast<samEstablishConnectionWrapper*>(ticket->data);
 
-		struct Sam3Connection *connection;
+		/* STREAM CONNECT opens its own socket to the SAM bridge and can block
+		 * for tens of seconds, so it must not run under our locks: that made
+		 * all outgoing I2P connections run one at a time, and stalled
+		 * everything waiting on mLock behind them. From the session,
+		 * sam3StreamConnect() only reads the session id and bridge address,
+		 * writes the error string and links the connection into connlist, so
+		 * run it on a private copy and link the result into the real session
+		 * afterwards, under the locks. */
+		std::unique_ptr<Sam3Session> ses(new Sam3Session);
+		bool haveSession = false;
 		{
-			RS_STACK_MUTEX(mLockSam3Access);
-			mSetting.session->silent = false;
-			connection = sam3StreamConnect(this->mSetting.session, wrapper->address.publicKey.c_str());
+			RS_STACK_MUTEX(mLock);
+			if (mSetting.session) {
+				RS_STACK_MUTEX(mLockSam3Access);
+				*ses = *mSetting.session;
+				haveSession = true;
+			}
+		}
+		// Report outside the locks: taskError() runs the caller's callback.
+		if (!haveSession) {
+			RS_WARN("no session found!");
+			rsAutoProxyMonitor::taskError(ticket);
+			return;
+		}
+		ses->connlist = nullptr;
+		ses->silent = false;
+
+		Sam3Connection *connection = sam3StreamConnect(ses.get(), wrapper->address.publicKey.c_str());
+		if (!connection) {
+			RS_DBG("got error:", ses->error);
+			rsAutoProxyMonitor::taskError(ticket);
+			return;
 		}
 
-		if (!connection) {
-			// get error
-			RS_DBG("got error:", this->mSetting.session->error);
+		bool linked = false;
+		{
+			RS_STACK_MUTEX(mLock);
+			RS_STACK_MUTEX(mLockSam3Access);
+			// The session may have been closed or replaced in the meantime.
+			// The channel name is random and new for every session.
+			Sam3Session *cur = mSetting.session;
+			if (cur && !strcmp(cur->channel, ses->channel)) {
+				connection->ses = cur;
+				connection->next = cur->connlist;
+				cur->connlist = connection;
+				mValidConnections.push_back(connection);
+				linked = true;
+			} else {
+				connection->ses = nullptr;
+				sam3CloseConnection(connection); // closes the socket and frees
+				connection = nullptr;
+			}
+		}
+
+		if (!linked) {
+			RS_DBG("session closed while connecting");
 			rsAutoProxyMonitor::taskError(ticket);
 		} else {
 			wrapper->connection = connection;
-			{
-				RS_STACK_MUTEX(mLockSam3Access);
-				this->mValidConnections.push_back(connection);
-			}
 			RS_DBG1("success");
 			rsAutoProxyMonitor::taskDone(ticket, autoProxyStatus::ok);
 		}

@@ -391,7 +391,9 @@ public:
     virtual int getTrafficInfo(std::list<RSTrafficClue>& out_lst,std::list<RSTrafficClue>& in_lst) = 0 ;
 
 	/**
-	 * @brief getCumulativeTrafficByPeer returns cumulative traffic stats grouped by peer
+	 * @brief getCumulativeTrafficByPeer returns cumulative traffic stats grouped by peer:
+	 *  every item sent to and received from each peer since the core started
+	 *  (or since clearCumulativeTraffic())
 	 * @jsonapi{development}
 	 * @param[out] stats map of peer ID to cumulative traffic stats
 	 * @return returns true on success
@@ -399,7 +401,9 @@ public:
     virtual bool getCumulativeTrafficByPeer(std::map<RsPeerId, RsCumulativeTrafficStats>& stats) = 0;
 
 	/**
-	 * @brief getCumulativeTrafficByService returns cumulative traffic stats grouped by service
+	 * @brief getCumulativeTrafficByService returns cumulative traffic stats grouped by service:
+	 *  every item sent and received by each service since the core started
+	 *  (or since clearCumulativeTraffic()), in serialised bytes
 	 * @jsonapi{development}
 	 * @param[out] stats map of service ID to cumulative traffic stats
 	 * @return returns true on success
@@ -580,6 +584,9 @@ public:
                         SAVE_OFTEN        = 0x03,	// For GUI configuration, so that it's saved within 1 min.
                         SAVE_NOW          = 0x04	// Stuff we do not want to re-do on crash: adding friends, file transfers, etc.
     };
+
+    /// Saves now everything that changed, whatever its priority.
+    virtual void saveConfiguration() = 0;
 };
 
 #endif

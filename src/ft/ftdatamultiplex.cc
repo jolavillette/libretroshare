@@ -71,7 +71,7 @@ ftRequest::ftRequest(uint32_t type, const RsPeerId& peerId, const RsFileHash& ha
 }
 
 ftDataMultiplex::ftDataMultiplex(const RsPeerId& ownId, ftDataSend *server, ftSearch *search)
-	:RsQueueThread(DMULTIPLEX_MIN, DMULTIPLEX_MAX, DMULTIPLEX_RELAX), dataMtx("ftDataMultiplex"),
+	:RsQueueThread(DMULTIPLEX_MIN, DMULTIPLEX_MAX, DMULTIPLEX_RELAX), dataMtx("ftDataMultiplex"), mProviderUseMtx("ftDataMultiplex provider use"),
 	mDataSend(server),  mSearch(search), mOwnId(ownId)
 {
 	return;
@@ -79,29 +79,34 @@ ftDataMultiplex::ftDataMultiplex(const RsPeerId& ownId, ftDataSend *server, ftSe
 
 bool ftDataMultiplex::getFileData(const RsFileHash& hash, uint64_t offset, uint32_t& requested_size, uint8_t *data)
 {
-    RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
+    // The disk read is done without dataMtx; mProviderUseMtx keeps the provider alive.
+    RS_STACK_MUTEX(mProviderUseMtx);
     ftFileProvider* provider = 0;
 
-    std::map<RsFileHash, ftClient>::iterator cit;
-    std::map<RsFileHash, ftFileProvider *>::iterator sit;
-
-    // check if file is currently downloading
-    if (mClients.end() != (cit = mClients.find(hash)))
-        provider = (cit->second).mCreator;
-
-    // else check if its already uploading
-    else if (mServers.end() != (sit = mServers.find(hash)))
-        provider = sit->second;
-
-    // else create a new provider
-    else
     {
-        FileInfo info;
-        FileSearchFlags hintflags =   RS_FILE_HINTS_EXTRA | RS_FILE_HINTS_LOCAL | RS_FILE_HINTS_SPEC_ONLY | RS_FILE_HINTS_NETWORK_WIDE;
-        if(mSearch->search(hash, hintflags, info))
+        RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
+
+        std::map<RsFileHash, ftClient>::iterator cit;
+        std::map<RsFileHash, ftFileProvider *>::iterator sit;
+
+        // check if file is currently downloading
+        if (mClients.end() != (cit = mClients.find(hash)))
+            provider = (cit->second).mCreator;
+
+        // else check if its already uploading
+        else if (mServers.end() != (sit = mServers.find(hash)))
+            provider = sit->second;
+
+        // else create a new provider
+        else
         {
-            provider = new ftFileProvider(info.path, info.size, hash);
-            mServers[hash] = provider;
+            FileInfo info;
+            FileSearchFlags hintflags =   RS_FILE_HINTS_EXTRA | RS_FILE_HINTS_LOCAL | RS_FILE_HINTS_SPEC_ONLY | RS_FILE_HINTS_NETWORK_WIDE;
+            if(mSearch->search(hash, hintflags, info))
+            {
+                provider = new ftFileProvider(info.path, info.size, hash);
+                mServers[hash] = provider;
+            }
         }
     }
 
@@ -129,6 +134,8 @@ bool	ftDataMultiplex::addTransferModule(ftTransferModule *mod, ftFileCreator *f)
 		
 bool	ftDataMultiplex::removeTransferModule(const RsFileHash& hash)
 {
+	// The caller deletes the file creator next: wait for a read in progress.
+	RS_STACK_MUTEX(mProviderUseMtx);
 	RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
 
     std::map<RsFileHash, ftClient>::iterator it;
@@ -337,6 +344,11 @@ bool 	ftDataMultiplex::workQueued()
 		return true;
 	}
 
+	if (!mChunksToVerify.empty())
+	{
+		return true;
+	}
+
 	return false;
 }
 	
@@ -413,6 +425,10 @@ bool 	ftDataMultiplex::doWork()
 				break;
 		}
 	}
+
+	/* One chunk check per pass: each one reads a chunk back from disk, and
+	 * the requests of the friends must not wait for a whole batch. */
+	verifyOneReceivedChunk();
 
 	/* Only Handle One Search Per Period.... 
 	 * Lower Priority
@@ -513,7 +529,6 @@ bool ftDataMultiplex::dispatchReceivedChunkCheckSum()
 			/* error */
 			continue ;
 		}
-		ftFileCreator *client = itc->second.mCreator ;
 
 		for(uint32_t n=0;n<MAX_CHECKSUM_CHECK_PER_FILE && !it->second._received.empty();++n)
 		{
@@ -524,15 +539,53 @@ bool ftDataMultiplex::dispatchReceivedChunkCheckSum()
 			else
 			{
 #ifdef MPLEX_DEBUG
-				std::cerr << "ftDataMultiplex::dispatchReceivedChunkCheckSum(): checking chunk " << chunk_number << " with hash " << it->second._map[chunk_number].toStdString() << std::endl;
+				std::cerr << "ftDataMultiplex::dispatchReceivedChunkCheckSum(): queuing chunk " << chunk_number << " with hash " << it->second._map[chunk_number].toStdString() << std::endl;
 #endif
-				client->verifyChunk(chunk_number,it->second._map[chunk_number]) ;
+				// Read back and checked by the multiplexer thread: the main loop,
+				// which calls this, must not wait for the disk.
+				mChunksToVerify.push_back(ftChunkToVerify{ it->first, (uint32_t)chunk_number, it->second._map[chunk_number] }) ;
 			}
 			it->second._received.pop_back() ;
 		}
 		++it ;
 	}
 	return true ;
+}
+
+/* Multiplexer thread: reads back one downloaded chunk and checks it against
+ * the checksum a source sent. */
+void ftDataMultiplex::verifyOneReceivedChunk()
+{
+	{
+		RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
+		if(mChunksToVerify.empty())
+			return;
+	}
+
+	// The file creator is used without dataMtx: mProviderUseMtx keeps it alive.
+	RS_STACK_MUTEX(mProviderUseMtx);
+
+	ftFileCreator *creator = NULL;
+	ftChunkToVerify chunk;
+
+	{
+		RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
+
+		if(mChunksToVerify.empty())
+			return;
+
+		chunk = mChunksToVerify.front();
+		mChunksToVerify.pop_front();
+
+		std::map<RsFileHash, ftClient>::iterator itc = mClients.find(chunk.hash);
+
+		if(itc == mClients.end())
+			return;	// the download has ended or was cancelled since
+
+		creator = itc->second.mCreator;
+	} // dataMtx released
+
+	creator->verifyChunk(chunk.chunk_number, chunk.checksum);
 }
 
 // A chunk map has arrived. It can be two different situations:
@@ -828,6 +881,14 @@ bool	ftDataMultiplex::handleRecvDataRequest(const RsPeerId& peerId, const RsFile
 {
 	/**** Find Files *****/
 
+	/* The provider is looked up under dataMtx and read from disk without it:
+	 * a read lasts seconds on a slow or busy disk, and dataMtx is taken by the
+	 * main loop (recvData), by ftController and by the GUI (FileUploads,
+	 * FileDetails). mProviderUseMtx keeps the provider alive meanwhile. */
+	RS_STACK_MUTEX(mProviderUseMtx);
+	ftFileProvider *provider = NULL;
+
+	{
 	RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
     std::map<RsFileHash, ftClient>::iterator cit;
 	if (mOwnId == peerId)
@@ -844,21 +905,21 @@ bool	ftDataMultiplex::handleRecvDataRequest(const RsPeerId& peerId, const RsFile
 		std::cerr << "ftDataMultiplex::handleRecvData() Matched to a Client.";
 		std::cerr << std::endl;
 #endif
-		locked_handleServerRequest((cit->second).mCreator, peerId, hash, size, offset, chunksize);
-		return true;
+		provider = (cit->second).mCreator;
 	}
 	
     std::map<RsFileHash, ftFileProvider *>::iterator sit;
-	if (mServers.end() != (sit = mServers.find(hash)))
+	if (provider == NULL && mServers.end() != (sit = mServers.find(hash)))
 	{
 #ifdef MPLEX_DEBUG
 		std::cerr << "ftDataMultiplex::handleRecvData() Matched to a Provider.";
 		std::cerr << std::endl;
 #endif
-		locked_handleServerRequest(sit->second, peerId, hash, size, offset, chunksize);
-		return true;
+		provider = sit->second;
 	}
 
+	if (provider == NULL)
+	{
 #ifdef MPLEX_DEBUG
 	std::cerr << "ftDataMultiplex::handleRecvData() No Match... adding to Search Queue.";
 	std::cerr << std::endl;
@@ -868,8 +929,14 @@ bool	ftDataMultiplex::handleRecvDataRequest(const RsPeerId& peerId, const RsFile
 	mSearchQueue.push_back( ftRequest(FT_DATA_REQ, peerId, hash, size, offset, chunksize, NULL));
 
 	return true;
+	}
+	} // dataMtx released
+
+	locked_handleServerRequest(provider, peerId, hash, size, offset, chunksize);
+	return true;
 }
 
+	/* Called with mProviderUseMtx held, and without dataMtx. */
 bool	ftDataMultiplex::locked_handleServerRequest(ftFileProvider *provider, const RsPeerId& peerId, const RsFileHash& hash, uint64_t size,
 			uint64_t offset, uint32_t chunksize)
 {
@@ -1043,6 +1110,7 @@ void ftDataMultiplex::handlePendingCrcRequests()
 
 bool ftDataMultiplex::deleteServer(const RsFileHash& hash)
 {
+    RS_STACK_MUTEX(mProviderUseMtx); // no read in progress on the provider we delete
     RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
 
     auto sit = mServers.find(hash);
@@ -1060,6 +1128,13 @@ bool ftDataMultiplex::deleteServer(const RsFileHash& hash)
 
 void ftDataMultiplex::deleteUnusedServers()
 {
+	/* No read in progress on the providers we delete. This is called by the main
+	 * loop at each tick: when a read is in progress (seconds, on a busy disk),
+	 * do not wait for it, the next tick will do the cleaning. */
+	if(!mProviderUseMtx.trylock())
+		return;
+
+	{
 	RsStackMutex stack(dataMtx); /******* LOCK MUTEX ******/
 
 	//scan the uploads list in ftdatamultiplex and delete the items which time out
@@ -1093,6 +1168,9 @@ void ftDataMultiplex::deleteUnusedServers()
 		}
 		else
 			++sit ;
+	} // dataMtx released
+
+	mProviderUseMtx.unlock();
 }
 
 bool	ftDataMultiplex::handleSearchRequest(const RsPeerId& peerId, const RsFileHash& hash)

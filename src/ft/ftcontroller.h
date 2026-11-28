@@ -164,6 +164,10 @@ public:
         bool getPriority(const RsFileHash& hash,DwlSpeed& p);
         void setPriority(const RsFileHash& hash,DwlSpeed p);
 
+		// Speed new downloads start with. Downloads already in the list keep theirs.
+		DwlSpeed defaultDownloadSpeed();
+		void setDefaultDownloadSpeed(DwlSpeed s);
+
 		// Action on queue position
 		//
         void moveInQueue(const RsFileHash& hash,QueueMove mv) ;
@@ -266,6 +270,7 @@ public:
         std::map<RsFileHash,RsFileTransfer*> mPendingChunkMaps ;
 
 		FileChunksInfo::ChunkStrategy mDefaultChunkStrategy ;
+		DwlSpeed mDefaultDownloadSpeed ;
 
 		uint32_t _max_active_downloads ;   // maximum number of simultaneous downloads
 		uint32_t _max_uploads_per_friend ; // maximum number of uploads per friend. 0 means unlimited.

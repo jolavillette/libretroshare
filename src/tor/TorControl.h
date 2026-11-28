@@ -33,6 +33,7 @@
 #pragma once
 
 #include <iostream>
+#include <mutex>
 
 #include "PendingOperation.h"
 #include "bytearray.h"
@@ -76,6 +77,8 @@ public:
     TorStatus torStatus() const;
     std::string torVersion() const;
     bool torVersionAsNewAs(const std::string &version) const;
+    // Empty when the Tor network accepts our tor version, else an explanation.
+    std::string torVersionWarning() const;
     std::string errorMessage() const;
 
     bool hasConnectivity() const;
@@ -131,6 +134,11 @@ private:
     TorControl::TorStatus mTorStatus;
     std::map<std::string,std::string> mBootstrapStatus;
     bool mHasOwnership;
+
+    mutable std::mutex mVersionWarningMtx;	// guards mTorVersion and mTorVersionWarning: written on the socket thread, read from the main thread
+    std::string mTorVersionWarning;
+    void getVersionStatus();
+    void setVersionStatus(const std::string& status, const std::string& current_version);
 
     void checkHiddenService(HiddenService *service);
     void getTorInfoReply(TorControlCommand *sender);

@@ -25,6 +25,7 @@
 #include "retroshare/rspeers.h"
 
 #include "services/p3gxsreputation.h"
+#include "services/p3mobilelink.h"
 
 #include "rsitems/rsgxsreputationitems.h"
 #include "rsitems/rsconfigitems.h"
@@ -32,6 +33,7 @@
 #include <sys/time.h>
 
 #include <set>
+#include <algorithm>
 
 /****
  * #define DEBUG_REPUTATION		1
@@ -134,6 +136,7 @@ static const int      kReputationStoreWait                = 180;      // 3 minut
 //static const float    REPUTATION_ASSESSMENT_THRESHOLD_X1  = 0.5f ;    // reputation under which the peer gets killed. Warning there's a 1 shift with what's shown in GUI. Be careful.
 //static const uint32_t PGP_AUTO_BAN_THRESHOLD_DEFAULT      = 2 ;       // above this, auto ban any GXS id signed by this node
 static const uint32_t IDENTITY_FLAGS_UPDATE_DELAY         = 100 ;     // 
+static const uint32_t IDENTITY_FLAGS_MAX_RETRY_DELAY      = 3600 ;    // longest delay before asking again the details of an identity that the id service does not have
 static const uint32_t BANNED_NODES_UPDATE_DELAY           = 313 ;     // update approx every 5 mins. Chosen to not be a multiple of IDENTITY_FLAGS_UPDATE_DELAY
 static const uint32_t REPUTATION_INFO_KEEP_DELAY_DEFAULT          = 86400*35; // remove old reputation info 5 days after last usage limit, in case the ID would come back..
 static const uint32_t BANNED_NODES_INACTIVITY_KEEP_DEFAULT        = 86400*60; // remove all info about banned nodes after 2 months of inactivity
@@ -307,6 +310,7 @@ void p3GxsReputation::updateStaticIdentityFlags()
     // rsIdentity is not called inside a mutex-protected zone, because normally calls happen in the other way.
 
     std::list<RsGxsId> to_update ;
+    const rstime_t now = time(NULL) ;
 
     // we need to gather the list to be used in a non locked frame
     {
@@ -318,7 +322,8 @@ void p3GxsReputation::updateStaticIdentityFlags()
 
 	    for( std::map<RsGxsId, Reputation>::iterator rit = mReputations.begin();rit!=mReputations.end();++rit)
         {
-            if( (!(rit->second.mIdentityFlags & REPUTATION_IDENTITY_FLAG_UP_TO_DATE)) && (mPerNodeBannedIdsProxy.find(rit->first) == mPerNodeBannedIdsProxy.end()))
+            if( (!(rit->second.mIdentityFlags & REPUTATION_IDENTITY_FLAG_UP_TO_DATE)) && (mPerNodeBannedIdsProxy.find(rit->first) == mPerNodeBannedIdsProxy.end())
+                    && now >= rit->second.mFlagsRetryTS)
 			    to_update.push_back(rit->first) ;
         }
     }
@@ -332,6 +337,21 @@ void p3GxsReputation::updateStaticIdentityFlags()
 #ifdef DEBUG_REPUTATION
 		    std::cerr << "  cannot obtain info for " << *rit << ". Will do it later." << std::endl;
 #endif
+		    // Each failed call makes the id service queue a load of that identity from its database. Many reputation
+		    // entries are about identities this node does not hold (opinions of friends, deleted identities): asked at
+		    // every pass, they gave one database request for the same thousands of identities every 100 seconds, for
+		    // ever. The first miss is asked again at the next pass, since an identity that is held only needs to be
+		    // loaded into the cache; then the delay doubles, up to IDENTITY_FLAGS_MAX_RETRY_DELAY.
+
+		    RsStackMutex stack(mReputationMtx); /****** LOCKED MUTEX *******/
+		    std::map<RsGxsId,Reputation>::iterator it = mReputations.find(*rit) ;
+
+		    if(it != mReputations.end())
+		    {
+			    it->second.mFlagsRetryDelay = (it->second.mFlagsRetryDelay == 0) ? IDENTITY_FLAGS_UPDATE_DELAY
+			                                    : std::min(2*it->second.mFlagsRetryDelay, IDENTITY_FLAGS_MAX_RETRY_DELAY) ;
+			    it->second.mFlagsRetryTS = now + it->second.mFlagsRetryDelay ;
+		    }
 		    continue ;
 	    }
         {
@@ -966,7 +986,9 @@ void p3GxsReputation::banNode(const RsPgpId& id,bool b)
     {
         if(mBannedPgpIds.find(id) == mBannedPgpIds.end())
         {
-            mBannedPgpIds[id] = BannedNodeInfo() ;
+            BannedNodeInfo info;
+            info.last_activity_TS = time(nullptr);
+            mBannedPgpIds[id] = info;
             IndicateConfigChanged();
         }
     }
@@ -1456,7 +1478,13 @@ void p3GxsReputation::sendReputationRequests()
 	/* prepare packets */
 	std::list<RsPeerId>::iterator it;
 	for(it = idList.begin(); it != idList.end(); ++it)
+	{
+		// None between a phone in background and its home (MobileLink).
+		if(mMobileLink && mMobileLink->isQuietLink(*it))
+			continue;
+
 		sendReputationRequest(*it);
+	}
 }
 
 int p3GxsReputation::sendReputationRequest(RsPeerId peerid)

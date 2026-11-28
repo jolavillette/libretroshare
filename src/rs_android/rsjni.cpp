@@ -49,8 +49,18 @@ extern "C" JNIEXPORT jint JNICALL JNI_OnLoad_retroshare(JavaVM* vm, void*)
 	                &RetroShareServiceAndroid::start >("nativeStart"),
 	            jni::MakeNativeMethod<
 	                decltype(&RetroShareServiceAndroid::stop),
-	                &RetroShareServiceAndroid::stop >("nativeStop")
+	                &RetroShareServiceAndroid::stop >("nativeStop"),
+	            jni::MakeNativeMethod<
+	                decltype(&RetroShareServiceAndroid::mobileLinkKeepAlive),
+	                &RetroShareServiceAndroid::mobileLinkKeepAlive >(
+	                    "nativeMobileLinkKeepAlive" ),
+	            jni::MakeNativeMethod<
+	                decltype(&RetroShareServiceAndroid::mobileLinkKeepAliveInterval),
+	                &RetroShareServiceAndroid::mobileLinkKeepAliveInterval >(
+	                    "nativeMobileLinkKeepAliveInterval" )
 	            );
+
+	RetroShareServiceAndroid::registerMobileLinkHooks();
 
 	return jni::Unwrap(jni::jni_version_1_2);
 }

@@ -27,6 +27,7 @@
 #include <list>
 #include <set>
 #include <cstdint>
+#include <functional>
 #include <system_error>
 
 class RsThread;
@@ -130,7 +131,11 @@ bool    	cleanupDirectory(const std::string& dir, const std::set<std::string> &k
 bool    	cleanupDirectoryFaster(const std::string& dir, const std::set<std::string> &keepFiles);
 
 bool 		hashFile(const std::string& filepath,   std::string &name, RsFileHash &hash, uint64_t &size);
-bool 		getFileHash(const std::string& filepath,RsFileHash &hash, uint64_t &size, RsThread *thread = NULL);
+/**
+ * @param[in] progress when set, called from the calling thread after each block of the file is hashed, with the
+ *                     size in bytes of that block
+ */
+bool 		getFileHash(const std::string& filepath,RsFileHash &hash, uint64_t &size, RsThread *thread = NULL, const std::function<void(uint64_t)>& progress = nullptr);
 
 Sha1CheckSum   sha1sum(const uint8_t *data,uint32_t size) ;
 Sha256CheckSum sha256sum(const uint8_t *data,uint32_t size) ;
