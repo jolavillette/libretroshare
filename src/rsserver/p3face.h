@@ -43,6 +43,8 @@
 class p3heartbeat;
 class p3discovery2;
 class p3I2pSam3;
+class p3BitDht;
+class UdpStack;
 
 /* GXS Classes - just declare the classes.
    so we don't have to totally recompile to switch */
@@ -192,6 +194,11 @@ public:
 
 		/* Config */
 		p3ConfigMgr     *mConfigMgr;
+
+		/// What startup makes with a thread and a bound UDP port, stopped
+		/// and closed at shutdown: the DHT and the UDP stacks.
+		p3BitDht *mBitDht = nullptr;
+		std::vector<UdpStack*> mUdpStacks;
 		p3GeneralConfig *mGeneralConfig;
 
 		// notify

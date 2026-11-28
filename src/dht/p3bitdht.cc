@@ -261,6 +261,11 @@ void    p3BitDht::start()
 	/* dht switched on by config later. */
 }
 
+void    p3BitDht::stop()
+{
+	mUdpBitDht->fullstop();
+}
+
 	/* pqiNetAssist - external interface functions */
 void    p3BitDht::enable(bool on)
 {

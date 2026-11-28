@@ -1242,6 +1242,9 @@ int RsServer::StartupRetroShare()
 #endif //LOCALNET_TESTING
 	}
 
+	if(mDhtStack)
+		mUdpStacks.push_back(mDhtStack);
+
 #ifdef RS_USE_BITDHT
 
 #define BITDHT_BOOTSTRAP_FILENAME  	"bdboot.txt"
@@ -1323,7 +1326,7 @@ int RsServer::StartupRetroShare()
 	/* construct the rest of the stack, important to build them in the correct order! */
 	/* MOST OF THIS IS COMMENTED OUT UNTIL THE REST OF libretroshare IS READY FOR IT! */
 
-	p3BitDht *mBitDht = NULL ;
+	mBitDht = NULL ;
 	rsDht = NULL ;
 	rsFixedUdpStack *mProxyStack = NULL ;
 
@@ -1387,6 +1390,7 @@ int RsServer::StartupRetroShare()
 #else
 		mProxyStack = new rsFixedUdpStack(sndladdr);
 #endif
+		mUdpStacks.push_back(mProxyStack);
 
 #ifdef RS_USE_DHT_STUNNER
 		// FIRSTLY THE PROXY STUNNER.

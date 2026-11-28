@@ -38,6 +38,10 @@
 
 #include "pqi/p3peermgr.h"
 #include "pqi/p3netmgr.h"
+#include "tcponudp/rsudpstack.h"
+#ifdef RS_USE_BITDHT
+#include "dht/p3bitdht.h"
+#endif
 
 
 // TO SHUTDOWN THREADS.
@@ -184,6 +188,20 @@ void RsServer::rsGlobalShutDown()
 	 * thread), both stopped above, so by now they are idle and stop within a
 	 * second. */
 	if(mFtServer) { ShutdownStep s("stop file transfer threads"); mFtServer->StopThreads(); }
+
+	/* Stop the DHT thread, then the receiving thread of each UDP stack, and
+	 * free their ports: nothing sends through them any more, and a core
+	 * started again in the same process must be able to bind the same port. */
+	{
+		ShutdownStep s("stop DHT thread, close UDP stacks");
+#ifdef RS_USE_BITDHT
+		if(mBitDht) mBitDht->stop();
+		mBitDht = nullptr;
+#endif
+		for(UdpStack* stack: mUdpStacks)
+			stack->close();
+		mUdpStacks.clear();
+	}
 
 	{ ShutdownStep s("AuthPGP exit"); AuthPGP::exit(); }
 

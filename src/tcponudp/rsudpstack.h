@@ -38,6 +38,7 @@ class UdpStack
 
 	/* from pqiNetListener */
 virtual bool resetAddress(struct sockaddr_in &local) { return false; }
+	int close() { return 1; }
 
 };
 
