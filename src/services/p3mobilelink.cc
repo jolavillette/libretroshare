@@ -459,6 +459,24 @@ bool p3MobileLink::isHome(const RsPeerId& peer)
 	return mPhoneMode && it != mHomes.end() && it->second.mServing;
 }
 
+bool p3MobileLink::wantsGxsPush(const RsPeerId& peer)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto it = mPhones.find(peer);
+	return mServePhones && it != mPhones.end() && it->second.mGxsPush &&
+	        !it->second.mQuiet;
+}
+
+rstime_t p3MobileLink::gxsPushSince(const RsPeerId& peer)
+{
+	std::lock_guard<std::mutex> lock(mMtx);
+
+	auto it = mHomes.find(peer);
+	if(!mPhoneMode || it == mHomes.end() || !it->second.mServing) return 0;
+	return it->second.mGxsPushSince;
+}
+
 bool p3MobileLink::wantsDial(const RsPeerId& peer)
 {
 	std::lock_guard<std::mutex> lock(mMtx);
@@ -846,13 +864,25 @@ void p3MobileLink::sendState(const RsPeerId& home)
 {
 	auto state = new RsMobileLinkStateItem();
 	state->PeerId(home);
+	bool onScreen;
 	{
 		std::lock_guard<std::mutex> lock(mMtx);
 		state->mPhone = mPhoneMode;
 		state->mQuiet = mQuiet;
 		state->mKeepAliveInterval = mKeepAliveInterval;
+		onScreen = mPhoneMode && !mQuiet;
 	}
 	sendItem(state);
+
+	// On screen, the phone asks its home to wake it up for new GXS messages.
+	// The home handles this item after the STATE, so it answers once it
+	// knows the phone is back: the phone then asks it for its updates.
+	if(onScreen)
+	{
+		auto push = new RsMobileLinkGxsPushItem();
+		push->PeerId(home);
+		sendItem(push);
+	}
 }
 
 bool p3MobileLink::recvItem(RsItem* item)
@@ -895,6 +925,10 @@ bool p3MobileLink::recvItem(RsItem* item)
 		if(auto files = dynamic_cast<RsMobileLinkFilesItem*>(item))
 			handleFiles(*files);
 		break;
+	case RS_PKT_SUBTYPE_MOBILE_LINK_GXS_PUSH:
+		if(auto push = dynamic_cast<RsMobileLinkGxsPushItem*>(item))
+			handleGxsPush(*push);
+		break;
 	default:
 		break;
 	}
@@ -927,6 +961,7 @@ void p3MobileLink::handleHello(const RsMobileLinkHelloItem& item)
 			phone.mGRouterHashes = grouterHashes;
 			phone.mLastHello = time(nullptr);
 			phone.mAcksHeld = false;	// said again after each HELLO
+			phone.mGxsPush = false;	// idem
 		}
 	}
 
@@ -956,6 +991,44 @@ void p3MobileLink::handleHome(const RsMobileLinkHomeItem& item)
 	}
 	if(knownHomesChanged) IndicateConfigChanged();
 	updateSleepAllowed();
+}
+
+void p3MobileLink::handleGxsPush(const RsMobileLinkGxsPushItem& item)
+{
+	const RsPeerId& peer = item.PeerId();
+	bool answer = false;
+	bool first = false;
+	{
+		std::lock_guard<std::mutex> lock(mMtx);
+
+		if(mPhoneMode)
+		{
+			auto home = mHomes.find(peer);
+			if(home != mHomes.end())
+				home->second.mGxsPushSince = item.mOn ? time(nullptr) : 0;
+		}
+		else
+		{
+			auto phone = mPhones.find(peer);
+			if(mServePhones && phone != mPhones.end())
+			{
+				first = item.mOn && !phone->second.mGxsPush;
+				phone->second.mGxsPush = item.mOn;
+				answer = item.mOn;
+			}
+		}
+	}
+
+	if(first)
+		RsInfo() << "MobileLink: phone " << peer
+		         << " is woken up for new GXS messages";
+
+	if(answer)
+	{
+		auto push = new RsMobileLinkGxsPushItem();
+		push->PeerId(peer);
+		sendItem(push);
+	}
 }
 
 void p3MobileLink::handleState(const RsMobileLinkStateItem& item)

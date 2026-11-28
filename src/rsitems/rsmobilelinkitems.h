@@ -45,6 +45,7 @@ const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_KEEP_ALIVE_STOCK = 0x06;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_HELD_END = 0x07;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_HELD_ACK = 0x08;
 const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_FILES = 0x09;
+const uint8_t RS_PKT_SUBTYPE_MOBILE_LINK_GXS_PUSH = 0x0A;
 
 class RsMobileLinkItem: public RsItem
 {
@@ -226,6 +227,24 @@ public:
 	void clear() override { mHashes.clear(); }
 
 	std::vector<RsFileHash> mHashes;
+};
+
+/// GXS updates woken up by the home. Phone to home, sent with each STATE
+/// while the phone is on screen: the phone stops asking this home for GXS
+/// updates every minute once the home answers. Home to phone, the answer:
+/// the home sends the phone a GXS pull request when a group the phone asked
+/// about gets new messages. A node that does not know this item drops it,
+/// and the two sides go on as before.
+class RsMobileLinkGxsPushItem: public RsMobileLinkItem
+{
+public:
+	RsMobileLinkGxsPushItem(): RsMobileLinkItem(RS_PKT_SUBTYPE_MOBILE_LINK_GXS_PUSH) {}
+
+	void serial_process( RsGenericSerializer::SerializeJob j,
+	                     RsGenericSerializer::SerializeContext& ctx ) override
+	{ RS_SERIAL_PROCESS(mOn); }
+
+	bool mOn = true;
 };
 
 class RsMobileLinkSerialiser: public RsServiceSerializer

@@ -298,7 +298,10 @@
 //
 //static const uint32_t GIXS_CUT_OFF                            =            0;
 static const uint32_t SYNC_PERIOD                             =           60;
-static const uint32_t PHONE_ASK_PERIOD                        =         1800; // A phone (MobileLink) gets its content from its homes and sends a pull request when it publishes: a home asks it for updates when it appears, then at this period.
+static const uint32_t PHONE_ASK_PERIOD                        =         1800; // A phone (MobileLink) gets its content from its homes and sends a pull request when it publishes: a home asks it for updates when it appears, then at this period, or never again if the phone waits for pushes.
+static const uint32_t PHONE_SAFETY_PERIOD                     =         1800; // A phone that its home wakes up for new messages still asks that home for updates and group statistics at this period.
+static const uint32_t PHONE_PUSH_GATHER_DELAY                 =            5; // A home wakes a phone up this long after new messages, so that a burst wakes it once.
+static const uint32_t PHONE_PUSH_MIN_INTERVAL                 =           30; // A home wakes a phone up at most once per this period and service.
 static const uint32_t MAX_REQLIST_SIZE                        =           20; // No more than 20 items per msg request list => creates smaller transactions that are less likely to be cancelled.
 static const uint32_t TRANSAC_TIMEOUT                         =         2000; // In seconds. Has been increased to avoid epidemic transaction cancelling due to overloaded outqueues.
 #ifdef TO_REMOVE
@@ -377,7 +380,8 @@ void RsGxsNetService::removeQuietPhones(std::set<RsPeerId>& peers)
 }
 
 void RsGxsNetService::locked_removePhonesAskedRecently(
-        std::set<RsPeerId>& peers, const std::set<RsPeerId>& phones )
+        std::set<RsPeerId>& peers, const std::set<RsPeerId>& phones,
+        const std::set<RsPeerId>& pushPhones )
 {
 	const rstime_t now = time(nullptr);
 
@@ -391,10 +395,119 @@ void RsGxsNetService::locked_removePhonesAskedRecently(
 
 		if(asked == mPhoneAskedTs.end())
 			mPhoneAskedTs[phone] = now;
-		else if(now < asked->second + PHONE_ASK_PERIOD)
+		else if(pushPhones.count(phone) || now < asked->second + PHONE_ASK_PERIOD)
 			peers.erase(phone);
 		else
 			asked->second = now;
+	}
+}
+
+void RsGxsNetService::locked_notePhoneGroup(
+        const RsPeerId& peer, const RsGxsGroupId& grpId )
+{
+	PhonePush& phone(mPhonePushes[peer]);
+	phone.mGroups.insert(grpId);
+	phone.mLastRequest = time(nullptr);
+}
+
+void RsGxsNetService::locked_schedulePhonePushes(const RsGxsGroupId& grpId)
+{
+	const rstime_t now = time(nullptr);
+
+	for(auto& it: mPhonePushes)
+	{
+		PhonePush& phone(it.second);
+
+		if(phone.mDue != 0 || phone.mGroups.find(grpId) == phone.mGroups.end())
+			continue;
+
+		phone.mDue = std::max( now + (rstime_t)PHONE_PUSH_GATHER_DELAY,
+		                       phone.mLastPush + (rstime_t)PHONE_PUSH_MIN_INTERVAL );
+	}
+}
+
+void RsGxsNetService::locked_forgetAbsentPushPhones(
+        const std::set<RsPeerId>& awakePeers, rstime_t roundStart )
+{
+	for(auto it = mPhonePushes.begin(); it != mPhonePushes.end();)
+		if( awakePeers.find(it->first) == awakePeers.end() &&
+		    it->second.mLastRequest < roundStart )
+			it = mPhonePushes.erase(it);
+		else ++it;
+}
+
+void RsGxsNetService::sendDuePhonePushes()
+{
+	std::set<RsPeerId> due;
+	{
+		RS_STACK_MUTEX(mNxsMutex);
+		if(mPhonePushes.empty()) return;
+
+		const rstime_t now = time(nullptr);
+
+		for(auto& it: mPhonePushes)
+			if(it.second.mDue != 0 && it.second.mDue <= now)
+			{
+				due.insert(it.first);
+				it.second.mDue = 0;
+				it.second.mLastPush = now;
+			}
+	}
+	if(due.empty()) return;
+
+	std::set<RsPeerId> online;
+	mNetMgr->getOnlineList(mServiceInfo.mServiceType, online);
+
+	for(auto it = due.begin(); it != due.end();)
+		if(!online.count(*it) || !sMobileLink || !sMobileLink->wantsGxsPush(*it))
+			it = due.erase(it);
+		else ++it;
+	if(due.empty()) return;
+
+	for(const RsPeerId& phone: due)
+		RsInfo() << "MobileLink: " << mServiceInfo.mServiceName
+		         << " wakes phone " << phone << " up for new messages";
+
+	requestPull(due);
+}
+
+std::map<RsPeerId, rstime_t> RsGxsNetService::pushingHomes(
+        const std::set<RsPeerId>& peers )
+{
+	std::map<RsPeerId, rstime_t> homes;
+	if(!sMobileLink) return homes;
+
+	for(const RsPeerId& peer: peers)
+		if(rstime_t since = sMobileLink->gxsPushSince(peer))
+			homes[peer] = since;
+
+	return homes;
+}
+
+void RsGxsNetService::locked_removeHomesNotDue(
+        std::set<RsPeerId>& peers, const std::map<RsPeerId, rstime_t>& pushHomes )
+{
+	const rstime_t now = time(nullptr);
+
+	for(auto it = mHomeRoundTs.begin(); it != mHomeRoundTs.end();)
+		if(pushHomes.find(it->first) == pushHomes.end()) it = mHomeRoundTs.erase(it);
+		else ++it;
+
+	for(const auto& home: pushHomes)
+	{
+		auto last = mHomeRoundTs.find(home.first);
+		auto partial = mPartialMsgUpdates.find(home.first);
+
+		// The home said again that it wakes this phone up after the last
+		// round (new connection, phone back on screen): it may have
+		// forgotten the groups the phone asked about.
+		const bool due = last == mHomeRoundTs.end() ||
+		        last->second <= home.second ||
+		        now >= last->second + (rstime_t)PHONE_SAFETY_PERIOD ||
+		        (partial != mPartialMsgUpdates.end() && !partial->second.empty());
+
+		if(due) mHomeRoundTs[home.first] = now;
+		else peers.erase(home.first);
 	}
 }
 
@@ -487,6 +600,8 @@ int RsGxsNetService::tick()
 
     if(should_notify)
         processObserverNotifications() ;
+
+    sendDuePhonePushes();
 
     rstime_t now = time(NULL);
     rstime_t elapsed = mSYNC_PERIOD + mSyncTs;
@@ -621,7 +736,9 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 
 	/* If specific peers are passed as paramether ask only to them */
 	const bool periodicRound = peers.empty();
-	std::set<RsPeerId> phones;
+	const rstime_t roundStart = time(nullptr);
+	std::set<RsPeerId> phones, pushPhones;
+	std::map<RsPeerId, rstime_t> pushHomes;
 
 	if(periodicRound)
 	{
@@ -630,7 +747,11 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 
 		if(sMobileLink)
 			for(const RsPeerId& peer: peers)
+			{
 				if(sMobileLink->isPhone(peer)) phones.insert(peer);
+				if(sMobileLink->wantsGxsPush(peer)) pushPhones.insert(peer);
+			}
+		pushHomes = pushingHomes(peers);
 
         if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != nullptr)
 		{
@@ -652,7 +773,21 @@ std::error_condition RsGxsNetService::checkUpdatesFromPeers(
 	RS_STACK_MUTEX(mNxsMutex);
 
 	if(periodicRound)
-		locked_removePhonesAskedRecently(peers, phones);
+	{
+		locked_forgetAbsentPushPhones(peers, roundStart);
+		locked_removePhonesAskedRecently(peers, phones, pushPhones);
+		locked_removeHomesNotDue(peers, pushHomes);
+
+		// Only phones and homes that wake each other up: nobody to ask now.
+		if(peers.empty()) return std::error_condition();
+	}
+	else
+		for(const RsPeerId& peer: peers)
+		{
+			// A home woke this phone up: this round counts as its periodic one.
+			auto home = mHomeRoundTs.find(peer);
+			if(home != mHomeRoundTs.end()) home->second = roundStart;
+		}
 
 	// for now just grps
 	for(auto sit = peers.begin(); sit != peers.end(); ++sit)
@@ -913,6 +1048,31 @@ void RsGxsNetService::syncGrpStatistics()
         return;
     removeQuietPhones(online_peers);
 
+    rstime_t now = time(NULL) ;
+
+    // A home asks no statistics of a phone that it wakes up for new
+    // messages: the phone gets its groups from its homes. Such a phone asks
+    // its homes for statistics when they start waking it up, then at
+    // PHONE_SAFETY_PERIOD.
+    const std::map<RsPeerId, rstime_t> pushHomes = pushingHomes(online_peers);
+
+    for(auto it = mHomeStatsTs.begin(); it != mHomeStatsTs.end();)
+        if(pushHomes.find(it->first) == pushHomes.end()) it = mHomeStatsTs.erase(it);
+        else ++it;
+
+    for(auto it = online_peers.begin(); it != online_peers.end();)
+    {
+        auto home = pushHomes.find(*it);
+        auto asked = mHomeStatsTs.find(*it);
+
+        if( (sMobileLink && sMobileLink->wantsGxsPush(*it)) ||
+            ( home != pushHomes.end() && asked != mHomeStatsTs.end() &&
+              asked->second > home->second &&
+              now < asked->second + (rstime_t)PHONE_SAFETY_PERIOD ) )
+            it = online_peers.erase(it);
+        else ++it;
+    }
+
     if((!!(mSyncFlags & RsGxsNetServiceSyncFlags::DISTANT_SYNC)) && mGxsNetTunnel != NULL)
 	{
 		// Grab all online virtual peers of distant tunnels for the current service.
@@ -926,8 +1086,6 @@ void RsGxsNetService::syncGrpStatistics()
 
     // Go through group statistics and groups without information are re-requested to random peers selected
     // among the ones who provided the group info.
-
-    rstime_t now = time(NULL) ;
 
     for(auto it(grpMeta.begin());it!=grpMeta.end();++it)
     {
@@ -973,6 +1131,8 @@ void RsGxsNetService::syncGrpStatistics()
 					grs->PeerId(peer_id) ;
 
 					generic_sendItem(grs) ;
+
+					if(pushHomes.count(peer_id)) mHomeStatsTs[peer_id] = now;
 				}
 			}
 		}
@@ -1108,7 +1268,14 @@ void RsGxsNetService::locked_resetClientTS(const RsGxsGroupId& grpId)
 void RsGxsNetService::subscribeStatusChanged(
         const RsGxsGroupId& grpId, bool subscribed )
 {
-	if(!subscribed) return;
+	if(!subscribed)
+	{
+		// An update left unfinished for a group no longer followed would
+		// make a phone ask its homes every minute (MobileLink).
+		RS_STACK_MUTEX(mNxsMutex);
+		for(auto& peer: mPartialMsgUpdates) peer.second.erase(grpId);
+		return;
+	}
 
     // When we subscribe, we reset the time stamps, so that the entire group list
     // gets requested once again, for a proper update.
@@ -1131,6 +1298,10 @@ void RsGxsNetService::subscribeStatusChanged(
 	mGrpServerUpdate.grpUpdateTS = static_cast<uint32_t>(time(nullptr));
 
 	locked_resetClientTS(grpId);
+
+	// A phone asks the homes that wake it up for the new group at the next
+	// round: they wake it up only for the groups it asked them about.
+	mHomeRoundTs.clear();
 }
 
 bool RsGxsNetService::fragmentMsg(RsNxsMsg& msg, MsgFragments& msgFragments) const
@@ -4451,6 +4622,8 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
     if(sMobileLink && sMobileLink->isQuietPhone(item->PeerId()))
         return;
 
+    const bool push_phone = sMobileLink && sMobileLink->wantsGxsPush(item->PeerId());
+
     RS_STACK_MUTEX(mNxsMutex) ;
 
     const RsPeerId& peer = item->PeerId();
@@ -4461,6 +4634,10 @@ void RsGxsNetService::handleRecvSyncMessage(RsNxsSyncMsgReqItem *item,bool item_
     // It also changes the items' group id into the un-hashed group ID if the group is a distant group.
 
     bool peer_can_receive_update = locked_CanReceiveUpdate(item, grp_is_known);
+
+    // This home wakes the phone up when the group gets new messages.
+    if(push_phone && grp_is_known)
+        locked_notePhoneGroup(peer, item->grpId);
 
     if(item_was_encrypted)
         std::cerr << "(WW) got an encrypted msg sync req. from " << item->PeerId() << ". This will not send messages updates for group " << item->grpId << std::endl;
@@ -5341,6 +5518,8 @@ bool RsGxsNetService::locked_stampMsgServerUpdateTS(const RsGxsGroupId& gid)
     RsGxsServerMsgUpdate& m(mServerMsgUpdateMap[gid]);
 
 	m.msgUpdateTS = time(NULL) ;
+
+	locked_schedulePhonePushes(gid);
 
     return true;
 }

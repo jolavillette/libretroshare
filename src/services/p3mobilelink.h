@@ -124,6 +124,15 @@ public:
 	/// Phone side: whether peer is a home that serves this phone.
 	bool isHome(const RsPeerId& peer);
 
+	/// Home side: whether friend peer is a phone on screen that waits for
+	/// this home to wake it up when its GXS groups get new messages.
+	bool wantsGxsPush(const RsPeerId& peer);
+
+	/// Phone side: when home peer last said that it wakes this phone up for
+	/// new GXS messages, during the current connection; 0 when it does not.
+	/// The phone says so again each time it comes back on screen.
+	rstime_t gxsPushSince(const RsPeerId& peer);
+
 	/// Phone side: whether to dial peer. A phone in background dials only
 	/// the friends that served it as a home, once it knows one: each dial to
 	/// a friend that is away keeps its radio up for seconds, and it dials
@@ -180,6 +189,9 @@ private:
 		bool mServing = false;
 		rstime_t mLastPong = 0;
 		uint32_t mLastPongSeq = 0;
+
+		/// When the home last answered RS_PKT_SUBTYPE_MOBILE_LINK_GXS_PUSH.
+		rstime_t mGxsPushSince = 0;
 	};
 
 	/// What a home knows of a phone among its connected friends.
@@ -198,6 +210,10 @@ private:
 		/// Whether the phone acknowledges the lobby lines kept for it.
 		bool mAcksHeld = false;
 
+		/// Whether the phone waits for GXS pushes (said again after each
+		/// HELLO).
+		bool mGxsPush = false;
+
 		/// The tunnel hashes of the files the phone offers.
 		std::set<RsFileHash> mFileHashes;
 		uint32_t mKeepAliveInterval = 0;
@@ -215,6 +231,7 @@ private:
 	void handleHeldEnd(const RsMobileLinkHeldEndItem& item);
 	void handleHeldAck(const RsMobileLinkHeldAckItem& item);
 	void handleFiles(const RsMobileLinkFilesItem& item);
+	void handleGxsPush(const RsMobileLinkGxsPushItem& item);
 	void handlePong(const RsMobileLinkPongItem& item);
 	void handleKeepAliveStock(const RsMobileLinkKeepAliveStockItem& item);
 
