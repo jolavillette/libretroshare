@@ -42,8 +42,37 @@ class pqiQoSstreamer: public pqithreadstreamer, public pqiQoS
 
 		virtual int getQueueSize(bool in) ;
 
+	protected:
+		virtual void locked_tickOutQueue(float out_rate_kBps) ;
+
 	private:
 		uint32_t _total_item_size ;
 		uint32_t _total_item_count ;
+
+		// Congestion: while the friend needs too long to drain our queue, only items of
+		// priority PQI_QOS_CONGESTION_MIN_PRIORITY and above are queued (see pqiqosstreamer.cc).
+		void locked_updateCongestion(float out_rate_kBps) ;
+		void locked_reportCongestion(rstime_t now) ;
+		bool     _congested ;
+		rstime_t _congested_since ;
+		rstime_t _last_congestion_end ;
+		rstime_t _congestion_hold ;
+		rstime_t _last_congestion_check ;
+		uint32_t _seconds_above ;
+		uint32_t _seconds_below ;
+		float    _last_drain ;
+		rstime_t _last_congestion_report ;
+		std::vector<uint32_t> _refused_per_priority ;
+		uint32_t _refused_bytes ;
+		uint32_t _purged ;
+
+		// Turtle tunnel requests/results that waited too long in the queue are dropped
+		// instead of being sent late (see locked_removeStaleTunnelItems()).
+		void locked_removeStaleTunnelItems() ;
+		rstime_t _last_stale_check ;
+		rstime_t _last_stale_report ;
+		uint32_t _stale_dropped ;
+		uint32_t _stale_dropped_bytes ;
+		rstime_t _stale_max_age ;
 };
 

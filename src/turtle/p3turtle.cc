@@ -1914,6 +1914,7 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 			// Send back tunnel ok to the same guy
 			//
 			RsTurtleTunnelOkItem *res_item = new RsTurtleTunnelOkItem ;
+			res_item->setPriorityLevel(QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM) ;	// we are the end of this tunnel
             TurtleVirtualPeerId vpid ;
 
 			res_item->request_id = item->request_id ;
@@ -2082,6 +2083,9 @@ void p3turtle::handleTunnelRequest(RsTurtleOpenTunnelItem *item)
 #endif
 				// Copy current item and modify it.
 				RsTurtleOpenTunnelItem *fwd_item = new RsTurtleOpenTunnelItem(*item) ;
+
+				if(item->PeerId() == _own_id)	// our own request: still sent to a congested friend
+					fwd_item->setPriorityLevel(QOS_PRIORITY_RS_TURTLE_OWN_TUNNEL_ITEM) ;
 
 				// increase search depth, except in some rare cases, to prevent correlation between
 				// TR sniffing and friend names. The strategy is to not increase depth if the depth
