@@ -601,8 +601,6 @@ int RsGxsNetService::tick()
     if(should_notify)
         processObserverNotifications() ;
 
-    sendDuePhonePushes();
-
     rstime_t now = time(NULL);
     rstime_t elapsed = mSYNC_PERIOD + mSyncTs;
 
@@ -2273,6 +2271,9 @@ void RsGxsNetService::threadTick()
 
         // vetting of id and circle info
         runVetting();
+
+        // wake-ups of the phones that wait for new messages (MobileLink)
+        sendDuePhonePushes();
 
         processExplicitGroupRequests();
 }
